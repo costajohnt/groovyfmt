@@ -340,7 +340,7 @@ fn fmt(files: &[PathBuf], cfg: &Config, a: &Args) -> i32 {
     };
     let mut summary = format!("{verb} {changed} of {} files", files.len());
     if skipped > 0 {
-        summary += &format!(", {skipped} skipped (can't parse; -v lists them)");
+        summary += &format!(", {skipped} skipped (-v shows why)");
     }
     if a.verbose {
         summary += &format!(" in {:.2}s", t.elapsed().as_secs_f64());
@@ -411,7 +411,7 @@ fn lint_files(files: &[PathBuf], cfg: &Config, a: &Args, stats_only: bool) -> i3
         summary += &format!(" ({})", parts.join(", "));
     }
     if skipped > 0 {
-        summary += &format!(", {skipped} skipped (can't parse; -v lists them)");
+        summary += &format!(", {skipped} skipped (-v shows why)");
     }
     if a.verbose || stats_only {
         summary += &format!(" in {:.2}s", t.elapsed().as_secs_f64());

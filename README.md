@@ -10,14 +10,14 @@ Jenkinsfile
 test/groovy/BaseTest.groovy
 test/groovy/BuildDockerAndPublishImageStepTests.groovy
 ...
-would reformat 21 of 27 files, 6 skipped (can't parse; -v lists them)
+would reformat 21 of 27 files, 6 skipped (-v shows why)
 $ groovyfmt
-reformatted 21 of 27 files, 6 skipped (can't parse; -v lists them)
+reformatted 21 of 27 files, 6 skipped (-v shows why)
 $ groovyfmt --lint
 test/groovy/BaseTest.groovy:2:1: UnusedImport: The [mock.CurrentBuild] import is never referenced
 test/groovy/BaseTest.groovy:4:1: UnusedImport: The [org.junit.Before] import is never referenced
 ...
-7 violations in 27 files (UnusedImport 7), 6 skipped (can't parse; -v lists them)
+7 violations in 27 files (UnusedImport 7), 6 skipped (-v shows why)
 ```
 
 ## Speed
