@@ -12,9 +12,27 @@ pub enum Outcome {
     Skipped(&'static str),
 }
 
-/// Format `src` with `indent` spaces per level. The same step is used for blocks, brackets and
-/// continuation lines: on a 23.8k-file corpus, separate continuation widths made no difference.
-pub fn format(src: &str, indent: usize) -> Outcome {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Style {
+    /// Spaces per level. The same step is used for blocks, brackets and continuation lines:
+    /// on a 23.8k-file corpus, separate continuation widths made no difference.
+    pub indent: usize,
+    /// Indent the statements of a labelled block (Spock `when:` / `then:`) one level deeper
+    /// than the label. grails-core uses this style in about half its specs; Spock's docs and
+    /// most other code keep them level with the label.
+    pub indent_after_labels: bool,
+}
+
+impl Default for Style {
+    fn default() -> Self {
+        Style {
+            indent: 4,
+            indent_after_labels: false,
+        }
+    }
+}
+
+pub fn format(src: &str, style: &Style) -> Outcome {
     // nothing but whitespace: the file becomes empty, as with rustfmt and prettier
     if src.trim().is_empty() {
         return if src.is_empty() {
@@ -27,7 +45,7 @@ pub fn format(src: &str, indent: usize) -> Outcome {
     if tree.root_node().has_error() {
         return Outcome::Skipped("parse error");
     }
-    let out = reindent(src, &tree, indent);
+    let out = reindent(src, &tree, style);
     if out == src {
         return Outcome::Unchanged;
     }
@@ -38,7 +56,7 @@ pub fn format(src: &str, indent: usize) -> Outcome {
     Outcome::Formatted(out)
 }
 
-fn reindent(src: &str, tree: &Tree, step: usize) -> String {
+fn reindent(src: &str, tree: &Tree, style: &Style) -> String {
     let eol = if src.contains("\r\n") { "\r\n" } else { "\n" };
     let root = tree.root_node();
     let mut out: Vec<String> = Vec::new();
@@ -64,7 +82,7 @@ fn reindent(src: &str, tree: &Tree, step: usize) -> String {
         } else {
             let keep_trailing = line_end < src.len() && inside_token(root, line_end, src);
             let text = if keep_trailing { body } else { body.trim_end() };
-            let indent = indent_for(root, src, pos, &row_indent, step);
+            let indent = indent_for(root, src, pos, &row_indent, style);
             row_indent.push(indent);
             out.push(format!("{}{}", " ".repeat(indent), text));
         }
@@ -117,7 +135,8 @@ fn leaf_at(root: Node, pos: usize) -> Node {
 
 /// Indent of the row where the nearest enclosing node that began on an earlier row starts,
 /// plus one step, except closers, `else`/`catch`/`finally`, Spock labels, and lines after annotations.
-fn indent_for(root: Node, src: &str, pos: usize, row_indent: &[usize], step: usize) -> usize {
+fn indent_for(root: Node, src: &str, pos: usize, row_indent: &[usize], style: &Style) -> usize {
+    let step = style.indent;
     let leaf = leaf_at(root, pos);
     let row = leaf.start_position().row;
     let mut child = leaf;
@@ -140,13 +159,21 @@ fn indent_for(root: Node, src: &str, pos: usize, row_indent: &[usize], step: usi
 
     let first = text(leaf, src);
     let closes_anchor = matches!(first, "}" | ")" | "]") && leaf.parent() == Some(a);
-    // Spock blocks (`when:` / `then:`) keep the statement after the label at the label's level.
-    if closes_anchor
-        || after_annotation
-        || a.kind() == "labeled_statement"
-        || matches!(first, "else" | "catch" | "finally")
-    {
+    if closes_anchor || after_annotation || matches!(first, "else" | "catch" | "finally") {
         return base;
+    }
+    // The statement right after a label (`when:` then a newline) hangs off the label.
+    if a.kind() == "labeled_statement" {
+        return base + if style.indent_after_labels { step } else { 0 };
+    }
+    // Later statements of a labelled block are siblings of the labeled_statement.
+    // ponytail: scans earlier siblings per line, quadratic in block length; fine for test methods.
+    if style.indent_after_labels
+        && child.kind() != "labeled_statement"
+        && std::iter::successors(child.prev_named_sibling(), |s| s.prev_named_sibling())
+            .any(|s| s.kind() == "labeled_statement")
+    {
+        return base + 2 * step;
     }
     base + step
 }
@@ -176,7 +203,7 @@ mod tests {
     use super::*;
 
     fn fmt(s: &str) -> String {
-        match format(s, 4) {
+        match format(s, &Style::default()) {
             Outcome::Unchanged => s.to_string(),
             Outcome::Formatted(o) => o,
             Outcome::Skipped(why) => panic!("skipped: {why}"),
@@ -243,21 +270,51 @@ mod tests {
     }
 
     #[test]
+    fn indent_after_labels_option() {
+        let style = Style {
+            indent_after_labels: true,
+            ..Style::default()
+        };
+        let src = "def 'x'() {\ngiven:\ndef a = 1\ndef b = [\n1\n]\nwhen:\nf(a)\nthen:\na == 1\nwhere:\nx | y\n1 | 2\n}\n";
+        let want = "def 'x'() {\n    given:\n        def a = 1\n        def b = [\n            1\n        ]\n    when:\n        f(a)\n    then:\n        a == 1\n    where:\n        x | y\n        1 | 2\n}\n";
+        let Outcome::Formatted(out) = format(src, &style) else {
+            panic!("not formatted")
+        };
+        assert_eq!(out, want);
+        assert_eq!(format(want, &style), Outcome::Unchanged, "idempotent");
+        // a block with no labels is unaffected
+        assert_eq!(
+            format("def f() {\n    a()\n    b()\n}\n", &style),
+            Outcome::Unchanged
+        );
+    }
+
+    #[test]
     fn skips_unparseable() {
-        assert_eq!(format("def x = {\n", 4), Outcome::Skipped("parse error"));
+        assert_eq!(
+            format("def x = {\n", &Style::default()),
+            Outcome::Skipped("parse error")
+        );
     }
 
     #[test]
     fn blank_files_become_empty() {
-        assert_eq!(format("", 4), Outcome::Unchanged);
-        assert_eq!(format("  \n\n\t\n", 4), Outcome::Formatted(String::new()));
-        assert_eq!(format("\n", 4), Outcome::Formatted(String::new()));
+        let d = Style::default();
+        assert_eq!(format("", &d), Outcome::Unchanged);
+        assert_eq!(format("  \n\n\t\n", &d), Outcome::Formatted(String::new()));
+        assert_eq!(format("\n", &d), Outcome::Formatted(String::new()));
     }
 
     #[test]
     fn indent_width_is_configurable() {
         assert_eq!(
-            format("a {\nb()\n}\n", 2),
+            format(
+                "a {\nb()\n}\n",
+                &Style {
+                    indent: 2,
+                    ..Style::default()
+                }
+            ),
             Outcome::Formatted("a {\n  b()\n}\n".into())
         );
     }

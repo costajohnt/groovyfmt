@@ -197,6 +197,21 @@ fn indent_from_config_and_flag() {
 }
 
 #[test]
+fn indent_after_labels_from_config() {
+    let d = Dir::new("labels");
+    let spec = "def 'x'() {\nwhen:\nf()\nthen:\nok()\n}\n";
+    assert_eq!(
+        stdout(&run(&d.0, &["--stdin"], Some(spec))),
+        "def 'x'() {\n    when:\n    f()\n    then:\n    ok()\n}\n"
+    );
+    d.write(".groovyfmt.toml", "indent_after_labels = true\n");
+    assert_eq!(
+        stdout(&run(&d.0, &["--stdin"], Some(spec))),
+        "def 'x'() {\n    when:\n        f()\n    then:\n        ok()\n}\n"
+    );
+}
+
+#[test]
 fn errors_exit_2() {
     let d = Dir::new("errors");
     d.write(".groovyfmt.toml", "indnet = 2\n");

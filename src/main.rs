@@ -144,7 +144,7 @@ fn load_config(a: &Args) -> Config {
         None => Config::default(),
     };
     if let Some(n) = a.indent {
-        cfg.indent = n;
+        cfg.style.indent = n;
     }
     if a.verbose {
         match &path {
@@ -287,7 +287,7 @@ fn stdin(cfg: &Config) -> i32 {
     if let Err(e) = std::io::stdin().read_to_string(&mut src) {
         die(format!("reading stdin: {e}"));
     }
-    let out = match format(&src, cfg.indent) {
+    let out = match format(&src, &cfg.style) {
         Outcome::Unchanged => src,
         Outcome::Formatted(out) => out,
         Outcome::Skipped(why) => die(format!("<stdin>: not formatted: {why}")),
@@ -299,7 +299,7 @@ fn fmt(files: &[PathBuf], cfg: &Config, a: &Args) -> i32 {
     let t = Instant::now();
     let check = a.mode == Mode::Check;
     let results = par_map(files, |p| {
-        read(p).map(|src| src.map_or(Outcome::Skipped(NOT_UTF8), |s| format(&s, cfg.indent)))
+        read(p).map(|src| src.map_or(Outcome::Skipped(NOT_UTF8), |s| format(&s, &cfg.style)))
     });
     let (mut changed, mut skipped, mut failed) = (0usize, 0usize, false);
     for (path, r) in files.iter().zip(results) {
@@ -425,9 +425,9 @@ fn stats(files: &[PathBuf], cfg: &Config) -> i32 {
     let t = Instant::now();
     let results = par_map(files, |p| {
         let src = read(p).ok()??;
-        let out = format(&src, cfg.indent);
+        let out = format(&src, &cfg.style);
         let nonidem =
-            matches!(&out, Outcome::Formatted(o) if format(o, cfg.indent) != Outcome::Unchanged);
+            matches!(&out, Outcome::Formatted(o) if format(o, &cfg.style) != Outcome::Unchanged);
         let lines = match &out {
             Outcome::Formatted(o) => {
                 src.lines().zip(o.lines()).filter(|(a, b)| a != b).count()

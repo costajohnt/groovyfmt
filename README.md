@@ -106,6 +106,7 @@ groovyfmt looks for `.groovyfmt.toml` or `groovyfmt.toml` in the current directo
 
 ```toml
 indent = 4                  # spaces per level, 1 to 16
+indent_after_labels = false # true: indent Spock when:/then: blocks under their label
 
 [lint]                      # rule = true/false; unlisted rules keep their default
 UnnecessaryGString = true
@@ -113,6 +114,8 @@ UnusedImport = false
 ```
 
 Unknown keys and misspelled rule names are errors, so a typo can't silently do nothing. `--indent` overrides the file.
+
+Spock specs come in two styles. By default the statements of a `given:` / `when:` / `then:` block stay level with the label, as in Spock's documentation; `indent_after_labels = true` puts them one level deeper. In grails-core about half the specs use each style, so pick the one your project already uses before the first run.
 
 ## CI
 

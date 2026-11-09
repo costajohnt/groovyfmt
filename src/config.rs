@@ -2,32 +2,25 @@
 //!
 //! ```toml
 //! indent = 4                  # spaces per level, 1..=16
+//! indent_after_labels = false # indent Spock when:/then: blocks under their label
 //!
 //! [lint]                      # rule name = on/off; omitted rules use their default
 //! UnnecessaryGString = true
 //! UnusedImport = false
 //! ```
 
+use crate::format::Style;
 use crate::lint::RULES;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub const FILE_NAMES: [&str; 2] = [".groovyfmt.toml", "groovyfmt.toml"];
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Config {
-    pub indent: usize,
+    pub style: Style,
     /// Explicit rule settings from the file; rules not listed use `lint::RULES` defaults.
     pub rules: BTreeMap<String, bool>,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            indent: 4,
-            rules: BTreeMap::new(),
-        }
-    }
 }
 
 impl Config {
@@ -48,9 +41,15 @@ impl Config {
         for (key, value) in &table {
             match (key.as_str(), value) {
                 ("indent", toml::Value::Integer(n)) if (1..=16).contains(n) => {
-                    cfg.indent = *n as usize
+                    cfg.style.indent = *n as usize
                 }
                 ("indent", _) => return Err("`indent` must be an integer from 1 to 16".into()),
+                ("indent_after_labels", toml::Value::Boolean(b)) => {
+                    cfg.style.indent_after_labels = *b
+                }
+                ("indent_after_labels", _) => {
+                    return Err("`indent_after_labels` must be true or false".into());
+                }
                 ("lint", toml::Value::Table(rules)) => {
                     for (rule, on) in rules {
                         if !RULES.iter().any(|r| r.name == rule) {
@@ -69,7 +68,7 @@ impl Config {
                 ("lint", _) => return Err("`lint` must be a table of rule = true/false".into()),
                 (other, _) => {
                     return Err(format!(
-                        "unknown key `{other}` (expected `indent` or `[lint]`)"
+                        "unknown key `{other}` (expected `indent`, `indent_after_labels` or `[lint]`)"
                     ));
                 }
             }
@@ -100,7 +99,15 @@ mod tests {
         let c =
             Config::parse("indent = 2\n[lint]\nUnusedImport = false\nUnnecessaryGString = true\n")
                 .unwrap();
-        assert_eq!(c.indent, 2);
+        assert_eq!(c.style.indent, 2);
+        assert!(!c.style.indent_after_labels);
+        assert!(
+            Config::parse("indent_after_labels = true")
+                .unwrap()
+                .style
+                .indent_after_labels
+        );
+        assert!(Config::parse("indent_after_labels = 1").is_err());
         assert!(!c.rule_enabled("UnusedImport"));
         assert!(c.rule_enabled("UnnecessaryGString"));
         assert!(
