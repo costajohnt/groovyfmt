@@ -15,9 +15,12 @@ pub enum Outcome {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Style {
-    /// Spaces per level. The same step is used for blocks, brackets and continuation lines:
-    /// on a 23.8k-file corpus, separate continuation widths made no difference.
+    /// Spaces per level of block nesting (`{ … }`, braceless if/loop bodies, case bodies).
     pub indent: usize,
+    /// Spaces for continuation lines: arguments, list/map literals and continued expressions.
+    /// `None` means the same as `indent`. IntelliJ's default is 8; across the corpus the two
+    /// were equally common, but any one project is consistent.
+    pub continuation: Option<usize>,
     /// Indent the statements of a labelled block (Spock `when:` / `then:`) one level deeper
     /// than the label. grails-core uses this style in about half its specs; Spock's docs and
     /// most other code keep them level with the label.
@@ -28,6 +31,7 @@ impl Default for Style {
     fn default() -> Self {
         Style {
             indent: 4,
+            continuation: None,
             indent_after_labels: false,
         }
     }
@@ -253,7 +257,22 @@ fn indent_for(
     {
         return base + 2 * step;
     }
-    base + step
+    let block_like = a.child(0).is_some_and(|c| text(c, src) == "{")
+        || matches!(
+            a.kind(),
+            "if_statement"
+                | "for_statement"
+                | "for_in_statement"
+                | "while_statement"
+                | "do_while_statement"
+                | "switch_case"
+                | "switch_default"
+        );
+    base + if block_like {
+        step
+    } else {
+        style.continuation.unwrap_or(step)
+    }
 }
 
 /// Leaf tokens as (kind, text). Only comments are compared without trailing whitespace,
@@ -415,6 +434,21 @@ mod tests {
         let src =
             "def f() {\n    outer:\n    for (x in xs) {\n        g()\n    }\n    return 1\n}\n";
         assert_eq!(format(src, &style), Outcome::Unchanged);
+    }
+
+    #[test]
+    fn continuation_indent_option() {
+        let style = Style {
+            continuation: Some(8),
+            ..Style::default()
+        };
+        let src = "def f() {\nrender(view: 'x',\nmodel: [a: 1,\nb: 2])\ndef q = Options.builder()\n.x()\nif (a)\ng()\n}\n";
+        let want = "def f() {\n    render(view: 'x',\n            model: [a: 1,\n                    b: 2])\n    def q = Options.builder()\n            .x()\n    if (a)\n        g()\n}\n";
+        let Outcome::Formatted(out) = format(src, &style) else {
+            panic!("not formatted")
+        };
+        assert_eq!(out, want);
+        assert_eq!(format(want, &style), Outcome::Unchanged, "idempotent");
     }
 
     #[test]

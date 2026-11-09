@@ -12,6 +12,14 @@ From a full audit (`docs/audit-2026-11-09.md`). groovyfmt runs in CI on pull-req
 - FIFOs, device files and files over 10 MB are skipped.
 - In-place writes are atomic (temporary file plus rename, permissions kept), so a crash can't leave a truncated file, and a file swapped for a symlink mid-run is replaced rather than written through. Read-only files are left alone.
 
+### Added
+
+- `continuation_indent` config option: the indent for arguments, list and map literals, and continued lines, separate from block indentation. Set it to 8 for IntelliJ-formatted code.
+
+### Parsing
+
+- A `[` that starts a new line begins a list or map instead of subscripting the line above, so Grails controller actions ending in `[model: value]` parse. Also `final` method parameters, traits with `implements`, and subscripts as later arguments of parenthesis-free calls. Corpus coverage 85.6% to 88.1%; OpenBoxes (a Grails app outside the corpus) 88% to 95.6%.
+
 ### Fixed
 
 - `indent_after_labels` was cubic in block length (221 s for a 20,000-line block, now 0.24 s), and treated any label, not just Spock's, as opening a block.

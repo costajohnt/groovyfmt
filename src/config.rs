@@ -2,6 +2,7 @@
 //!
 //! ```toml
 //! indent = 4                  # spaces per level, 1..=16
+//! continuation_indent = 8     # arguments, literals, continued lines (default: indent)
 //! indent_after_labels = false # indent Spock when:/then: blocks under their label
 //!
 //! [lint]                      # rule name = on/off; omitted rules use their default
@@ -44,6 +45,12 @@ impl Config {
                     cfg.style.indent = *n as usize
                 }
                 ("indent", _) => return Err("`indent` must be an integer from 1 to 16".into()),
+                ("continuation_indent", toml::Value::Integer(n)) if (1..=16).contains(n) => {
+                    cfg.style.continuation = Some(*n as usize)
+                }
+                ("continuation_indent", _) => {
+                    return Err("`continuation_indent` must be an integer from 1 to 16".into());
+                }
                 ("indent_after_labels", toml::Value::Boolean(b)) => {
                     cfg.style.indent_after_labels = *b
                 }
@@ -68,7 +75,7 @@ impl Config {
                 ("lint", _) => return Err("`lint` must be a table of rule = true/false".into()),
                 (other, _) => {
                     return Err(format!(
-                        "unknown key `{other}` (expected `indent`, `indent_after_labels` or `[lint]`)"
+                        "unknown key `{other}` (expected `indent`, `continuation_indent`, `indent_after_labels` or `[lint]`)"
                     ));
                 }
             }
@@ -108,6 +115,14 @@ mod tests {
                 .indent_after_labels
         );
         assert!(Config::parse("indent_after_labels = 1").is_err());
+        assert_eq!(
+            Config::parse("continuation_indent = 8")
+                .unwrap()
+                .style
+                .continuation,
+            Some(8)
+        );
+        assert!(Config::parse("continuation_indent = 0").is_err());
         assert!(!c.rule_enabled("UnusedImport"));
         assert!(c.rule_enabled("UnnecessaryGString"));
         assert!(

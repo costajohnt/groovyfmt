@@ -105,7 +105,8 @@ A block holding only a comment doesn't count as empty.
 groovyfmt looks for `.groovyfmt.toml` or `groovyfmt.toml` in the current directory and its parents. Everything is optional:
 
 ```toml
-indent = 4                  # spaces per level, 1 to 16
+indent = 4                  # spaces per block level, 1 to 16
+continuation_indent = 8     # arguments, literals, continued lines (default: same as indent)
 indent_after_labels = false # true: indent Spock when:/then: blocks under their label
 
 [lint]                      # rule = true/false; unlisted rules keep their default
@@ -114,6 +115,8 @@ UnusedImport = false
 ```
 
 Unknown keys and misspelled rule names are errors, so a typo can't silently do nothing. `--indent` overrides the file.
+
+`continuation_indent = 8` matches IntelliJ's default and most Grails projects written in it. On OpenBoxes it cuts the first-run diff from 694 files to 426, and what remains is mostly trailing whitespace and runs of blank lines.
 
 Spock specs come in two styles. By default the statements of a `given:` / `when:` / `then:` block stay level with the label, as in Spock's documentation; `indent_after_labels = true` puts them one level deeper. In grails-core about half the specs use each style, so pick the one your project already uses before the first run.
 
@@ -182,7 +185,7 @@ All of these call `groovyfmt --stdin`, which prints nothing and exits 2 when it 
 
 ## Coverage
 
-groovyfmt only touches files it can parse. On a corpus of 23,766 files from grails-core, groovy, gradle, spock, CodeNarc, nextflow and Jenkins pipeline repositories, 85.6% parse cleanly.
+groovyfmt only touches files it can parse. On a corpus of 23,766 files from grails-core, groovy, gradle, spock, CodeNarc, nextflow and Jenkins pipeline repositories, 88.1% parse cleanly. On [OpenBoxes](https://github.com/openboxes/openboxes), a production Grails application that isn't in the corpus, 95.6% of its 1,327 files do.
 
 The grammar is [dekobon/tree-sitter-groovy](https://github.com/dekobon/tree-sitter-groovy), currently pinned to the fork branch [`costajohnt/tree-sitter-groovy@groovyfmt-base`](https://github.com/costajohnt/tree-sitter-groovy/tree/groovyfmt-base), which adds upstream PR #49 plus our fixes to the 0.3.0 release:
 
@@ -192,6 +195,7 @@ The grammar is [dekobon/tree-sitter-groovy](https://github.com/dekobon/tree-sitt
 | + PR #49 | 75.0% |
 | + #56 (`final` locals) and #57 (named-argument calls) | 80.9% |
 | + nested type declarations (`static class`, member `interface`, …) | 85.6% |
+| + a `[` starting a new line is a list or map, not a subscript (Grails controllers returning `[model: …]`); `final` parameters; traits with `implements` | 88.1% |
 
 ## Development
 
