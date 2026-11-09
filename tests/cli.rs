@@ -169,6 +169,157 @@ fn stdin_mode() {
 }
 
 #[test]
+fn stdin_filepath_finds_config_from_its_directory() {
+    let d = Dir::new("stdinpath");
+    d.write("proj/.groovyfmt.toml", "indent = 2\n");
+    let src = "a {\nb()\n}\n";
+    // cwd has no config: the default indent
+    assert_eq!(
+        stdout(&run(&d.0, &["--stdin"], Some(src))),
+        "a {\n    b()\n}\n"
+    );
+    // the file need not exist, nor its directory
+    for path in ["proj/src/deep/New.groovy", "proj/x/../Gone.groovy"] {
+        let o = run(&d.0, &["--stdin", "--stdin-filepath", path], Some(src));
+        assert_eq!(o.status.code(), Some(0), "{path}: {}", stderr(&o));
+        assert_eq!(stdout(&o), "a {\n  b()\n}\n", "{path}");
+    }
+    let abs = d.0.join("proj/A.groovy");
+    let o = run(
+        &d.0,
+        &["--stdin", &format!("--stdin-filepath={}", abs.display())],
+        Some(src),
+    );
+    assert_eq!(stdout(&o), "a {\n  b()\n}\n");
+
+    let alone = run(&d.0, &["--stdin-filepath", "proj/A.groovy"], None);
+    assert_eq!(alone.status.code(), Some(2));
+    assert!(stderr(&alone).contains("--stdin-filepath needs --stdin"));
+    let check = run(&d.0, &["--check", "--stdin-filepath", "A.groovy"], None);
+    assert_eq!(check.status.code(), Some(2));
+}
+
+#[test]
+fn stdin_filepath_excluded_echoes_input() {
+    let d = Dir::new("stdinexcl");
+    d.write(".groovyfmt.toml", "exclude = [\"gen/**\"]\n");
+    let o = run(
+        &d.0,
+        &["--stdin", "--stdin-filepath", "gen/A.groovy"],
+        Some(UGLY),
+    );
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(stdout(&o), UGLY);
+    // even input that couldn't be formatted
+    let broken = run(
+        &d.0,
+        &["--stdin", "--stdin-filepath", "gen/B.groovy"],
+        Some("def x = {\n"),
+    );
+    assert_eq!(broken.status.code(), Some(0));
+    assert_eq!(stdout(&broken), "def x = {\n");
+    let kept = run(
+        &d.0,
+        &["--stdin", "--stdin-filepath", "src/A.groovy"],
+        Some(UGLY),
+    );
+    assert_eq!(stdout(&kept), PRETTY);
+}
+
+#[test]
+fn stdin_filepath_names_the_file_in_errors() {
+    let d = Dir::new("stdinname");
+    let args = ["--stdin", "--stdin-filepath", "src/::x,y.groovy"];
+    let t = run(&d.0, &args, Some("def x = {\n"));
+    assert_eq!(t.status.code(), Some(2));
+    assert!(
+        stderr(&t).contains("src/::x,y.groovy: not formatted: "),
+        "{}",
+        stderr(&t)
+    );
+    let mut gh = args.to_vec();
+    gh.extend(["--output-format", "github"]);
+    let g = run(&d.0, &gh, Some("def x = {\n"));
+    assert_eq!(g.status.code(), Some(2));
+    assert_eq!(stdout(&g), "");
+    assert!(
+        stderr(&g).starts_with("::error file=src/%3A%3Ax%2Cy.groovy::Not formatted: "),
+        "{}",
+        stderr(&g)
+    );
+    let colon = run(
+        &d.0,
+        &[
+            "--stdin",
+            "--stdin-filepath",
+            "::warning::x.groovy",
+            "--output-format",
+            "github",
+        ],
+        Some("def x = {\n"),
+    );
+    assert!(
+        stderr(&colon).starts_with("::error file=./%3A%3Awarning%3A%3Ax.groovy::"),
+        "{}",
+        stderr(&colon)
+    );
+}
+
+#[test]
+fn exclude_prunes_walk_and_explicit_files() {
+    let d = Dir::new("exclude");
+    d.write(
+        "proj/.groovyfmt.toml",
+        "exclude = [\"gen\", \"**/*.gradle\", \"src/*/Skip.groovy\"]\n",
+    );
+    d.write("proj/gen/G.groovy", UGLY);
+    d.write("proj/a/b/build.gradle", UGLY);
+    d.write("proj/src/x/Skip.groovy", UGLY);
+    d.write("proj/src/x/y/Skip.groovy", UGLY);
+    d.write("proj/src/A.groovy", UGLY);
+    d.write("proj/other/gen/O.groovy", UGLY);
+    let proj = d.0.join("proj");
+    let c = run(&proj, &["--check"], None);
+    assert_eq!(
+        stdout(&c),
+        "other/gen/O.groovy\nsrc/A.groovy\nsrc/x/y/Skip.groovy\n",
+        "gen pruned at the config dir only; * stays in one segment; ** spans any depth"
+    );
+    // pre-commit passes files explicitly
+    let explicit = run(
+        &proj,
+        &[
+            "--check",
+            "gen/G.groovy",
+            "a/b/build.gradle",
+            "./src/x/Skip.groovy",
+            "src/A.groovy",
+        ],
+        None,
+    );
+    assert_eq!(stdout(&explicit), "src/A.groovy\n");
+    // patterns are relative to the config file, not the working directory
+    let from_sub = run(
+        &proj.join("src"),
+        &["--check", "../gen/G.groovy", "."],
+        None,
+    );
+    assert_eq!(stdout(&from_sub), "A.groovy\nx/y/Skip.groovy\n");
+    let named_dir = run(&proj, &["--check", "gen"], None);
+    assert_eq!(named_dir.status.code(), Some(0));
+    assert_eq!(stdout(&named_dir), "");
+
+    d.write("proj/.groovyfmt.toml", "exclude = \"gen\"\n");
+    let bad = run(&proj, &["--check"], None);
+    assert_eq!(bad.status.code(), Some(2));
+    assert!(
+        stderr(&bad).contains("`exclude` must be a list of glob strings"),
+        "{}",
+        stderr(&bad)
+    );
+}
+
+#[test]
 fn lint_text_github_and_config() {
     let d = Dir::new("lint");
     d.write("A.groovy", "import a.b.Unused\ndef s = \"plain\"\n");

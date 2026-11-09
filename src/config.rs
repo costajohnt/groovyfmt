@@ -1,9 +1,11 @@
-//! `.groovyfmt.toml` / `groovyfmt.toml`, found by walking up from the working directory.
+//! `.groovyfmt.toml` / `groovyfmt.toml`, found by walking up from the working directory
+//! (or from the directory of `--stdin-filepath`).
 //!
 //! ```toml
 //! indent = 4                  # spaces per level, 1..=16
 //! continuation_indent = 8     # arguments, literals, continued lines (default: indent)
 //! indent_after_labels = false # indent Spock when:/then: blocks under their label
+//! exclude = ["generated/**"]  # globs relative to this file's directory
 //!
 //! [lint]                      # rule name = on/off; omitted rules use their default
 //! UnnecessaryGString = true
@@ -22,6 +24,10 @@ pub struct Config {
     pub style: Style,
     /// Explicit rule settings from the file; rules not listed use `lint::RULES` defaults.
     pub rules: BTreeMap<String, bool>,
+    /// Glob patterns of files and directories to skip, relative to `root`.
+    pub exclude: Vec<String>,
+    /// The config file's directory, absolute; set by `load`.
+    pub root: PathBuf,
 }
 
 impl Config {
@@ -73,9 +79,18 @@ impl Config {
                     }
                 }
                 ("lint", _) => return Err("`lint` must be a table of rule = true/false".into()),
+                ("exclude", toml::Value::Array(pats)) if pats.iter().all(|p| p.is_str()) => {
+                    cfg.exclude = pats
+                        .iter()
+                        .filter_map(|p| p.as_str().map(String::from))
+                        .collect()
+                }
+                ("exclude", _) => {
+                    return Err("`exclude` must be a list of glob strings".into());
+                }
                 (other, _) => {
                     return Err(format!(
-                        "unknown key `{other}` (expected `indent`, `continuation_indent`, `indent_after_labels` or `[lint]`)"
+                        "unknown key `{other}` (expected `indent`, `continuation_indent`, `indent_after_labels`, `exclude` or `[lint]`)"
                     ));
                 }
             }
@@ -85,8 +100,86 @@ impl Config {
 
     pub fn load(path: &Path) -> Result<Config, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        Config::parse(&text).map_err(|e| format!("{}: {e}", path.display()))
+        let mut cfg = Config::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let abs = normalize(&std::env::current_dir().unwrap_or_default().join(path));
+        cfg.root = abs.parent().map(Path::to_path_buf).unwrap_or_default();
+        Ok(cfg)
     }
+
+    /// Whether `path` (relative to the working directory, or absolute), or any directory
+    /// between it and `root`, matches an `exclude` pattern. A path outside `root` never does.
+    pub fn excluded(&self, path: &Path) -> bool {
+        if self.exclude.is_empty() {
+            return false;
+        }
+        let abs = normalize(&std::env::current_dir().unwrap_or_default().join(path));
+        let Ok(rel) = abs.strip_prefix(&self.root) else {
+            return false;
+        };
+        let segs: Vec<String> = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        let segs: Vec<&str> = segs.iter().map(String::as_str).collect();
+        self.exclude.iter().any(|pat| {
+            let pat: Vec<&str> = pat
+                .split('/')
+                .filter(|s| !s.is_empty() && *s != ".")
+                .collect();
+            (1..=segs.len()).any(|n| glob(&pat, &segs[..n]))
+        })
+    }
+}
+
+/// `a/./b/../c` as `a/c`, without touching the file system (the path may not exist).
+pub fn normalize(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Path segments against pattern segments: `**` matches any number of segments (including
+/// none); within a segment `*` matches any run of characters and `?` one character.
+// ponytail: backtracks on each `**`, exponential only for patterns stacking many of them
+fn glob(pat: &[&str], path: &[&str]) -> bool {
+    match pat.split_first() {
+        None => path.is_empty(),
+        Some((&"**", rest)) => (0..=path.len()).any(|i| glob(rest, &path[i..])),
+        Some((p, rest)) => path
+            .split_first()
+            .is_some_and(|(s, tail)| segment(p, s) && glob(rest, tail)),
+    }
+}
+
+/// `*` and `?` within one path segment; linear, backtracking only to the last `*`.
+fn segment(pat: &str, s: &str) -> bool {
+    let (p, s): (Vec<char>, Vec<char>) = (pat.chars().collect(), s.chars().collect());
+    let (mut i, mut j, mut star, mut mark) = (0, 0, None, 0);
+    while j < s.len() {
+        if i < p.len() && (p[i] == '?' || p[i] == s[j]) {
+            i += 1;
+            j += 1;
+        } else if i < p.len() && p[i] == '*' {
+            star = Some(i);
+            mark = j;
+            i += 1;
+        } else if let Some(st) = star {
+            i = st + 1;
+            mark += 1;
+            j = mark;
+        } else {
+            return false;
+        }
+    }
+    p[i..].iter().all(|&c| c == '*')
 }
 
 /// Nearest config file in `start` or any parent directory.
@@ -151,6 +244,71 @@ mod tests {
         );
         assert!(Config::parse("[lint]\nUnusedImport = 1").is_err());
         assert!(Config::parse("indent = ").is_err(), "TOML syntax error");
+        for bad in [
+            "exclude = \"a\"",
+            "exclude = [1]",
+            "exclude = [\"a\", true]",
+        ] {
+            assert!(
+                Config::parse(bad)
+                    .unwrap_err()
+                    .contains("`exclude` must be a list of glob strings"),
+                "{bad}"
+            );
+        }
+        assert!(Config::parse("exclude = []").unwrap().exclude.is_empty());
+    }
+
+    #[test]
+    fn glob_segments() {
+        let m = |pat: &str, path: &str| {
+            let pat: Vec<&str> = pat.split('/').collect();
+            let path: Vec<&str> = path.split('/').collect();
+            glob(&pat, &path)
+        };
+        assert!(m("*.groovy", "A.groovy"));
+        assert!(!m("*.groovy", "src/A.groovy"), "* stays in one segment");
+        assert!(m("src/*.groovy", "src/A.groovy"));
+        assert!(m("?.groovy", "A.groovy") && !m("?.groovy", "AB.groovy"));
+        assert!(m("**/*.groovy", "A.groovy"), "** matches zero segments");
+        assert!(m("**/*.groovy", "a/b/c/A.groovy"));
+        assert!(m("a/**/z", "a/z") && m("a/**/z", "a/b/c/z") && !m("a/**/z", "a/b/c"));
+        assert!(m("**/gen", "x/y/gen") && !m("**/gen", "x/gen/y"));
+        assert!(m("a*b*c", "abc") && m("a*b*c", "aXbYbZc") && !m("a*b*c", "acb"));
+        assert!(m("*", "é") && m("?", "é"), "characters, not bytes");
+        assert!(
+            !m("vendor", "src/vendor"),
+            "anchored at the config directory"
+        );
+    }
+
+    #[test]
+    fn excluded_relative_to_root() {
+        let cfg = Config {
+            exclude: vec![
+                "gen/**".into(),
+                "**/*.gradle".into(),
+                "./one/A.groovy".into(),
+            ],
+            root: PathBuf::from("/p"),
+            ..Config::default()
+        };
+        assert!(cfg.excluded(Path::new("/p/gen")));
+        assert!(cfg.excluded(Path::new("/p/gen/x/A.groovy")));
+        assert!(
+            cfg.excluded(Path::new("/p/sub/../gen/A.groovy")),
+            "normalized"
+        );
+        assert!(cfg.excluded(Path::new("/p/a/b/build.gradle")));
+        assert!(cfg.excluded(Path::new("/p/one/A.groovy")));
+        assert!(!cfg.excluded(Path::new("/p/src/gen/A.groovy")));
+        assert!(!cfg.excluded(Path::new("/p")), "the root itself");
+        assert!(!cfg.excluded(Path::new("/q/gen/A.groovy")), "outside root");
+        let none = Config {
+            root: PathBuf::from("/p"),
+            ..Config::default()
+        };
+        assert!(!none.excluded(Path::new("/p/gen")));
     }
 
     #[test]

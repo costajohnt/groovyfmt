@@ -53,7 +53,7 @@ cargo install --locked --git https://github.com/costajohnt/groovyfmt
 groovyfmt [OPTIONS] [PATH]...
 ```
 
-With no paths it works on the current directory. Directories are searched for `*.groovy`, `*.gradle`, `*.gvy`, `*.gy`, `*.gsh` and `Jenkinsfile`, skipping hidden directories and `build`, `out`, `target` and `node_modules`. Symlinks inside those directories are not followed. A file named on the command line is always processed. Files that aren't valid UTF-8, aren't regular files, are larger than 10 MB, or would need more than 200 columns of indentation (50 levels at the default indent) are skipped and listed under `-v`.
+With no paths it works on the current directory. Directories are searched for `*.groovy`, `*.gradle`, `*.gvy`, `*.gy`, `*.gsh` and `Jenkinsfile`, skipping hidden directories, `build`, `out`, `target`, `node_modules` and anything matching the config's [`exclude`](#configuration) patterns. Symlinks inside those directories are not followed. A file named on the command line is processed even inside a skipped directory, unless it matches `exclude`. Files that aren't valid UTF-8, aren't regular files, are larger than 10 MB, or would need more than 200 columns of indentation (50 levels at the default indent) are skipped and listed under `-v`.
 
 | Command | Does |
 |---|---|
@@ -63,7 +63,7 @@ With no paths it works on the current directory. Directories are searched for `*
 | `groovyfmt --stdin` | format stdin to stdout, for editors |
 | `groovyfmt --rules` | list lint rules and whether each is on |
 
-Options: `--config <file>`, `--indent <n>`, `--output-format text|github`, `-v` (also list skipped files and timing). Exit status is 0 when clean, 1 when files need formatting or lint found something, and 2 on errors (bad arguments, bad config, unreadable files, or `--stdin` input that can't be formatted).
+Options: `--config <file>`, `--indent <n>`, `--stdin-filepath <path>` (see [Editors](#editors)), `--output-format text|github`, `-v` (also list skipped files and timing). Exit status is 0 when clean, 1 when files need formatting or lint found something, and 2 on errors (bad arguments, bad config, unreadable files, or `--stdin` input that can't be formatted).
 
 ### What formatting changes
 
@@ -102,17 +102,20 @@ A block holding only a comment doesn't count as empty.
 
 ## Configuration
 
-groovyfmt looks for `.groovyfmt.toml` or `groovyfmt.toml` in the current directory and its parents. Everything is optional:
+groovyfmt looks for `.groovyfmt.toml` or `groovyfmt.toml` in the current directory and its parents (with `--stdin-filepath`, that file's directory and its parents). Everything is optional:
 
 ```toml
 indent = 4                  # spaces per block level, 1 to 16
 continuation_indent = 8     # arguments, literals, continued lines (default: same as indent)
 indent_after_labels = false # true: indent Spock when:/then: blocks under their label
+exclude = ["generated/**", "**/*.gsh"] # skip these files and directories
 
 [lint]                      # rule = true/false; unlisted rules keep their default
 UnnecessaryGString = true
 UnusedImport = false
 ```
+
+`exclude` patterns are relative to the directory holding the config file, whatever directory groovyfmt runs from. They match whole paths: `*` and `?` stay within one path segment, `**` spans any number of segments, and a matching directory is skipped with everything under it. So `vendor` skips only the top-level `vendor`, `**/vendor` skips one at any depth, and `src/*.groovy` doesn't reach into `src/main/`. Excludes also apply to files named on the command line (pre-commit passes them that way) and to `--stdin-filepath`.
 
 Unknown keys and misspelled rule names are errors, so a typo can't silently do nothing. `--indent` overrides the file.
 
@@ -164,14 +167,20 @@ repos:
         files: (\.(groovy|gradle|gvy|gy|gsh)|Jenkinsfile)$
 ```
 
+pre-commit passes the staged files by name, and `exclude` in `.groovyfmt.toml` still applies to them, so generated code stays untouched without repeating the patterns in the hook.
+
 ## Editors
 
 All of these call `groovyfmt --stdin`, which prints nothing and exits 2 when it can't format the buffer, so a parse error never replaces your code.
 
+Add `--stdin-filepath <path>` (it requires `--stdin`) to tell groovyfmt which file the buffer belongs to. The config is then found by walking up from that file's directory instead of the working directory, the path names the buffer in error messages, and if the path matches `exclude` the buffer comes back unchanged with exit 0. The file doesn't have to exist yet.
+
 - **Neovim** ([conform.nvim](https://github.com/stevearc/conform.nvim)):
   ```lua
   require("conform").setup({
-    formatters = { groovyfmt = { command = "groovyfmt", args = { "--stdin" } } },
+    formatters = {
+      groovyfmt = { command = "groovyfmt", args = { "--stdin", "--stdin-filepath", "$FILENAME" } },
+    },
     formatters_by_ft = { groovy = { "groovyfmt" } },
   })
   ```
@@ -181,7 +190,7 @@ All of these call `groovyfmt --stdin`, which prints nothing and exits 2 when it 
     { "command": "groovyfmt --stdin", "languages": ["groovy"] }
   ]
   ```
-- **IntelliJ IDEA**: Settings, Tools, File Watchers, add a watcher for Groovy files with program `groovyfmt` and arguments `$FilePath$`.
+- **IntelliJ IDEA**: Settings, Tools, File Watchers, add a watcher for Groovy files with program `groovyfmt` and arguments `$FilePath$`. To format on demand instead, add an External Tool (Settings, Tools, External Tools) with program `groovyfmt`, arguments `$FilePath$` and working directory `$ProjectFileDir$`, then bind it to a key. Either way the file is named explicitly, so `exclude` patterns are honored.
 
 ## Coverage
 
