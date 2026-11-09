@@ -20,7 +20,17 @@ test/groovy/BaseTest.groovy:4:1: UnusedImport: The [org.junit.Before] import is 
 7 violations in 27 files (UnusedImport 7), 6 skipped (can't parse; -v lists them)
 ```
 
-<!-- BENCHMARK -->
+## Speed
+
+Against [npm-groovy-lint](https://github.com/nvuillam/npm-groovy-lint) 19.0.1 (CodeNarc 3.7.0) on the [spock](https://github.com/spockframework/spock) repository, 635 files, 4-core Linux box:
+
+| task | npm-groovy-lint | groovyfmt |
+|---|---|---|
+| lint, the same four rules | 19.5 s | 0.14 s |
+| lint, npm-groovy-lint's default rule set | 30.3 s | |
+| format | did not finish in 15 min (two attempts) | 0.2 s |
+
+The comparison flatters groovyfmt somewhat. It skips the 213 spock files it can't parse, which npm-groovy-lint still processes, and CodeNarc's default rule set is far larger.
 
 ## Install
 
