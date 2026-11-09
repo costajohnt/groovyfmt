@@ -10,6 +10,7 @@ From a full audit (`docs/audit-2026-11-09.md`). groovyfmt runs in CI on pull-req
 - A file name starting with `::` can no longer inject a GitHub Actions workflow command into the log.
 - Deeply nested input no longer crashes `--lint` with a stack overflow, and no longer makes the formatter's output grow quadratically.
 - FIFOs, device files and files over 10 MB are skipped.
+- In-place writes are atomic (temporary file plus rename, permissions kept), so a crash can't leave a truncated file, and a file swapped for a symlink mid-run is replaced rather than written through. Read-only files are left alone.
 
 ### Fixed
 

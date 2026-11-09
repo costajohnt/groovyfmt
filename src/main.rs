@@ -252,20 +252,60 @@ fn par_map<T: Send>(
 const NOT_UTF8: &str = "not valid UTF-8";
 
 /// File contents, or `Ok(Err(reason))` for a file that is skipped rather than failing the
-/// run: not UTF-8, not a regular file, or larger than `MAX_FILE_BYTES`.
+/// run: not UTF-8, not a regular file, or larger than `MAX_FILE_BYTES`. The checks run on
+/// the opened handle, so a file swapped for something else after the walk is still caught.
 fn read(path: &Path) -> Result<Result<String, &'static str>, String> {
-    let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", shown(path)))?;
+    let err = |e: std::io::Error| format!("{}: {e}", shown(path));
+    let f = std::fs::File::open(path).map_err(err)?;
+    let meta = f.metadata().map_err(err)?;
     if !meta.is_file() {
         return Ok(Err("not a regular file"));
     }
     if meta.len() > MAX_FILE_BYTES {
         return Ok(Err("larger than 10 MB"));
     }
-    match std::fs::read_to_string(path) {
-        Ok(s) => Ok(Ok(s)),
-        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => Ok(Err(NOT_UTF8)),
-        Err(e) => Err(format!("{}: {e}", shown(path))),
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    f.take(MAX_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(err)?;
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return Ok(Err("larger than 10 MB"));
     }
+    Ok(String::from_utf8(bytes).map_err(|_| NOT_UTF8))
+}
+
+/// Replace a file's contents atomically: write a temporary file beside it with the same
+/// permissions, then rename it over the path. A crash can't leave a truncated file, and if
+/// the path was swapped for a symlink after the walk, the link is replaced rather than
+/// written through.
+fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+    let perms = std::fs::metadata(path)?.permissions();
+    // a rename would replace a read-only file too; read-only means hands off
+    if perms.readonly() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "file is read-only",
+        ));
+    }
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy())
+        .unwrap_or_default();
+    let tmp = path.with_file_name(format!(".{name}.groovyfmt-{}", std::process::id()));
+    let result = (|| {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        f.write_all(contents.as_bytes())?;
+        f.set_permissions(perms)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 /// Control characters escaped, so a crafted file name or file content (lint messages quote
@@ -286,7 +326,8 @@ fn printable(s: &str) -> String {
 /// with `::` and be taken as a GitHub Actions workflow command.
 fn shown(p: &Path) -> String {
     let s = printable(&p.display().to_string());
-    if s.starts_with(':') {
+    // after any leading whitespace too, in case the log reader trims it
+    if s.trim_start().starts_with(':') {
         format!("./{s}")
     } else {
         s
@@ -373,7 +414,7 @@ fn fmt(files: &[PathBuf], cfg: &Config, a: &Args) -> i32 {
             Ok(Outcome::Formatted(out)) => {
                 changed += 1;
                 if !check {
-                    if let Err(e) = std::fs::write(path, out) {
+                    if let Err(e) = write_atomic(path, &out) {
                         eprintln!("groovyfmt: {}: {e}", shown(path));
                         failed = true;
                     }
@@ -580,6 +621,7 @@ mod tests {
             "./::warning title=x::y.groovy"
         );
         assert_eq!(shown(Path::new("src/A.groovy")), "src/A.groovy");
+        assert_eq!(shown(Path::new(" \u{a0}::x.groovy")), "./ \u{a0}::x.groovy");
     }
 
     #[test]

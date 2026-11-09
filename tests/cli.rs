@@ -85,9 +85,34 @@ fn check_then_write_then_check() {
     );
     assert_eq!(d.read("src/A.groovy"), UGLY, "--check must not write");
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let p = d.0.join("src/A.groovy");
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o640)).unwrap();
+    }
     let w = run(&d.0, &[], None);
     assert_eq!(w.status.code(), Some(0), "{}", stderr(&w));
     assert_eq!(d.read("src/A.groovy"), PRETTY);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(d.0.join("src/A.groovy"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o640,
+            "permissions kept across the atomic rewrite"
+        );
+    }
+    let leftovers: Vec<_> = std::fs::read_dir(d.0.join("src"))
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().contains(".groovyfmt-"))
+        .collect();
+    assert!(leftovers.is_empty(), "no temp files left behind");
     assert_eq!(d.read("build.gradle"), "plugins {\n    id 'java'\n}\n");
     assert_eq!(run(&d.0, &["--check"], None).status.code(), Some(0));
 }
