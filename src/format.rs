@@ -82,7 +82,13 @@ fn reindent(src: &str, tree: &Tree, style: &Style) -> String {
         } else {
             let keep_trailing = line_end < src.len() && inside_token(root, line_end, src);
             let text = if keep_trailing { body } else { body.trim_end() };
-            let indent = indent_for(root, src, pos, &row_indent, style);
+            // `//` at column 0 is commented-out code or a doc-snippet marker; IntelliJ leaves
+            // these in place ("comment at first column"), and so do we.
+            let indent = if lead == 0 && body.starts_with("//") {
+                0
+            } else {
+                indent_for(root, src, pos, &row_indent, style)
+            };
             row_indent.push(indent);
             out.push(format!("{}{}", " ".repeat(indent), text));
         }
@@ -143,8 +149,9 @@ fn indent_for(root: Node, src: &str, pos: usize, row_indent: &[usize], style: &S
     let mut anchor = leaf.parent();
     let mut after_annotation = false;
     while let Some(a) = anchor {
-        after_annotation |= child
-            .prev_sibling()
+        // a trailing comment after the annotation (`@Requires(x) // why`) is a sibling node too
+        after_annotation |= std::iter::successors(child.prev_sibling(), |s| s.prev_sibling())
+            .find(|s| !s.kind().contains("comment"))
             .is_some_and(|s| s.kind().contains("annotation") || s.kind().contains("modifier"));
         if a.start_position().row < row {
             break;
@@ -155,7 +162,21 @@ fn indent_for(root: Node, src: &str, pos: usize, row_indent: &[usize], style: &S
     let Some(a) = anchor.filter(|a| a.parent().is_some()) else {
         return 0;
     }; // top level
-    let base = row_indent.get(a.start_position().row).copied().unwrap_or(0);
+    // A `{` body belongs to its declaration or statement, which may have wrapped onto
+    // continuation lines before the brace (`void f(String a,\n        String b) {`): indent the
+    // body from the line the declaration starts on. Closures keep their own line, since they
+    // hang off chained calls.
+    let anchor_row = match a.kind() {
+        "block" | "class_body" | "enum_body" | "switch_block" => {
+            a.parent()
+                .filter(|p| !matches!(p.kind(), "block" | "closure" | "source_file"))
+                .unwrap_or(a)
+                .start_position()
+                .row
+        }
+        _ => a.start_position().row,
+    };
+    let base = row_indent.get(anchor_row).copied().unwrap_or(0);
 
     let first = text(leaf, src);
     let closes_anchor = matches!(first, "}" | ")" | "]") && leaf.parent() == Some(a);
@@ -258,6 +279,26 @@ mod tests {
         let src = "def b = Options.builder()\n.standalone(false)\nclass A {\n@Override\nString toString() {\nif (x)\nreturn 'a'\nelse\nreturn 'b'\n}\n}\n";
         let want = "def b = Options.builder()\n    .standalone(false)\nclass A {\n    @Override\n    String toString() {\n        if (x)\n            return 'a'\n        else\n            return 'b'\n    }\n}\n";
         assert_eq!(fmt(src), want);
+    }
+
+    #[test]
+    fn body_indents_from_declaration_not_wrapped_line() {
+        let src = "class T {\n    void f(String a,\n            String b) {\n        a()\n    }\n    def g() {\n        if (a &&\n                b) {\n            c()\n        } else if (d) {\n            e()\n        }\n        try {\n            f()\n        } catch (IOException |\n                RuntimeException x) {\n            g()\n        }\n    }\n}\n";
+        let want = "class T {\n    void f(String a,\n        String b) {\n        a()\n    }\n    def g() {\n        if (a &&\n            b) {\n            c()\n        } else if (d) {\n            e()\n        }\n        try {\n            f()\n        } catch (IOException |\n            RuntimeException x) {\n            g()\n        }\n    }\n}\n";
+        assert_eq!(fmt(src), want);
+        assert_eq!(fmt(want), want, "idempotent");
+    }
+
+    #[test]
+    fn first_column_line_comments_stay_put() {
+        let src = "def f() {\n// old()\n  // note\n    a()\n}\n";
+        assert_eq!(fmt(src), "def f() {\n// old()\n    // note\n    a()\n}\n");
+    }
+
+    #[test]
+    fn annotation_with_trailing_comment() {
+        let src = "class T {\n    @Requires(X) // why\n    def f() {\n        a()\n    }\n}\n";
+        assert_eq!(fmt(src), src);
     }
 
     #[test]
