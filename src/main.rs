@@ -424,8 +424,9 @@ fn stdin(cfg: &Config, a: &Args) -> i32 {
             let name = path.map_or_else(|| "<stdin>".to_string(), shown);
             if a.github {
                 eprintln!(
-                    "::error file={}::Not formatted: {why}",
-                    gh_escape(&name, true)
+                    "::error file={}::Not formatted: {}",
+                    gh_escape(&name, true),
+                    gh_escape(why, false)
                 );
                 std::process::exit(2);
             }

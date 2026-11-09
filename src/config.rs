@@ -148,38 +148,45 @@ pub fn normalize(p: &Path) -> PathBuf {
 
 /// Path segments against pattern segments: `**` matches any number of segments (including
 /// none); within a segment `*` matches any run of characters and `?` one character.
-// ponytail: backtracks on each `**`, exponential only for patterns stacking many of them
+/// The config can come from an untrusted pull request, so this must stay polynomial:
+/// O(pattern × path) segment comparisons, however many `**` the pattern stacks.
 fn glob(pat: &[&str], path: &[&str]) -> bool {
-    match pat.split_first() {
-        None => path.is_empty(),
-        Some((&"**", rest)) => (0..=path.len()).any(|i| glob(rest, &path[i..])),
-        Some((p, rest)) => path
-            .split_first()
-            .is_some_and(|(s, tail)| segment(p, s) && glob(rest, tail)),
-    }
+    wildcard(pat, path, |p| *p == "**", |p, s| segment(p, s))
 }
 
-/// `*` and `?` within one path segment; linear, backtracking only to the last `*`.
+/// `*` and `?` within one path segment.
 fn segment(pat: &str, s: &str) -> bool {
     let (p, s): (Vec<char>, Vec<char>) = (pat.chars().collect(), s.chars().collect());
-    let (mut i, mut j, mut star, mut mark) = (0, 0, None, 0);
+    wildcard(&p, &s, |c| *c == '*', |c, x| *c == '?' || c == x)
+}
+
+/// Wildcard match where `star` elements match any run of items and every other element
+/// matches exactly one item (`one`). Greedy, backtracking only to the most recent star,
+/// which is enough because a later star can absorb anything an earlier one could.
+fn wildcard<P, S>(
+    p: &[P],
+    s: &[S],
+    star: impl Fn(&P) -> bool,
+    one: impl Fn(&P, &S) -> bool,
+) -> bool {
+    let (mut i, mut j, mut back, mut mark) = (0, 0, None, 0);
     while j < s.len() {
-        if i < p.len() && (p[i] == '?' || p[i] == s[j]) {
-            i += 1;
-            j += 1;
-        } else if i < p.len() && p[i] == '*' {
-            star = Some(i);
+        if i < p.len() && star(&p[i]) {
+            back = Some(i);
             mark = j;
             i += 1;
-        } else if let Some(st) = star {
-            i = st + 1;
+        } else if i < p.len() && one(&p[i], &s[j]) {
+            i += 1;
+            j += 1;
+        } else if let Some(b) = back {
+            i = b + 1;
             mark += 1;
             j = mark;
         } else {
             return false;
         }
     }
-    p[i..].iter().all(|&c| c == '*')
+    p[i..].iter().all(star)
 }
 
 /// Nearest config file in `start` or any parent directory.
@@ -279,6 +286,29 @@ mod tests {
         assert!(
             !m("vendor", "src/vendor"),
             "anchored at the config directory"
+        );
+    }
+
+    #[test]
+    fn stacked_double_stars_stay_polynomial() {
+        // exponential backtracking took minutes on this; a config from a fork PR could hang CI
+        let pat: Vec<&str> = std::iter::repeat_n(["**", "a"], 22)
+            .flatten()
+            .chain(["zz"])
+            .collect();
+        let path = vec!["a"; 44];
+        let t = std::time::Instant::now();
+        assert!(!glob(&pat, &path));
+        let cfg = Config {
+            exclude: vec![pat.join("/")],
+            root: PathBuf::from("/p"),
+            ..Config::default()
+        };
+        assert!(!cfg.excluded(&Path::new("/p").join(path.join("/"))));
+        assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
+        assert!(
+            segment("*b", "*xb"),
+            "a literal * in a name doesn't stop a star"
         );
     }
 
