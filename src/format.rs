@@ -15,6 +15,14 @@ pub enum Outcome {
 /// Format `src` with `indent` spaces per level. The same step is used for blocks, brackets and
 /// continuation lines: on a 23.8k-file corpus, separate continuation widths made no difference.
 pub fn format(src: &str, indent: usize) -> Outcome {
+    // nothing but whitespace: the file becomes empty, as with rustfmt and prettier
+    if src.trim().is_empty() {
+        return if src.is_empty() {
+            Outcome::Unchanged
+        } else {
+            Outcome::Formatted(String::new())
+        };
+    }
     let tree = crate::parse(src);
     if tree.root_node().has_error() {
         return Outcome::Skipped("parse error");
@@ -237,6 +245,13 @@ mod tests {
     #[test]
     fn skips_unparseable() {
         assert_eq!(format("def x = {\n", 4), Outcome::Skipped("parse error"));
+    }
+
+    #[test]
+    fn blank_files_become_empty() {
+        assert_eq!(format("", 4), Outcome::Unchanged);
+        assert_eq!(format("  \n\n\t\n", 4), Outcome::Formatted(String::new()));
+        assert_eq!(format("\n", 4), Outcome::Formatted(String::new()));
     }
 
     #[test]

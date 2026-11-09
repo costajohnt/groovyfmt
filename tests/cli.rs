@@ -115,6 +115,22 @@ fn unparseable_files_are_left_alone() {
 }
 
 #[test]
+fn non_utf8_file_is_skipped_not_fatal() {
+    let d = Dir::new("latin1");
+    std::fs::write(d.0.join("Latin.groovy"), b"def s = 'caf\xe9'\n").unwrap();
+    d.write("Ok.groovy", UGLY);
+    let w = run(&d.0, &["-v"], None);
+    assert_eq!(w.status.code(), Some(0), "{}", stderr(&w));
+    assert!(
+        stderr(&w).contains("Latin.groovy: not valid UTF-8"),
+        "{}",
+        stderr(&w)
+    );
+    assert_eq!(d.read("Ok.groovy"), PRETTY, "other files still formatted");
+    assert_eq!(run(&d.0, &["--lint"], None).status.code(), Some(0));
+}
+
+#[test]
 fn stdin_mode() {
     let d = Dir::new("stdin");
     let o = run(&d.0, &["--stdin"], Some(UGLY));

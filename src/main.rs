@@ -212,8 +212,16 @@ fn par_map<R: Send>(files: &[PathBuf], f: impl Fn(&Path) -> R + Sync) -> Vec<R> 
     out.into_iter().map(|(_, r)| r).collect()
 }
 
-fn read(path: &Path) -> Result<String, String> {
-    std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", shown(path)))
+const NOT_UTF8: &str = "not valid UTF-8";
+
+/// File contents; `Ok(None)` for a file that isn't UTF-8, which is skipped like an
+/// unparseable one rather than failing the whole run.
+fn read(path: &Path) -> Result<Option<String>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(s) => Ok(Some(s)),
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => Ok(None),
+        Err(e) => Err(format!("{}: {e}", shown(path))),
+    }
 }
 
 /// Control characters escaped, so a crafted file name or file content (lint messages quote
@@ -290,7 +298,9 @@ fn stdin(cfg: &Config) -> i32 {
 fn fmt(files: &[PathBuf], cfg: &Config, a: &Args) -> i32 {
     let t = Instant::now();
     let check = a.mode == Mode::Check;
-    let results = par_map(files, |p| read(p).map(|src| format(&src, cfg.indent)));
+    let results = par_map(files, |p| {
+        read(p).map(|src| src.map_or(Outcome::Skipped(NOT_UTF8), |s| format(&s, cfg.indent)))
+    });
     let (mut changed, mut skipped, mut failed) = (0usize, 0usize, false);
     for (path, r) in files.iter().zip(results) {
         match r {
@@ -345,7 +355,9 @@ fn fmt(files: &[PathBuf], cfg: &Config, a: &Args) -> i32 {
 
 fn lint_files(files: &[PathBuf], cfg: &Config, a: &Args, stats_only: bool) -> i32 {
     let t = Instant::now();
-    let results = par_map(files, |p| read(p).map(|src| lint::lint(&src)));
+    let results = par_map(files, |p| {
+        read(p).map(|src| src.map_or(Err(NOT_UTF8), |s| lint::lint(&s)))
+    });
     let (mut skipped, mut total, mut failed) = (0usize, 0usize, false);
     let mut by_rule: BTreeMap<&str, usize> = BTreeMap::new();
     let mut out = std::io::stdout().lock();
@@ -412,7 +424,7 @@ fn lint_files(files: &[PathBuf], cfg: &Config, a: &Args, stats_only: bool) -> i3
 fn stats(files: &[PathBuf], cfg: &Config) -> i32 {
     let t = Instant::now();
     let results = par_map(files, |p| {
-        let src = read(p).ok()?;
+        let src = read(p).ok()??;
         let out = format(&src, cfg.indent);
         let nonidem =
             matches!(&out, Outcome::Formatted(o) if format(o, cfg.indent) != Outcome::Unchanged);
@@ -452,7 +464,7 @@ fn stats(files: &[PathBuf], cfg: &Config) -> i32 {
 /// Development: "<parent kind>\t<ERROR|MISSING x>\t<line>\t<path:line>" per file that fails to parse.
 fn errors(files: &[PathBuf]) -> i32 {
     let rows = par_map(files, |p| {
-        let src = read(p).ok()?;
+        let src = read(p).ok()??;
         let tree = groovyfmt::parse(&src);
         let e = groovyfmt::first_error(&tree)?;
         let line = src.lines().nth(e.start_position().row).unwrap_or("").trim();
@@ -479,7 +491,8 @@ fn errors(files: &[PathBuf]) -> i32 {
 fn tree(files: &[PathBuf]) -> i32 {
     for f in files {
         match read(f) {
-            Ok(src) => println!("{}", groovyfmt::parse(&src).root_node().to_sexp()),
+            Ok(Some(src)) => println!("{}", groovyfmt::parse(&src).root_node().to_sexp()),
+            Ok(None) => eprintln!("groovyfmt: {}: {NOT_UTF8}", shown(f)),
             Err(e) => eprintln!("groovyfmt: {e}"),
         }
     }
