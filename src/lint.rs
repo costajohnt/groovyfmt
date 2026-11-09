@@ -33,6 +33,61 @@ pub const RULES: &[Rule] = &[
         description: "empty catch, unless the parameter is named ignore / ignored",
     },
     Rule {
+        name: "EmptyIfStatement",
+        default: true,
+        description: "if statement with an empty block",
+    },
+    Rule {
+        name: "EmptyElseBlock",
+        default: true,
+        description: "else with an empty block",
+    },
+    Rule {
+        name: "EmptyTryBlock",
+        default: true,
+        description: "try with an empty block",
+    },
+    Rule {
+        name: "EmptyFinallyBlock",
+        default: true,
+        description: "finally with an empty block",
+    },
+    Rule {
+        name: "EmptyWhileStatement",
+        default: true,
+        description: "while loop with an empty block",
+    },
+    Rule {
+        name: "EmptyForStatement",
+        default: true,
+        description: "for loop with an empty block",
+    },
+    Rule {
+        name: "DuplicateMapKey",
+        default: true,
+        description: "a map literal with the same constant key twice; the later entry wins",
+    },
+    Rule {
+        name: "DuplicateCaseStatement",
+        default: true,
+        description: "a switch with two case labels for the same constant",
+    },
+    Rule {
+        name: "AssignmentInConditional",
+        default: true,
+        description: "`=` where `==` was probably meant, in an if condition (`while (x = next())` is a common idiom, so loops are exempt)",
+    },
+    Rule {
+        name: "ComparisonWithSelf",
+        default: false,
+        description: "a variable compared with itself (off by default: GORM `where { title == title }` and Spock equality checks do this on purpose)",
+    },
+    Rule {
+        name: "ConstantIfExpression",
+        default: true,
+        description: "an if condition that is a literal, so one branch never runs",
+    },
+    Rule {
         name: "UnnecessaryGString",
         default: false,
         description: "double-quoted string with nothing to interpolate (off by default: noisy where double quotes are the house style)",
@@ -61,6 +116,36 @@ pub fn lint(src: &str) -> Result<Vec<Violation>, &'static str> {
             "string_literal" => unnecessary_gstring(src, n, &mut v),
             ";" => unnecessary_semicolon(n, nodes.get(i + 1..).unwrap_or(&[]), &mut v),
             "catch_clause" => empty_catch(src, n, &mut v),
+            "if_statement" => if_statement(n, &mut v),
+            "while_statement" => {
+                empty_body(
+                    n,
+                    "body",
+                    "EmptyWhileStatement",
+                    "The while statement is empty",
+                    &mut v,
+                );
+            }
+            "for_statement" | "for_in_statement" => empty_body(
+                n,
+                "body",
+                "EmptyForStatement",
+                "The for statement is empty",
+                &mut v,
+            ),
+            "try_statement" => {
+                empty_body(n, "body", "EmptyTryBlock", "The try block is empty", &mut v)
+            }
+            "finally_clause" => empty_body(
+                n,
+                "body",
+                "EmptyFinallyBlock",
+                "The finally block is empty",
+                &mut v,
+            ),
+            "map_literal" => duplicate_map_key(src, n, &mut v),
+            "switch_block" => duplicate_case(src, n, &mut v),
+            "binary_expression" => comparison_with_self(src, n, &mut v),
             _ => {}
         }
     }
@@ -205,6 +290,166 @@ fn empty_catch(src: &str, n: Node, v: &mut Vec<Violation>) {
     }
 }
 
+fn is_empty_block(n: Option<Node>) -> bool {
+    // a comment inside counts as content, as an explanation of the emptiness
+    n.is_some_and(|b| b.kind() == "block" && b.named_child_count() == 0)
+}
+
+fn empty_body(n: Node, field: &str, rule: &'static str, msg: &str, v: &mut Vec<Violation>) {
+    if is_empty_block(n.child_by_field_name(field)) {
+        v.push(at(n, rule, msg.into()));
+    }
+}
+
+/// Condition with any wrapping parentheses removed.
+fn condition(n: Node) -> Option<Node> {
+    let mut c = n.child_by_field_name("condition")?;
+    while c.kind() == "parenthesized_expression" {
+        c = c.named_child(0)?;
+    }
+    Some(c)
+}
+
+fn is_literal(n: Node) -> bool {
+    matches!(
+        n.kind(),
+        "boolean_literal" | "null_literal" | "number_literal" | "string_literal"
+    ) && !has_interpolation(n)
+}
+
+fn has_interpolation(n: Node) -> bool {
+    let mut c = n.walk();
+    n.named_children(&mut c)
+        .any(|k| k.kind().starts_with("gstring_"))
+}
+
+fn assignment_in_condition(n: Node, v: &mut Vec<Violation>) {
+    if let Some(c) = condition(n)
+        && c.kind() == "assignment_expression"
+        && c.child_by_field_name("operator")
+            .is_some_and(|o| o.kind() == "=")
+    {
+        v.push(at(
+            c,
+            "AssignmentInConditional",
+            "Assignment used as the if condition; did you mean ==?".into(),
+        ));
+    }
+}
+
+/// EmptyIfStatement, EmptyElseBlock, ConstantIfExpression, AssignmentInConditional.
+fn if_statement(n: Node, v: &mut Vec<Violation>) {
+    empty_body(
+        n,
+        "consequence",
+        "EmptyIfStatement",
+        "The if statement is empty",
+        v,
+    );
+    if let Some(alt) = n.child_by_field_name("alternative")
+        && is_empty_block(Some(alt))
+    {
+        v.push(at(alt, "EmptyElseBlock", "The else block is empty".into()));
+    }
+    if let Some(c) = condition(n)
+        && is_literal(c)
+    {
+        v.push(at(
+            c,
+            "ConstantIfExpression",
+            "The if condition is a constant, so one branch never runs".into(),
+        ));
+    }
+    assignment_in_condition(n, v);
+}
+
+/// The value a constant map key or case label stands for: `a`, `'a'` and `"a"` are the same
+/// map key in Groovy. `None` for anything that isn't a constant.
+fn constant_value(n: Node, src: &str) -> Option<String> {
+    match n.kind() {
+        "identifier" | "number_literal" | "boolean_literal" | "null_literal" => {
+            Some(text(n, src).to_string())
+        }
+        "string_literal" if !has_interpolation(n) => {
+            let t = text(n, src);
+            let q = ["'''", "\"\"\"", "'", "\""]
+                .iter()
+                .find(|q| t.starts_with(**q) && t.ends_with(**q) && t.len() >= 2 * q.len())?;
+            Some(t[q.len()..t.len() - q.len()].to_string())
+        }
+        _ => None,
+    }
+}
+
+fn duplicate_map_key(src: &str, n: Node, v: &mut Vec<Violation>) {
+    let mut seen = HashSet::new();
+    let mut c = n.walk();
+    for e in n.named_children(&mut c).filter(|e| e.kind() == "map_entry") {
+        let Some(key) = e.child_by_field_name("key") else {
+            continue;
+        };
+        // only identifier and string keys share a meaning; numbers stay distinct from strings
+        let k = constant_value(key, src).map(|val| (key.kind() == "number_literal", val));
+        if let Some(k) = k
+            && !seen.insert(k.clone())
+        {
+            v.push(at(
+                key,
+                "DuplicateMapKey",
+                format!("Key `{}` appears more than once in this map", k.1),
+            ));
+        }
+    }
+}
+
+fn duplicate_case(src: &str, n: Node, v: &mut Vec<Violation>) {
+    let mut seen = HashSet::new();
+    let mut c = n.walk();
+    for case in n
+        .named_children(&mut c)
+        .filter(|k| k.kind() == "switch_case")
+    {
+        let Some(val) = case.child_by_field_name("value") else {
+            continue;
+        };
+        if !is_literal(val) {
+            continue;
+        }
+        let t = text(val, src);
+        if !seen.insert(t) {
+            v.push(at(
+                val,
+                "DuplicateCaseStatement",
+                format!("Duplicate case label {t}"),
+            ));
+        }
+    }
+}
+
+fn comparison_with_self(src: &str, n: Node, v: &mut Vec<Violation>) {
+    let op = n.child_by_field_name("operator").map_or("", |o| o.kind());
+    if !matches!(
+        op,
+        "==" | "!=" | "<" | "<=" | ">" | ">=" | "<=>" | "===" | "!=="
+    ) {
+        return;
+    }
+    let (Some(l), Some(r)) = (
+        n.child_by_field_name("left"),
+        n.child_by_field_name("right"),
+    ) else {
+        return;
+    };
+    // plain variables only: `f() == f()` can legitimately differ
+    if l.kind() == "identifier" && r.kind() == "identifier" && text(l, src) == text(r, src) {
+        v.push(at(
+            n,
+            "ComparisonWithSelf",
+            format!("Comparing `{}` with itself", text(l, src)),
+        ));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,8 +502,46 @@ mod tests {
     }
 
     #[test]
+    fn empty_blocks() {
+        let src = "if (a) { }\nif (a) { x() } else { }\ntry { } finally { }\nwhile (a) { }\nfor (i in xs) { }\nif (a) {\n  // intentionally nothing\n}\n";
+        assert_eq!(
+            rules(src),
+            vec![
+                ("EmptyIfStatement", 1),
+                ("EmptyElseBlock", 2),
+                ("EmptyTryBlock", 3),
+                ("EmptyFinallyBlock", 3),
+                ("EmptyWhileStatement", 4),
+                ("EmptyForStatement", 5),
+            ]
+        );
+    }
+
+    #[test]
+    fn conditionals() {
+        let src = "if (x = 1) { f() }\nwhile ((y = next())) { f() }\nif (x == 1) { f() }\nif (true) { f() }\nif (x == x) { f() }\nif (f() == f()) { g() }\n";
+        assert_eq!(
+            rules(src),
+            vec![
+                ("AssignmentInConditional", 1),
+                ("ConstantIfExpression", 4),
+                ("ComparisonWithSelf", 5),
+            ]
+        );
+    }
+
+    #[test]
+    fn duplicate_keys_and_cases() {
+        let src = "def m = [a: 1, 'a': 2, b: 3, 1: 'x', '1': 'y', \"${k}\": 4, \"${k}\": 5]\nswitch (x) {\n  case 1: f(); break\n  case 2: g(); break\n  case 1: h(); break\n}\n";
+        assert_eq!(
+            rules(src),
+            vec![("DuplicateMapKey", 1), ("DuplicateCaseStatement", 5)]
+        );
+    }
+
+    #[test]
     fn every_emitted_rule_is_registered() {
-        let src = "import a.B\nimport a.B\ndef s = \"x\";\ntry { f() } catch (e) { }\n";
+        let src = "import a.B\nimport a.B\ndef s = \"x\";\ntry { f() } catch (e) { }\nif (true) { }\nif (a = 1) { f() } else { }\ntry { } finally { }\nwhile (a) { }\nfor (i in xs) { }\ndef m = [a: 1, a: 2]\nswitch (x) { case 1: f(); break\n case 1: g() }\nif (x == x) { f() }\n";
         for v in lint(src).expect("parses") {
             assert!(
                 RULES.iter().any(|r| r.name == v.rule),

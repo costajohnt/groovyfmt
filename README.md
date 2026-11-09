@@ -26,11 +26,11 @@ Against [npm-groovy-lint](https://github.com/nvuillam/npm-groovy-lint) 19.0.1 (C
 
 | task | npm-groovy-lint | groovyfmt |
 |---|---|---|
-| lint, the same four rules | 19.5 s | 0.14 s |
+| lint, the same four rules | 19.5 s | 0.12 s (all 14 default rules) |
 | lint, npm-groovy-lint's default rule set | 30.3 s | |
-| format | did not finish in 15 min (two attempts) | 0.2 s |
+| format | did not finish in 15 min (two attempts) | 0.25 s |
 
-The comparison flatters groovyfmt somewhat. It skips the 213 spock files it can't parse, which npm-groovy-lint still processes, and CodeNarc's default rule set is far larger.
+The comparison flatters groovyfmt somewhat. It skips the 119 spock files it can't parse, which npm-groovy-lint still processes, and CodeNarc's default rule set is far larger.
 
 ## Install
 
@@ -85,7 +85,20 @@ Named after their [CodeNarc](https://codenarc.org/) equivalents so existing conf
 | DuplicateImport | on | the same import twice |
 | UnnecessarySemicolon | on | a `;` at the end of a line |
 | EmptyCatchBlock | on | an empty `catch`, unless the parameter is named `ignore` or `ignored` |
+| EmptyIfStatement | on | an `if` with an empty block |
+| EmptyElseBlock | on | an `else` with an empty block |
+| EmptyTryBlock | on | a `try` with an empty block |
+| EmptyFinallyBlock | on | a `finally` with an empty block |
+| EmptyWhileStatement | on | a `while` loop with an empty block |
+| EmptyForStatement | on | a `for` loop with an empty block |
+| DuplicateMapKey | on | a map literal with the same constant key twice (`a:` and `'a':` count as the same); the later entry wins |
+| DuplicateCaseStatement | on | two `case` labels for the same constant |
+| AssignmentInConditional | on | `if (x = 1)`, where `==` was probably meant; `while (x = next())` is a common idiom and is exempt |
+| ConstantIfExpression | on | an `if` whose condition is a literal, so one branch never runs |
 | UnnecessaryGString | off | a double-quoted string with nothing to interpolate (noisy where double quotes are the house style) |
+| ComparisonWithSelf | off | a variable compared with itself (GORM `where { title == title }` and Spock equality checks do this on purpose) |
+
+A block holding only a comment doesn't count as empty.
 
 ## Configuration
 
@@ -166,15 +179,16 @@ All of these call `groovyfmt --stdin`, which prints nothing and exits 2 when it 
 
 ## Coverage
 
-groovyfmt only touches files it can parse. On a corpus of 23,766 files from grails-core, groovy, gradle, spock, CodeNarc, nextflow and Jenkins pipeline repositories, 80.9% parse cleanly. Spock's own repository parses least often, about two thirds of its files.
+groovyfmt only touches files it can parse. On a corpus of 23,766 files from grails-core, groovy, gradle, spock, CodeNarc, nextflow and Jenkins pipeline repositories, 85.6% parse cleanly.
 
-The grammar is [dekobon/tree-sitter-groovy](https://github.com/dekobon/tree-sitter-groovy), currently pinned to the fork branch [`costajohnt/tree-sitter-groovy@groovyfmt-base`](https://github.com/costajohnt/tree-sitter-groovy/tree/groovyfmt-base), which adds upstream PR #49 plus #56 and #57 to the 0.3.0 release:
+The grammar is [dekobon/tree-sitter-groovy](https://github.com/dekobon/tree-sitter-groovy), currently pinned to the fork branch [`costajohnt/tree-sitter-groovy@groovyfmt-base`](https://github.com/costajohnt/tree-sitter-groovy/tree/groovyfmt-base), which adds upstream PR #49 plus our fixes to the 0.3.0 release:
 
 | grammar | files parsing cleanly |
 |---|---|
 | dekobon 0.3.0 | 63.8% |
 | + PR #49 | 75.0% |
 | + #56 (`final` locals) and #57 (named-argument calls) | 80.9% |
+| + nested type declarations (`static class`, member `interface`, …) | 85.6% |
 
 ## Development
 
