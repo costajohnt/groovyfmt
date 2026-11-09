@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `--stdin-filepath <path>` (with `--stdin`): find the config file by walking up from that path's directory, as if formatting the file on disk, and use the path as the name in error messages and `--output-format github` annotations. The file need not exist. If the path matches `exclude`, stdin is written back unchanged and the exit status is 0.
+- `exclude = [...]` config option: glob patterns, relative to the config file's directory, for files and directories to skip on top of the built-in list. `*` and `?` match within a path segment, `**` across segments. Excluded directories are not descended into, and excludes also apply to files named on the command line.
+
 ## 0.4.0 (2026-11-09)
 
 From a full audit (`docs/audit-2026-11-09.md`). groovyfmt runs in CI on pull-request content, so these matter:

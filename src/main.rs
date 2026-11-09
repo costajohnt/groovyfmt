@@ -14,13 +14,18 @@ Usage: groovyfmt [OPTIONS] [PATH]...
 
 PATHs are files or directories (default: the current directory). Directories are
 searched for *.groovy, *.gradle, *.gvy, *.gy, *.gsh and Jenkinsfile, skipping
-hidden directories and build, out, target and node_modules.
+hidden directories, build, out, target and node_modules, and anything matching
+the config file's `exclude` patterns (which also apply to files named here).
 
 Modes:
       (default)            Format files in place
       --check              List files that would be reformatted; exit 1 if any
       --lint               Report lint violations; exit 1 if any
       --stdin              Format stdin to stdout (for editors)
+      --stdin-filepath <PATH>
+                           With --stdin: find the config as if formatting PATH (which
+                           need not exist), name it in messages, and if PATH is
+                           excluded, echo stdin unchanged
 
 Options:
       --config <FILE>      Use FILE instead of the nearest .groovyfmt.toml / groovyfmt.toml
@@ -41,6 +46,7 @@ struct Args {
     mode: Mode,
     paths: Vec<PathBuf>,
     config: Option<PathBuf>,
+    stdin_filepath: Option<PathBuf>,
     indent: Option<usize>,
     github: bool,
     verbose: bool,
@@ -119,6 +125,7 @@ fn parse_args() -> Args {
             "--tree" => set_mode(&mut a, Mode::Tree),
             "-v" | "--verbose" => a.verbose = true,
             "--config" => a.config = Some(PathBuf::from(value("--config"))),
+            "--stdin-filepath" => a.stdin_filepath = Some(PathBuf::from(value("--stdin-filepath"))),
             "--indent" => {
                 let v = value("--indent");
                 a.indent = Some(
@@ -141,6 +148,9 @@ fn parse_args() -> Args {
             _ => a.paths.push(PathBuf::from(arg)),
         }
     }
+    if a.stdin_filepath.is_some() && a.mode != Mode::Stdin {
+        die("--stdin-filepath needs --stdin");
+    }
     if a.paths.is_empty() && a.mode != Mode::Stdin {
         a.paths.push(PathBuf::from("."));
     }
@@ -148,10 +158,15 @@ fn parse_args() -> Args {
 }
 
 fn load_config(a: &Args) -> Config {
-    let path = a
-        .config
-        .clone()
-        .or_else(|| config::discover(&std::env::current_dir().unwrap_or_default()));
+    let cwd = std::env::current_dir().unwrap_or_default();
+    // the config that formatting the file at --stdin-filepath from disk would see
+    let start = match &a.stdin_filepath {
+        Some(p) => config::normalize(&cwd.join(p))
+            .parent()
+            .map_or(cwd, Path::to_path_buf),
+        None => cwd,
+    };
+    let path = a.config.clone().or_else(|| config::discover(&start));
     let mut cfg = match &path {
         Some(p) => Config::load(p).unwrap_or_else(|e| die(e)),
         None => Config::default(),
@@ -171,13 +186,16 @@ fn load_config(a: &Args) -> Config {
 /// Paths named on the command line are taken as given (a named symlink is followed).
 /// Below them, symlinks are never followed, so a link cycle can't loop the walk and a link
 /// out of the tree can't make us read or rewrite files elsewhere; only regular files count.
-fn walk(p: &Path, top: bool, out: &mut Vec<PathBuf>) {
+fn walk(p: &Path, top: bool, out: &mut Vec<PathBuf>, cfg: &Config) {
     let meta = if top {
         std::fs::metadata(p)
     } else {
         std::fs::symlink_metadata(p)
     };
     let Ok(meta) = meta else { return };
+    if cfg.excluded(p) {
+        return;
+    }
     if meta.is_dir() {
         if !top && groovyfmt::is_skipped_dir(p) {
             return;
@@ -193,7 +211,7 @@ fn walk(p: &Path, top: bool, out: &mut Vec<PathBuf>) {
         let mut entries: Vec<_> = rd.flatten().map(|e| e.path()).collect();
         entries.sort();
         for path in entries {
-            walk(&path, false, out);
+            walk(&path, false, out, cfg);
         }
     } else if meta.is_file() && (top || groovyfmt::is_groovy_file(p)) {
         // `./src/A.groovy` reads as `src/A.groovy`, as in git and cargo output
@@ -201,13 +219,13 @@ fn walk(p: &Path, top: bool, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn collect(paths: &[PathBuf]) -> Vec<PathBuf> {
+fn collect(paths: &[PathBuf], cfg: &Config) -> Vec<PathBuf> {
     let mut files = Vec::new();
     for p in paths {
         if !p.exists() {
             die(format!("{}: no such file or directory", p.display()));
         }
-        walk(p, true, &mut files);
+        walk(p, true, &mut files, cfg);
     }
     files
 }
@@ -352,15 +370,21 @@ fn gh_escape(s: &str, property: bool) -> String {
 
 fn main() {
     let a = parse_args();
+    // the walk needs `exclude`; the parse-only diagnostics never read a config
+    let cfg = if matches!(a.mode, Mode::Errors | Mode::Tree) {
+        Config::default()
+    } else {
+        load_config(&a)
+    };
     let code = match a.mode {
-        Mode::Rules => rules(&load_config(&a)),
-        Mode::Stdin => stdin(&load_config(&a)),
-        Mode::Write | Mode::Check => fmt(&collect(&a.paths), &load_config(&a), &a),
-        Mode::Lint => lint_files(&collect(&a.paths), &load_config(&a), &a, false),
-        Mode::LintStats => lint_files(&collect(&a.paths), &load_config(&a), &a, true),
-        Mode::Stats => stats(&collect(&a.paths), &load_config(&a)),
-        Mode::Errors => errors(&collect(&a.paths)),
-        Mode::Tree => tree(&collect(&a.paths)),
+        Mode::Rules => rules(&cfg),
+        Mode::Stdin => stdin(&cfg, &a),
+        Mode::Write | Mode::Check => fmt(&collect(&a.paths, &cfg), &cfg, &a),
+        Mode::Lint => lint_files(&collect(&a.paths, &cfg), &cfg, &a, false),
+        Mode::LintStats => lint_files(&collect(&a.paths, &cfg), &cfg, &a, true),
+        Mode::Stats => stats(&collect(&a.paths, &cfg), &cfg),
+        Mode::Errors => errors(&collect(&a.paths, &cfg)),
+        Mode::Tree => tree(&collect(&a.paths, &cfg)),
     };
     std::process::exit(if WALK_FAILED.load(Ordering::Relaxed) {
         2
@@ -381,15 +405,33 @@ fn rules(cfg: &Config) -> i32 {
     0
 }
 
-fn stdin(cfg: &Config) -> i32 {
-    let mut src = String::new();
-    if let Err(e) = std::io::stdin().read_to_string(&mut src) {
+fn stdin(cfg: &Config, a: &Args) -> i32 {
+    let mut src = Vec::new();
+    if let Err(e) = std::io::stdin().read_to_end(&mut src) {
         die(format!("reading stdin: {e}"));
     }
+    let path = a.stdin_filepath.as_deref();
+    // excluded: hand the buffer back byte for byte, so editors and hooks see no change
+    if path.is_some_and(|p| cfg.excluded(p)) {
+        return std::io::stdout().write_all(&src).map_or(2, |_| 0);
+    }
+    let src = String::from_utf8(src)
+        .unwrap_or_else(|_| die("reading stdin: stream did not contain valid UTF-8"));
     let out = match format(&src, &cfg.style) {
         Outcome::Unchanged => src,
         Outcome::Formatted(out) => out,
-        Outcome::Skipped(why) => die(format!("<stdin>: not formatted: {why}")),
+        Outcome::Skipped(why) => {
+            let name = path.map_or_else(|| "<stdin>".to_string(), shown);
+            if a.github {
+                eprintln!(
+                    "::error file={}::Not formatted: {}",
+                    gh_escape(&name, true),
+                    gh_escape(why, false)
+                );
+                std::process::exit(2);
+            }
+            die(format!("{name}: not formatted: {why}"))
+        }
     };
     std::io::stdout().write_all(out.as_bytes()).map_or(2, |_| 0)
 }
