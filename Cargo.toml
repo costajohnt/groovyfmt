@@ -1,0 +1,25 @@
+[package]
+name = "groovyfmt"
+version = "0.0.1"
+edition = "2024"
+description = "Fast formatter for Groovy, Gradle build scripts, and Jenkinsfiles"
+license = "MIT"
+repository = "https://github.com/costajohnt/groovyfmt"
+
+[features]
+# Exactly one grammar. All three export the C symbol `tree_sitter_groovy`, so they can't link together.
+# ponytail: feature switch only lives until the grammar bake-off picks a winner.
+default = ["g-dekobon"]
+g-dekobon = ["dep:dekobon-tree-sitter-groovy"]
+g-amaanq = ["dep:ts-groovy-amaanq"]
+g-murtaza = ["dep:ts-groovy-murtaza"]
+
+[dependencies]
+tree-sitter = "0.26"
+dekobon-tree-sitter-groovy = { version = "0.3.0", optional = true }
+ts-groovy-amaanq = { package = "tree-sitter-groovy", version = "0.1.2", optional = true }
+ts-groovy-murtaza = { package = "tree-sitter-groovy", git = "https://github.com/murtaza64/tree-sitter-groovy", optional = true }
+
+[profile.release]
+lto = true
+codegen-units = 1
