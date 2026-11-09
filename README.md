@@ -41,18 +41,28 @@ Safety: the output is re-parsed and its token stream compared with the input's. 
 
 | | files |
 |---|---|
-| parse cleanly (dekobon grammar) | 15,174 (63.8%) |
-| already formatted | 10,214 |
-| reformatted | 4,960 |
+| parse cleanly | 19,244 (80.9%) |
+| already formatted | 12,449 |
+| reformatted | 6,795 |
 | changed again by a second pass | 0 |
-| skipped, parse error | 8,621 |
+| skipped, parse error | 4,551 |
 
-Timing on the 119 MB corpus: format with idempotence check 6.8s (17.5 MB/s), lint 3.9s. Spot check: 10 of 10 sampled UnusedImport findings were real (the symbol appears only on the import line). UnnecessaryGString is noisy on codebases that use double quotes by convention (81k of its 104k corpus hits are in gradle/gradle).
+Timing on the 119 MB corpus: format with idempotence check 8.8s (13.5 MB/s), lint 4.7s. Spot check: 10 of 10 sampled UnusedImport findings were real (the symbol appears only on the import line). UnnecessaryGString is noisy on codebases that use double quotes by convention (81k of its 104k corpus hits are in gradle/gradle).
 
-Grammar bake-off, files parsing cleanly: dekobon-tree-sitter-groovy 63.8%, murtaza64/tree-sitter-groovy 47.8%, tree-sitter-groovy (amaanq) 18.7%. Build another grammar with `--no-default-features --features g-murtaza` (or `g-amaanq`).
+## Grammar
+
+groovyfmt builds on [dekobon/tree-sitter-groovy](https://github.com/dekobon/tree-sitter-groovy), pinned to the fork branch `costajohnt/tree-sitter-groovy@groovyfmt-base` until upstream catches up. Files parsing cleanly on the corpus:
+
+| grammar | clean |
+|---|---|
+| dekobon 0.3.0 (crates.io) | 63.8% |
+| + upstream PR #49 | 75.0% |
+| + `final` locals and named-argument command chains (our branches) | 80.9% |
+
+Neither step makes any previously clean file fail. The other grammars scored lower (murtaza64 47.8%, amaanq 18.7%); build them with `--no-default-features --features g-murtaza` (or `g-amaanq`).
 
 ## Known gaps
 
-- Grammar coverage is the limit: about 36% of real Groovy files still hit parse errors and are skipped.
+- Grammar coverage is the limit: about 19% of real Groovy files still hit parse errors and are skipped.
 - The grammar doesn't always end a declaration at a newline: `private task` followed by `Foo(a) {}` on the next line parses as one method, which mis-indents what follows. Tokens are unchanged; only the indentation is wrong.
 - No config file, no stdin mode, no line wrapping or spacing inside lines yet.

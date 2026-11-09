@@ -16,7 +16,10 @@ g-murtaza = ["dep:ts-groovy-murtaza"]
 
 [dependencies]
 tree-sitter = "0.26"
-dekobon-tree-sitter-groovy = { version = "0.3.0", optional = true }
+# Fork branch groovyfmt-base = upstream main + dekobon PR #49 + our fixes
+# (fix/local-final-declaration, fix/command-named-args). Back to the crates.io
+# release once those land upstream.
+dekobon-tree-sitter-groovy = { git = "https://github.com/costajohnt/tree-sitter-groovy", rev = "0a5b2efb382c0a951ff33b3d53b6807ffe024793", optional = true }
 ts-groovy-amaanq = { package = "tree-sitter-groovy", version = "0.1.2", optional = true }
 ts-groovy-murtaza = { package = "tree-sitter-groovy", git = "https://github.com/murtaza64/tree-sitter-groovy", optional = true }
 
