@@ -78,7 +78,11 @@ fn check_then_write_then_check() {
     d.write("build.gradle", "plugins {\n  id 'java'\n}\n");
     let c = run(&d.0, &["--check"], None);
     assert_eq!(c.status.code(), Some(1));
-    assert!(stdout(&c).contains("A.groovy") && stdout(&c).contains("build.gradle"));
+    assert_eq!(
+        stdout(&c),
+        "build.gradle\nsrc/A.groovy\n",
+        "sorted, no ./ prefix"
+    );
     assert_eq!(d.read("src/A.groovy"), UGLY, "--check must not write");
 
     let w = run(&d.0, &[], None);

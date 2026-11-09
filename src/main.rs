@@ -167,7 +167,8 @@ fn walk(p: &Path, top: bool, out: &mut Vec<PathBuf>) {
             walk(&path, false, out);
         }
     } else if top || groovyfmt::is_groovy_file(p) {
-        out.push(p.to_path_buf());
+        // `./src/A.groovy` reads as `src/A.groovy`, as in git and cargo output
+        out.push(p.strip_prefix(".").unwrap_or(p).to_path_buf());
     }
 }
 

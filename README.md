@@ -1,68 +1,183 @@
 # groovyfmt
 
-A fast formatter for Groovy, Gradle build scripts (`build.gradle`), and Jenkinsfiles, written in Rust on a tree-sitter grammar.
+A fast formatter and linter for Groovy, Gradle build scripts (`build.gradle`), and Jenkinsfiles. One static binary, no JVM, written in Rust on a [tree-sitter](https://tree-sitter.github.io/) grammar.
 
-Status: early. The formatter changes whitespace only; the linter has five rules.
+Run on [jenkins-infra/pipeline-library](https://github.com/jenkins-infra/pipeline-library):
 
-```sh
-groovyfmt <files or dirs>          # format in place
-groovyfmt --check <files or dirs>  # list files that would change; exit 1 if any
-groovyfmt --stats <dirs>           # corpus report: unchanged/formatted/skipped, idempotence, throughput
-groovyfmt --lint <files or dirs>   # lint; prints path:line:col: Rule: message, exit 1 if any
+```console
+$ groovyfmt --check
+Jenkinsfile
+test/groovy/BaseTest.groovy
+test/groovy/BuildDockerAndPublishImageStepTests.groovy
+...
+would reformat 21 of 27 files, 6 skipped (can't parse; -v lists them)
+$ groovyfmt
+reformatted 21 of 27 files, 6 skipped (can't parse; -v lists them)
+$ groovyfmt --lint
+test/groovy/BaseTest.groovy:2:1: UnusedImport: The [mock.CurrentBuild] import is never referenced
+test/groovy/BaseTest.groovy:4:1: UnusedImport: The [org.junit.Before] import is never referenced
+...
+7 violations in 27 files (UnusedImport 7), 6 skipped (can't parse; -v lists them)
 ```
 
-Files are processed in parallel on all cores.
+<!-- BENCHMARK -->
 
-## Lint rules
+## Install
 
-Named after their CodeNarc equivalents so existing configs map across:
+Prebuilt binaries for Linux (x86_64 static, arm64) and macOS (Apple Silicon, Intel) are attached to each [release](https://github.com/costajohnt/groovyfmt/releases):
 
-| Rule | Flags |
+```sh
+gh release download --repo costajohnt/groovyfmt --pattern '*aarch64-apple-darwin.tar.gz'
+tar -xzf groovyfmt-*.tar.gz && mv groovyfmt-*/groovyfmt /usr/local/bin/
+```
+
+Or build from source (Rust 1.85+, a C compiler):
+
+```sh
+cargo install --locked --git https://github.com/costajohnt/groovyfmt
+```
+
+## Usage
+
+```text
+groovyfmt [OPTIONS] [PATH]...
+```
+
+With no paths it works on the current directory. Directories are searched for `*.groovy`, `*.gradle`, `*.gvy`, `*.gy`, `*.gsh` and `Jenkinsfile`, skipping hidden directories and `build`, `out`, `target` and `node_modules`. A file named on the command line is always processed.
+
+| Command | Does |
 |---|---|
-| UnusedImport | import whose name (or alias) never appears in code or comments |
-| DuplicateImport | the same import twice |
-| UnnecessaryGString | double-quoted string with nothing to interpolate |
-| UnnecessarySemicolon | `;` at the end of a line |
-| EmptyCatchBlock | empty `catch`, unless the parameter is named `ignore` / `ignored` |
+| `groovyfmt` | format files in place |
+| `groovyfmt --check` | list files that would be reformatted, exit 1 if any |
+| `groovyfmt --lint` | report lint violations, exit 1 if any |
+| `groovyfmt --stdin` | format stdin to stdout, for editors |
+| `groovyfmt --rules` | list lint rules and whether each is on |
 
-Files that don't parse cleanly are not linted, to avoid false positives.
+Options: `--config <file>`, `--indent <n>`, `--output-format text|github`, `-v` (also list skipped files and timing). Exit status is 0 when clean, 1 when files need formatting or lint found something, and 2 on errors (bad arguments, bad config, unreadable files, or `--stdin` input that can't be formatted).
 
-What v0 does:
+### What formatting changes
 
-- re-indents every line with 4-space steps from the parse tree (blocks, closures, argument lists, literals, continued expressions, Spock `when:`/`then:` labels)
-- strips trailing whitespace, collapses runs of blank lines to one, ends the file with one newline
-- leaves lines inside multi-line strings and comments untouched
+Whitespace only:
 
-Safety: the output is re-parsed and its token stream compared with the input's. If anything other than whitespace differs, or the input doesn't parse cleanly, the file is skipped and left as is.
+- every line is re-indented from the parse tree (blocks, closures, argument lists, list and map literals, continued expressions, Spock `when:` / `then:` blocks)
+- trailing whitespace is removed, runs of blank lines collapse to one, and the file ends with one newline
+- lines inside multi-line strings and comments are left exactly as they are
 
-## Corpus numbers (2026-11-08, 4-core claude-worker)
+Formatting is safe by construction. The output is parsed again and its token stream compared with the input's; if anything other than whitespace would change, or the input doesn't parse cleanly, the file is left untouched (`-v` lists these). Running it twice changes nothing the second time.
 
-23,795 files from grails-core, groovy, gradle, spock, CodeNarc, nextflow and Jenkins pipeline repos:
+### Lint rules
 
-| | files |
+Named after their [CodeNarc](https://codenarc.org/) equivalents so existing configurations map across. Files that don't parse are not linted, which keeps false positives out.
+
+| Rule | Default | Flags |
+|---|---|---|
+| UnusedImport | on | an import whose name (or alias) never appears in code or comments |
+| DuplicateImport | on | the same import twice |
+| UnnecessarySemicolon | on | a `;` at the end of a line |
+| EmptyCatchBlock | on | an empty `catch`, unless the parameter is named `ignore` or `ignored` |
+| UnnecessaryGString | off | a double-quoted string with nothing to interpolate (noisy where double quotes are the house style) |
+
+## Configuration
+
+groovyfmt looks for `.groovyfmt.toml` or `groovyfmt.toml` in the current directory and its parents. Everything is optional:
+
+```toml
+indent = 4                  # spaces per level, 1 to 16
+
+[lint]                      # rule = true/false; unlisted rules keep their default
+UnnecessaryGString = true
+UnusedImport = false
+```
+
+Unknown keys and misspelled rule names are errors, so a typo can't silently do nothing. `--indent` overrides the file.
+
+## CI
+
+### GitHub Actions
+
+```yaml
+- name: groovyfmt
+  env:
+    GH_TOKEN: ${{ github.token }}
+  run: |
+    gh release download --repo costajohnt/groovyfmt --pattern '*x86_64-unknown-linux-musl.tar.gz' --output groovyfmt.tgz
+    tar -xzf groovyfmt.tgz --strip-components=1
+    ./groovyfmt --check --output-format github
+    ./groovyfmt --lint --output-format github
+```
+
+`--output-format github` turns findings into annotations on the pull request diff. While the repository is private, the token needs read access to it.
+
+### Gradle
+
+```groovy
+tasks.register('groovyfmtCheck', Exec) {
+    group = 'verification'
+    commandLine 'groovyfmt', '--check'
+}
+tasks.register('groovyfmtLint', Exec) {
+    group = 'verification'
+    commandLine 'groovyfmt', '--lint'
+}
+check.dependsOn 'groovyfmtCheck', 'groovyfmtLint'
+```
+
+### pre-commit
+
+```yaml
+repos:
+  - repo: local
+    hooks:
+      - id: groovyfmt
+        name: groovyfmt
+        entry: groovyfmt
+        language: system
+        files: (\.(groovy|gradle|gvy|gy|gsh)|Jenkinsfile)$
+```
+
+## Editors
+
+All of these call `groovyfmt --stdin`, which prints nothing and exits 2 when it can't format the buffer, so a parse error never replaces your code.
+
+- **Neovim** ([conform.nvim](https://github.com/stevearc/conform.nvim)):
+  ```lua
+  require("conform").setup({
+    formatters = { groovyfmt = { command = "groovyfmt", args = { "--stdin" } } },
+    formatters_by_ft = { groovy = { "groovyfmt" } },
+  })
+  ```
+- **VS Code** ([Custom Local Formatters](https://marketplace.visualstudio.com/items?itemName=jkillian.custom-local-formatters)):
+  ```json
+  "customLocalFormatters.formatters": [
+    { "command": "groovyfmt --stdin", "languages": ["groovy"] }
+  ]
+  ```
+- **IntelliJ IDEA**: Settings, Tools, File Watchers, add a watcher for Groovy files with program `groovyfmt` and arguments `$FilePath$`.
+
+## Coverage
+
+groovyfmt only touches files it can parse. On a corpus of 23,766 files from grails-core, groovy, gradle, spock, CodeNarc, nextflow and Jenkins pipeline repositories, 80.9% parse cleanly. Spock's own repository parses least often, about two thirds of its files.
+
+The grammar is [dekobon/tree-sitter-groovy](https://github.com/dekobon/tree-sitter-groovy), currently pinned to the fork branch [`costajohnt/tree-sitter-groovy@groovyfmt-base`](https://github.com/costajohnt/tree-sitter-groovy/tree/groovyfmt-base), which adds upstream PR #49 plus #56 and #57 to the 0.3.0 release:
+
+| grammar | files parsing cleanly |
 |---|---|
-| parse cleanly | 19,244 (80.9%) |
-| already formatted | 12,449 |
-| reformatted | 6,795 |
-| changed again by a second pass | 0 |
-| skipped, parse error | 4,551 |
+| dekobon 0.3.0 | 63.8% |
+| + PR #49 | 75.0% |
+| + #56 (`final` locals) and #57 (named-argument calls) | 80.9% |
 
-Timing on the 119 MB corpus: format with idempotence check 8.8s (13.5 MB/s), lint 4.7s. Spot check: 10 of 10 sampled UnusedImport findings were real (the symbol appears only on the import line). UnnecessaryGString is noisy on codebases that use double quotes by convention (81k of its 104k corpus hits are in gradle/gradle).
+## Development
 
-## Grammar
+```sh
+cargo test                               # unit and end-to-end CLI tests
+cargo clippy --all-targets -- -D warnings
+groovyfmt --stats <dir>                  # corpus report, including an idempotence check
+groovyfmt --errors <dir>                 # first parse error per failing file, for grammar work
+groovyfmt --tree <file>                  # dump the parse tree
+```
 
-groovyfmt builds on [dekobon/tree-sitter-groovy](https://github.com/dekobon/tree-sitter-groovy), pinned to the fork branch `costajohnt/tree-sitter-groovy@groovyfmt-base` until upstream catches up. Files parsing cleanly on the corpus:
+Releases: push a `v*` tag and the release workflow builds and attaches the binaries.
 
-| grammar | clean |
-|---|---|
-| dekobon 0.3.0 (crates.io) | 63.8% |
-| + upstream PR #49 | 75.0% |
-| + `final` locals and named-argument command chains (our branches) | 80.9% |
+## License
 
-Neither step makes any previously clean file fail. The other grammars scored lower (murtaza64 47.8%, amaanq 18.7%); build them with `--no-default-features --features g-murtaza` (or `g-amaanq`).
-
-## Known gaps
-
-- Grammar coverage is the limit: about 19% of real Groovy files still hit parse errors and are skipped.
-- The grammar doesn't always end a declaration at a newline: `private task` followed by `Foo(a) {}` on the next line parses as one method, which mis-indents what follows. Tokens are unchanged; only the indentation is wrong.
-- No config file, no stdin mode, no line wrapping or spacing inside lines yet.
+MIT
