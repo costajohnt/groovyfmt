@@ -293,10 +293,13 @@ fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
         .unwrap_or_default();
     let tmp = path.with_file_name(format!(".{name}.groovyfmt-{}", std::process::id()));
     let result = (|| {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)?;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        // owner-only until the original permissions are applied, so the contents of a
+        // private file are never readable by others in between
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+        let mut f = opts.open(&tmp)?;
         f.write_all(contents.as_bytes())?;
         f.set_permissions(perms)?;
         f.sync_all()?;
