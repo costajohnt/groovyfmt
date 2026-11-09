@@ -5,9 +5,6 @@
 
 use tree_sitter::{Node, Tree};
 
-const INDENT: usize = 4; // one step everywhere: corpus measurement (2026-11-08) showed 4 vs 8 for
-// brackets/continuations is a wash, and 4 leaves the most files untouched.
-
 #[derive(Debug, PartialEq)]
 pub enum Outcome {
     Unchanged,
@@ -15,12 +12,14 @@ pub enum Outcome {
     Skipped(&'static str),
 }
 
-pub fn format(src: &str) -> Outcome {
+/// Format `src` with `indent` spaces per level. The same step is used for blocks, brackets and
+/// continuation lines: on a 23.8k-file corpus, separate continuation widths made no difference.
+pub fn format(src: &str, indent: usize) -> Outcome {
     let tree = crate::parse(src);
     if tree.root_node().has_error() {
         return Outcome::Skipped("parse error");
     }
-    let out = reindent(src, &tree);
+    let out = reindent(src, &tree, indent);
     if out == src {
         return Outcome::Unchanged;
     }
@@ -31,7 +30,7 @@ pub fn format(src: &str) -> Outcome {
     Outcome::Formatted(out)
 }
 
-fn reindent(src: &str, tree: &Tree) -> String {
+fn reindent(src: &str, tree: &Tree, step: usize) -> String {
     let eol = if src.contains("\r\n") { "\r\n" } else { "\n" };
     let root = tree.root_node();
     let mut out: Vec<String> = Vec::new();
@@ -57,7 +56,7 @@ fn reindent(src: &str, tree: &Tree) -> String {
         } else {
             let keep_trailing = line_end < src.len() && inside_token(root, line_end, src);
             let text = if keep_trailing { body } else { body.trim_end() };
-            let indent = indent_for(root, src, pos, &row_indent);
+            let indent = indent_for(root, src, pos, &row_indent, step);
             row_indent.push(indent);
             out.push(format!("{}{}", " ".repeat(indent), text));
         }
@@ -81,7 +80,10 @@ fn inside_token(root: Node, byte: usize, src: &str) -> bool {
         let k = node.kind();
         // ponytail: kind-name sniffing is grammar-specific; the token check in format() catches misses.
         if node.start_byte() < byte
-            && (node.child_count() == 0 || k.contains("string") || k.contains("comment") || k.contains("doc"))
+            && (node.child_count() == 0
+                || k.contains("string")
+                || k.contains("comment")
+                || k.contains("doc"))
         {
             return true;
         }
@@ -107,7 +109,7 @@ fn leaf_at(root: Node, pos: usize) -> Node {
 
 /// Indent of the row where the nearest enclosing node that began on an earlier row starts,
 /// plus one step, except closers, `else`/`catch`/`finally`, Spock labels, and lines after annotations.
-fn indent_for(root: Node, src: &str, pos: usize, row_indent: &[usize]) -> usize {
+fn indent_for(root: Node, src: &str, pos: usize, row_indent: &[usize], step: usize) -> usize {
     let leaf = leaf_at(root, pos);
     let row = leaf.start_position().row;
     let mut child = leaf;
@@ -123,16 +125,22 @@ fn indent_for(root: Node, src: &str, pos: usize, row_indent: &[usize]) -> usize 
         child = a;
         anchor = a.parent();
     }
-    let Some(a) = anchor.filter(|a| a.parent().is_some()) else { return 0 }; // top level
+    let Some(a) = anchor.filter(|a| a.parent().is_some()) else {
+        return 0;
+    }; // top level
     let base = row_indent.get(a.start_position().row).copied().unwrap_or(0);
 
     let first = text(leaf, src);
     let closes_anchor = matches!(first, "}" | ")" | "]") && leaf.parent() == Some(a);
     // Spock blocks (`when:` / `then:`) keep the statement after the label at the label's level.
-    if closes_anchor || after_annotation || a.kind() == "labeled_statement" || matches!(first, "else" | "catch" | "finally") {
+    if closes_anchor
+        || after_annotation
+        || a.kind() == "labeled_statement"
+        || matches!(first, "else" | "catch" | "finally")
+    {
         return base;
     }
-    base + INDENT
+    base + step
 }
 
 /// Leaf tokens as (kind, text), trailing whitespace trimmed (line comments may lose it).
@@ -160,7 +168,7 @@ mod tests {
     use super::*;
 
     fn fmt(s: &str) -> String {
-        match format(s) {
+        match format(s, 4) {
             Outcome::Unchanged => s.to_string(),
             Outcome::Formatted(o) => o,
             Outcome::Skipped(why) => panic!("skipped: {why}"),
@@ -178,7 +186,10 @@ mod tests {
     #[test]
     fn leaves_multiline_strings_alone() {
         let src = "def s = '''\n   keep   \n  this\n'''\nprintln s   \n";
-        assert_eq!(fmt(src), "def s = '''\n   keep   \n  this\n'''\nprintln s\n");
+        assert_eq!(
+            fmt(src),
+            "def s = '''\n   keep   \n  this\n'''\nprintln s\n"
+        );
     }
 
     #[test]
@@ -217,11 +228,22 @@ mod tests {
     #[test]
     fn spock_labels_keep_statement_level() {
         let src = "def 'x'() {\nwhen:\ndef a = 1\nthen:\na == 1\n}\n";
-        assert_eq!(fmt(src), "def 'x'() {\n    when:\n    def a = 1\n    then:\n    a == 1\n}\n");
+        assert_eq!(
+            fmt(src),
+            "def 'x'() {\n    when:\n    def a = 1\n    then:\n    a == 1\n}\n"
+        );
     }
 
     #[test]
     fn skips_unparseable() {
-        assert_eq!(format("def x = {\n"), Outcome::Skipped("parse error"));
+        assert_eq!(format("def x = {\n", 4), Outcome::Skipped("parse error"));
+    }
+
+    #[test]
+    fn indent_width_is_configurable() {
+        assert_eq!(
+            format("a {\nb()\n}\n", 2),
+            Outcome::Formatted("a {\n  b()\n}\n".into())
+        );
     }
 }

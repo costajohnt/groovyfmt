@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - name: Format and lint our own fixtures
+        run: |
+          cargo build --release
+          printf 'class A {\ndef f() {\nprintln 1\n}\n}\n' > /tmp/A.groovy
+          ./target/release/groovyfmt --check /tmp/A.groovy && exit 1 || true
+          ./target/release/groovyfmt /tmp/A.groovy
+          ./target/release/groovyfmt --check /tmp/A.groovy

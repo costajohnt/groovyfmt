@@ -4,6 +4,41 @@
 use std::collections::HashSet;
 use tree_sitter::{Node, Tree};
 
+pub struct Rule {
+    pub name: &'static str,
+    pub default: bool,
+    pub description: &'static str,
+}
+
+/// Every rule, named after its CodeNarc equivalent so existing configs map across.
+pub const RULES: &[Rule] = &[
+    Rule {
+        name: "UnusedImport",
+        default: true,
+        description: "import whose name (or alias) never appears in code or comments",
+    },
+    Rule {
+        name: "DuplicateImport",
+        default: true,
+        description: "the same import twice",
+    },
+    Rule {
+        name: "UnnecessarySemicolon",
+        default: true,
+        description: "`;` at the end of a line",
+    },
+    Rule {
+        name: "EmptyCatchBlock",
+        default: true,
+        description: "empty catch, unless the parameter is named ignore / ignored",
+    },
+    Rule {
+        name: "UnnecessaryGString",
+        default: false,
+        description: "double-quoted string with nothing to interpolate (off by default: noisy where double quotes are the house style)",
+    },
+];
+
 #[derive(Debug, PartialEq)]
 pub struct Violation {
     pub line: usize, // 1-based
@@ -47,12 +82,23 @@ fn text<'a>(n: Node, src: &'a str) -> &'a str {
 
 fn at(n: Node, rule: &'static str, message: String) -> Violation {
     let p = n.start_position();
-    Violation { line: p.row + 1, col: p.column + 1, rule, message }
+    Violation {
+        line: p.row + 1,
+        col: p.column + 1,
+        rule,
+        message,
+    }
 }
 
 /// UnusedImport + DuplicateImport.
 fn imports(src: &str, tree: &Tree, v: &mut Vec<Violation>) {
-    fn scan<'a>(n: Node<'a>, src: &'a str, decls: &mut Vec<Node<'a>>, used: &mut HashSet<&'a str>, comments: &mut String) {
+    fn scan<'a>(
+        n: Node<'a>,
+        src: &'a str,
+        decls: &mut Vec<Node<'a>>,
+        used: &mut HashSet<&'a str>,
+        comments: &mut String,
+    ) {
         match n.kind() {
             "import_declaration" => decls.push(n), // don't descend: names inside imports aren't uses
             k if k.contains("comment") => {
@@ -74,9 +120,17 @@ fn imports(src: &str, tree: &Tree, v: &mut Vec<Violation>) {
     scan(tree.root_node(), src, &mut decls, &mut used, &mut comments);
     let mut seen = HashSet::new();
     for d in decls {
-        let full = text(d, src).trim_end_matches(';').split_whitespace().collect::<Vec<_>>().join(" ");
+        let full = text(d, src)
+            .trim_end_matches(';')
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         if !seen.insert(full.clone()) {
-            v.push(at(d, "DuplicateImport", format!("Duplicate import: {full}")));
+            v.push(at(
+                d,
+                "DuplicateImport",
+                format!("Duplicate import: {full}"),
+            ));
             continue;
         }
         let name = d.child_by_field_name("name").map_or("", |n| text(n, src));
@@ -88,7 +142,11 @@ fn imports(src: &str, tree: &Tree, v: &mut Vec<Violation>) {
             .map_or_else(|| name.rsplit('.').next().unwrap_or(name), |a| text(a, src));
         // ponytail: a mention in a comment ({@link Foo}) counts as use, as CodeNarc does; no word-boundary check.
         if !symbol.is_empty() && !used.contains(symbol) && !comments.contains(symbol) {
-            v.push(at(d, "UnusedImport", format!("The [{name}] import is never referenced")));
+            v.push(at(
+                d,
+                "UnusedImport",
+                format!("The [{name}] import is never referenced"),
+            ));
         }
     }
 }
@@ -97,30 +155,51 @@ fn imports(src: &str, tree: &Tree, v: &mut Vec<Violation>) {
 fn unnecessary_gstring(src: &str, n: Node, v: &mut Vec<Violation>) {
     let t = text(n, src);
     let mut c = n.walk();
-    let interpolates = n.named_children(&mut c).any(|k| k.kind().starts_with("gstring_"));
+    let interpolates = n
+        .named_children(&mut c)
+        .any(|k| k.kind().starts_with("gstring_"));
     if t.starts_with('"') && !interpolates && !t.contains('\'') && !t.contains('$') {
-        v.push(at(n, "UnnecessaryGString", format!("The String {t} can be wrapped in single quotes instead of double quotes")));
+        v.push(at(
+            n,
+            "UnnecessaryGString",
+            format!("The String {t} can be wrapped in single quotes instead of double quotes"),
+        ));
     }
 }
 
 /// UnnecessarySemicolon: a `;` that ends a line (or the file).
 fn unnecessary_semicolon(n: Node, rest: &[Node], v: &mut Vec<Violation>) {
-    if n.parent().is_some_and(|p| p.kind().contains("enum") || p.kind() == "for_statement") {
+    if n.parent()
+        .is_some_and(|p| p.kind().contains("enum") || p.kind() == "for_statement")
+    {
         return;
     }
     let row = n.start_position().row;
     // next leaf in document order, ignoring comments
-    let next = rest.iter().find(|x| x.child_count() == 0 && !x.kind().contains("comment"));
+    let next = rest
+        .iter()
+        .find(|x| x.child_count() == 0 && !x.kind().contains("comment"));
     if next.is_none_or(|x| x.start_position().row > row) {
-        v.push(at(n, "UnnecessarySemicolon", "Semicolons as line endings can be removed safely".into()));
+        v.push(at(
+            n,
+            "UnnecessarySemicolon",
+            "Semicolons as line endings can be removed safely".into(),
+        ));
     }
 }
 
 /// EmptyCatchBlock, with CodeNarc's default exemption for `ignore` / `ignored` parameter names.
 fn empty_catch(src: &str, n: Node, v: &mut Vec<Violation>) {
-    let Some(body) = n.child_by_field_name("body") else { return };
-    let param = n.child_by_field_name("parameter").map_or("", |p| text(p, src));
-    let ignored = param.split_whitespace().last().is_some_and(|w| w == "ignore" || w == "ignored");
+    let Some(body) = n.child_by_field_name("body") else {
+        return;
+    };
+    let param = n
+        .child_by_field_name("parameter")
+        .map_or("", |p| text(p, src));
+    let ignored = param
+        .split_whitespace()
+        .last()
+        .is_some_and(|w| w == "ignore" || w == "ignored");
     if body.named_child_count() == 0 && !ignored {
         v.push(at(n, "EmptyCatchBlock", "The catch block is empty".into()));
     }
@@ -131,19 +210,29 @@ mod tests {
     use super::*;
 
     fn rules(src: &str) -> Vec<(&'static str, usize)> {
-        lint(src).expect("parses").into_iter().map(|v| (v.rule, v.line)).collect()
+        lint(src)
+            .expect("parses")
+            .into_iter()
+            .map(|v| (v.rule, v.line))
+            .collect()
     }
 
     #[test]
     fn imports_unused_duplicate_and_used() {
         let src = "import a.b.Used\nimport a.b.Unused\nimport a.b.Used\nimport a.c.*\nimport a.b.Linked\n\n/** see {@link Linked} */\nclass X { Used u }\n";
-        assert_eq!(rules(src), vec![("UnusedImport", 2), ("DuplicateImport", 3)]);
+        assert_eq!(
+            rules(src),
+            vec![("UnusedImport", 2), ("DuplicateImport", 3)]
+        );
     }
 
     #[test]
     fn aliased_import_checks_alias() {
         assert_eq!(rules("import a.b.Long as L\nL x = null\n"), vec![]);
-        assert_eq!(rules("import a.b.Long as L\nLong x = null\n"), vec![("UnusedImport", 1)]);
+        assert_eq!(
+            rules("import a.b.Long as L\nLong x = null\n"),
+            vec![("UnusedImport", 1)]
+        );
     }
 
     #[test]
@@ -154,7 +243,10 @@ mod tests {
 
     #[test]
     fn semicolons() {
-        assert_eq!(rules("def a = 1;\ndef b = 2; def c = 3\n"), vec![("UnnecessarySemicolon", 1)]);
+        assert_eq!(
+            rules("def a = 1;\ndef b = 2; def c = 3\n"),
+            vec![("UnnecessarySemicolon", 1)]
+        );
         assert_eq!(rules("for (int i = 0; i < 3; i++) { println i }\n"), vec![]);
     }
 
@@ -162,6 +254,18 @@ mod tests {
     fn empty_catch_blocks() {
         let src = "try { x() } catch (Exception e) { }\ntry { x() } catch (Exception ignored) { }\ntry { x() } catch (Exception e) { log(e) }\n";
         assert_eq!(rules(src), vec![("EmptyCatchBlock", 1)]);
+    }
+
+    #[test]
+    fn every_emitted_rule_is_registered() {
+        let src = "import a.B\nimport a.B\ndef s = \"x\";\ntry { f() } catch (e) { }\n";
+        for v in lint(src).expect("parses") {
+            assert!(
+                RULES.iter().any(|r| r.name == v.rule),
+                "{} missing from RULES",
+                v.rule
+            );
+        }
     }
 
     #[test]

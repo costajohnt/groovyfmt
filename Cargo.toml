@@ -1,28 +1,24 @@
 [package]
 name = "groovyfmt"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2024"
-description = "Fast formatter for Groovy, Gradle build scripts, and Jenkinsfiles"
+rust-version = "1.85"
+description = "Fast formatter and linter for Groovy, Gradle build scripts, and Jenkinsfiles"
 license = "MIT"
 repository = "https://github.com/costajohnt/groovyfmt"
-
-[features]
-# Exactly one grammar. All three export the C symbol `tree_sitter_groovy`, so they can't link together.
-# ponytail: feature switch only lives until the grammar bake-off picks a winner.
-default = ["g-dekobon"]
-g-dekobon = ["dep:dekobon-tree-sitter-groovy"]
-g-amaanq = ["dep:ts-groovy-amaanq"]
-g-murtaza = ["dep:ts-groovy-murtaza"]
+readme = "README.md"
+keywords = ["groovy", "gradle", "jenkins", "formatter", "linter"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 tree-sitter = "0.26"
+toml = "1.2"
 # Fork branch groovyfmt-base = upstream main + dekobon PR #49 + our fixes
-# (fix/local-final-declaration, fix/command-named-args). Back to the crates.io
-# release once those land upstream.
-dekobon-tree-sitter-groovy = { git = "https://github.com/costajohnt/tree-sitter-groovy", rev = "0a5b2efb382c0a951ff33b3d53b6807ffe024793", optional = true }
-ts-groovy-amaanq = { package = "tree-sitter-groovy", version = "0.1.2", optional = true }
-ts-groovy-murtaza = { package = "tree-sitter-groovy", git = "https://github.com/murtaza64/tree-sitter-groovy", optional = true }
+# (dekobon/tree-sitter-groovy#56, #57). Back to the crates.io release once
+# those land upstream.
+dekobon-tree-sitter-groovy = { git = "https://github.com/costajohnt/tree-sitter-groovy", rev = "0a5b2efb382c0a951ff33b3d53b6807ffe024793" }
 
 [profile.release]
 lto = true
 codegen-units = 1
+strip = true

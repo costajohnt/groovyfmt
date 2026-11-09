@@ -1,20 +1,14 @@
+pub mod config;
 pub mod format;
 pub mod lint;
 
-use tree_sitter::{Language, Node, Parser, Tree};
-
-pub fn language() -> Language {
-    #[cfg(feature = "g-dekobon")]
-    return dekobon_tree_sitter_groovy::LANGUAGE.into();
-    #[cfg(feature = "g-amaanq")]
-    return ts_groovy_amaanq::LANGUAGE.into();
-    #[cfg(feature = "g-murtaza")]
-    return ts_groovy_murtaza::language();
-}
+use std::path::Path;
+use tree_sitter::{Node, Parser, Tree};
 
 pub fn parse(src: &str) -> Tree {
     let mut p = Parser::new();
-    p.set_language(&language()).expect("grammar ABI mismatch");
+    p.set_language(&dekobon_tree_sitter_groovy::LANGUAGE.into())
+        .expect("grammar ABI mismatch");
     p.parse(src, None).expect("parse cancelled")
 }
 
@@ -40,7 +34,18 @@ pub fn first_error(tree: &Tree) -> Option<Node<'_>> {
     }
 }
 
-pub fn is_groovy_file(path: &std::path::Path) -> bool {
+/// Groovy sources, Gradle build scripts, and Jenkinsfiles.
+pub fn is_groovy_file(path: &Path) -> bool {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    name.ends_with(".groovy") || name.ends_with(".gradle") || name.ends_with(".gvy") || name == "Jenkinsfile"
+    [".groovy", ".gradle", ".gvy", ".gy", ".gsh"]
+        .iter()
+        .any(|ext| name.ends_with(ext))
+        || name == "Jenkinsfile"
+}
+
+/// Directories skipped while walking: hidden ones and common build/vendor output.
+/// A directory named explicitly on the command line is always entered.
+pub fn is_skipped_dir(path: &Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    name.starts_with('.') || matches!(name, "build" | "out" | "target" | "node_modules")
 }
