@@ -1,6 +1,7 @@
 pub mod format;
+pub mod lint;
 
-use tree_sitter::{Language, Parser, Tree};
+use tree_sitter::{Language, Node, Parser, Tree};
 
 pub fn language() -> Language {
     #[cfg(feature = "g-dekobon")]
@@ -17,8 +18,8 @@ pub fn parse(src: &str) -> Tree {
     p.parse(src, None).expect("parse cancelled")
 }
 
-/// Line of the first ERROR or MISSING node, if any (1-based).
-pub fn first_error_line(tree: &Tree) -> Option<usize> {
+/// First ERROR or MISSING node in document order, if any.
+pub fn first_error(tree: &Tree) -> Option<Node<'_>> {
     if !tree.root_node().has_error() {
         return None;
     }
@@ -26,7 +27,7 @@ pub fn first_error_line(tree: &Tree) -> Option<usize> {
     loop {
         let n = c.node();
         if n.is_error() || n.is_missing() {
-            return Some(n.start_position().row + 1);
+            return Some(n);
         }
         if n.has_error() && c.goto_first_child() {
             continue;

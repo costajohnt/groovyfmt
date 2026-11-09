@@ -2,13 +2,30 @@
 
 A fast formatter for Groovy, Gradle build scripts (`build.gradle`), and Jenkinsfiles, written in Rust on a tree-sitter grammar.
 
-Status: early. v0 changes whitespace only.
+Status: early. The formatter changes whitespace only; the linter has five rules.
 
 ```sh
 groovyfmt <files or dirs>          # format in place
 groovyfmt --check <files or dirs>  # list files that would change; exit 1 if any
 groovyfmt --stats <dirs>           # corpus report: unchanged/formatted/skipped, idempotence, throughput
+groovyfmt --lint <files or dirs>   # lint; prints path:line:col: Rule: message, exit 1 if any
 ```
+
+Files are processed in parallel on all cores.
+
+## Lint rules
+
+Named after their CodeNarc equivalents so existing configs map across:
+
+| Rule | Flags |
+|---|---|
+| UnusedImport | import whose name (or alias) never appears in code or comments |
+| DuplicateImport | the same import twice |
+| UnnecessaryGString | double-quoted string with nothing to interpolate |
+| UnnecessarySemicolon | `;` at the end of a line |
+| EmptyCatchBlock | empty `catch`, unless the parameter is named `ignore` / `ignored` |
+
+Files that don't parse cleanly are not linted, to avoid false positives.
 
 What v0 does:
 
@@ -18,7 +35,7 @@ What v0 does:
 
 Safety: the output is re-parsed and its token stream compared with the input's. If anything other than whitespace differs, or the input doesn't parse cleanly, the file is skipped and left as is.
 
-## Corpus numbers (2026-11-08)
+## Corpus numbers (2026-11-08, 4-core claude-worker)
 
 23,795 files from grails-core, groovy, gradle, spock, CodeNarc, nextflow and Jenkins pipeline repos:
 
@@ -29,6 +46,8 @@ Safety: the output is re-parsed and its token stream compared with the input's. 
 | reformatted | 4,960 |
 | changed again by a second pass | 0 |
 | skipped, parse error | 8,621 |
+
+Timing on the 119 MB corpus: format with idempotence check 6.8s (17.5 MB/s), lint 3.9s. Spot check: 10 of 10 sampled UnusedImport findings were real (the symbol appears only on the import line). UnnecessaryGString is noisy on codebases that use double quotes by convention (81k of its 104k corpus hits are in gradle/gradle).
 
 Grammar bake-off, files parsing cleanly: dekobon-tree-sitter-groovy 63.8%, murtaza64/tree-sitter-groovy 47.8%, tree-sitter-groovy (amaanq) 18.7%. Build another grammar with `--no-default-features --features g-murtaza` (or `g-amaanq`).
 
