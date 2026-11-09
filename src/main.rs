@@ -212,7 +212,25 @@ fn par_map<R: Send>(files: &[PathBuf], f: impl Fn(&Path) -> R + Sync) -> Vec<R> 
 }
 
 fn read(path: &Path) -> Result<String, String> {
-    std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))
+    std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", shown(path)))
+}
+
+/// Control characters escaped, so a crafted file name or file content (lint messages quote
+/// source text) can't break a report line or inject CI workflow commands such as `::set-env`.
+fn printable(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_control() {
+                c.escape_debug().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
+}
+
+fn shown(p: &Path) -> String {
+    printable(&p.display().to_string())
 }
 
 /// GitHub Actions workflow-command escaping for property values and messages.
@@ -283,23 +301,23 @@ fn fmt(files: &[PathBuf], cfg: &Config, a: &Args) -> i32 {
             Ok(Outcome::Skipped(why)) => {
                 skipped += 1;
                 if a.verbose {
-                    eprintln!("skipped {}: {why}", path.display());
+                    eprintln!("skipped {}: {why}", shown(path));
                 }
             }
             Ok(Outcome::Formatted(out)) => {
                 changed += 1;
                 if !check {
                     if let Err(e) = std::fs::write(path, out) {
-                        eprintln!("groovyfmt: {}: {e}", path.display());
+                        eprintln!("groovyfmt: {}: {e}", shown(path));
                         failed = true;
                     }
                 } else if a.github {
                     println!(
                         "::error file={}::File is not formatted. Run groovyfmt to fix.",
-                        gh_escape(&path.display().to_string(), true)
+                        gh_escape(&shown(path), true)
                     );
                 } else {
-                    println!("{}", path.display());
+                    println!("{}", shown(path));
                 }
             }
         }
@@ -339,7 +357,7 @@ fn lint_files(files: &[PathBuf], cfg: &Config, a: &Args, stats_only: bool) -> i3
             Ok(Err(why)) => {
                 skipped += 1;
                 if a.verbose {
-                    eprintln!("skipped {}: {why}", path.display());
+                    eprintln!("skipped {}: {why}", shown(path));
                 }
             }
             Ok(Ok(vs)) => {
@@ -353,7 +371,7 @@ fn lint_files(files: &[PathBuf], cfg: &Config, a: &Args, stats_only: bool) -> i3
                         writeln!(
                             out,
                             "::warning file={},line={},col={},title={}::{}",
-                            gh_escape(&path.display().to_string(), true),
+                            gh_escape(&shown(path), true),
                             v.line,
                             v.col,
                             v.rule,
@@ -363,11 +381,11 @@ fn lint_files(files: &[PathBuf], cfg: &Config, a: &Args, stats_only: bool) -> i3
                         writeln!(
                             out,
                             "{}:{}:{}: {}: {}",
-                            path.display(),
+                            shown(path),
                             v.line,
                             v.col,
                             v.rule,
-                            v.message
+                            printable(&v.message)
                         )
                     };
                 }
@@ -418,7 +436,7 @@ fn stats(files: &[PathBuf], cfg: &Config) -> i32 {
         }
         if ni {
             nonidem += 1;
-            println!("NONIDEMPOTENT {}", path.display());
+            println!("NONIDEMPOTENT {}", shown(&path));
         }
     }
     let secs = t.elapsed().as_secs_f64();
@@ -465,4 +483,18 @@ fn tree(files: &[PathBuf]) -> i32 {
         }
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn printable_neutralizes_line_breaks() {
+        assert_eq!(
+            printable("a\n::set-env name=X::y\r"),
+            "a\\n::set-env name=X::y\\r"
+        );
+        assert_eq!(printable("plain é"), "plain é");
+    }
 }
