@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.0 (2026-11-09)
+
+From a full audit (`docs/audit-2026-11-09.md`). groovyfmt runs in CI on pull-request content, so these matter:
+
+### Security
+
+- Symlinks inside searched directories are no longer followed. A link cycle used to hang the run, and a link out of the tree could make groovyfmt read or rewrite files elsewhere.
+- A file name starting with `::` can no longer inject a GitHub Actions workflow command into the log.
+- Deeply nested input no longer crashes `--lint` with a stack overflow, and no longer makes the formatter's output grow quadratically.
+- FIFOs, device files and files over 10 MB are skipped.
+
+### Fixed
+
+- `indent_after_labels` was cubic in block length (221 s for a 20,000-line block, now 0.24 s), and treated any label, not just Spock's, as opening a block.
+- Mixed line endings are kept per line instead of converting the whole file to CRLF.
+- Lint columns count characters, not bytes, so annotations land in the right place after non-ASCII text.
+- A crash while processing one file is reported as an error for that file (exit 2) instead of aborting the run; `| head` no longer panics; unreadable directories exit 2.
+- The formatter's safety check now compares string fragments exactly, closing a blind spot for whitespace before `${…}` inside GStrings.
+
 ## 0.3.0 (2026-11-09)
 
 ### Added

@@ -4,7 +4,7 @@ use groovyfmt::lint::{self, RULES};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
 const HELP: &str = "\
@@ -62,8 +62,21 @@ enum Mode {
 }
 
 fn die(msg: impl std::fmt::Display) -> ! {
-    eprintln!("groovyfmt: {msg}");
+    eprintln!("groovyfmt: {}", printable(&msg.to_string()));
     std::process::exit(2);
+}
+
+/// Set when a directory couldn't be read during the walk; the run then exits 2.
+static WALK_FAILED: AtomicBool = AtomicBool::new(false);
+
+/// Files larger than this are skipped: generated or vendored code, and a guard against
+/// a crafted input exhausting memory.
+const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
+
+/// One line to stdout. Write errors are ignored, so `groovyfmt --check | head -1` stops
+/// printing quietly instead of panicking; the exit status still reflects the results.
+fn say(line: &str) {
+    let _ = writeln!(std::io::stdout().lock(), "{line}");
 }
 
 fn parse_args() -> Args {
@@ -148,25 +161,41 @@ fn load_config(a: &Args) -> Config {
     }
     if a.verbose {
         match &path {
-            Some(p) => eprintln!("config: {}", p.display()),
+            Some(p) => eprintln!("config: {}", shown(p)),
             None => eprintln!("config: none found, using defaults"),
         }
     }
     cfg
 }
 
+/// Paths named on the command line are taken as given (a named symlink is followed).
+/// Below them, symlinks are never followed, so a link cycle can't loop the walk and a link
+/// out of the tree can't make us read or rewrite files elsewhere; only regular files count.
 fn walk(p: &Path, top: bool, out: &mut Vec<PathBuf>) {
-    if p.is_dir() {
+    let meta = if top {
+        std::fs::metadata(p)
+    } else {
+        std::fs::symlink_metadata(p)
+    };
+    let Ok(meta) = meta else { return };
+    if meta.is_dir() {
         if !top && groovyfmt::is_skipped_dir(p) {
             return;
         }
-        let Ok(rd) = std::fs::read_dir(p) else { return };
+        let rd = match std::fs::read_dir(p) {
+            Ok(rd) => rd,
+            Err(e) => {
+                eprintln!("groovyfmt: {}: {e}", shown(p));
+                WALK_FAILED.store(true, Ordering::Relaxed);
+                return;
+            }
+        };
         let mut entries: Vec<_> = rd.flatten().map(|e| e.path()).collect();
         entries.sort();
         for path in entries {
             walk(&path, false, out);
         }
-    } else if top || groovyfmt::is_groovy_file(p) {
+    } else if meta.is_file() && (top || groovyfmt::is_groovy_file(p)) {
         // `./src/A.groovy` reads as `src/A.groovy`, as in git and cargo output
         out.push(p.strip_prefix(".").unwrap_or(p).to_path_buf());
     }
@@ -183,13 +212,17 @@ fn collect(paths: &[PathBuf]) -> Vec<PathBuf> {
     files
 }
 
-/// Run `f` over every file on all cores; results come back in input order.
-fn par_map<R: Send>(files: &[PathBuf], f: impl Fn(&Path) -> R + Sync) -> Vec<R> {
+/// Run `f` over every file on all cores; results come back in input order. A panic while
+/// handling one file becomes that file's error instead of aborting the whole run.
+fn par_map<T: Send>(
+    files: &[PathBuf],
+    f: impl Fn(&Path) -> Result<T, String> + Sync,
+) -> Vec<Result<T, String>> {
     let next = AtomicUsize::new(0);
     let threads = std::thread::available_parallelism()
         .map_or(1, |n| n.get())
         .min(files.len().max(1));
-    let mut out: Vec<(usize, R)> = std::thread::scope(|s| {
+    let mut out: Vec<(usize, Result<T, String>)> = std::thread::scope(|s| {
         let handles: Vec<_> = (0..threads)
             .map(|_| {
                 s.spawn(|| {
@@ -197,7 +230,11 @@ fn par_map<R: Send>(files: &[PathBuf], f: impl Fn(&Path) -> R + Sync) -> Vec<R> 
                     loop {
                         let i = next.fetch_add(1, Ordering::Relaxed);
                         let Some(path) = files.get(i) else { break };
-                        mine.push((i, f(path)));
+                        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(path)))
+                            .unwrap_or_else(|_| {
+                                Err(format!("{}: internal error, please report", shown(path)))
+                            });
+                        mine.push((i, r));
                     }
                     mine
                 })
@@ -205,7 +242,7 @@ fn par_map<R: Send>(files: &[PathBuf], f: impl Fn(&Path) -> R + Sync) -> Vec<R> 
             .collect();
         handles
             .into_iter()
-            .flat_map(|h| h.join().expect("worker thread panicked"))
+            .flat_map(|h| h.join().unwrap_or_default())
             .collect()
     });
     out.sort_unstable_by_key(|(i, _)| *i);
@@ -214,12 +251,19 @@ fn par_map<R: Send>(files: &[PathBuf], f: impl Fn(&Path) -> R + Sync) -> Vec<R> 
 
 const NOT_UTF8: &str = "not valid UTF-8";
 
-/// File contents; `Ok(None)` for a file that isn't UTF-8, which is skipped like an
-/// unparseable one rather than failing the whole run.
-fn read(path: &Path) -> Result<Option<String>, String> {
+/// File contents, or `Ok(Err(reason))` for a file that is skipped rather than failing the
+/// run: not UTF-8, not a regular file, or larger than `MAX_FILE_BYTES`.
+fn read(path: &Path) -> Result<Result<String, &'static str>, String> {
+    let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", shown(path)))?;
+    if !meta.is_file() {
+        return Ok(Err("not a regular file"));
+    }
+    if meta.len() > MAX_FILE_BYTES {
+        return Ok(Err("larger than 10 MB"));
+    }
     match std::fs::read_to_string(path) {
-        Ok(s) => Ok(Some(s)),
-        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => Ok(None),
+        Ok(s) => Ok(Ok(s)),
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => Ok(Err(NOT_UTF8)),
         Err(e) => Err(format!("{}: {e}", shown(path))),
     }
 }
@@ -238,8 +282,15 @@ fn printable(s: &str) -> String {
         .collect()
 }
 
+/// A path for display. A leading `:` gets `./` in front, so no report line can start
+/// with `::` and be taken as a GitHub Actions workflow command.
 fn shown(p: &Path) -> String {
-    printable(&p.display().to_string())
+    let s = printable(&p.display().to_string());
+    if s.starts_with(':') {
+        format!("./{s}")
+    } else {
+        s
+    }
 }
 
 /// GitHub Actions workflow-command escaping for property values and messages.
@@ -267,7 +318,11 @@ fn main() {
         Mode::Errors => errors(&collect(&a.paths)),
         Mode::Tree => tree(&collect(&a.paths)),
     };
-    std::process::exit(code);
+    std::process::exit(if WALK_FAILED.load(Ordering::Relaxed) {
+        2
+    } else {
+        code
+    });
 }
 
 fn rules(cfg: &Config) -> i32 {
@@ -277,7 +332,7 @@ fn rules(cfg: &Config) -> i32 {
         } else {
             "off"
         };
-        println!("{on}  {:<22} {}", r.name, r.description);
+        say(&format!("{on}  {:<22} {}", r.name, r.description));
     }
     0
 }
@@ -299,7 +354,7 @@ fn fmt(files: &[PathBuf], cfg: &Config, a: &Args) -> i32 {
     let t = Instant::now();
     let check = a.mode == Mode::Check;
     let results = par_map(files, |p| {
-        read(p).map(|src| src.map_or(Outcome::Skipped(NOT_UTF8), |s| format(&s, &cfg.style)))
+        read(p).map(|src| src.map_or_else(Outcome::Skipped, |s| format(&s, &cfg.style)))
     });
     let (mut changed, mut skipped, mut failed) = (0usize, 0usize, false);
     for (path, r) in files.iter().zip(results) {
@@ -323,12 +378,12 @@ fn fmt(files: &[PathBuf], cfg: &Config, a: &Args) -> i32 {
                         failed = true;
                     }
                 } else if a.github {
-                    println!(
+                    say(&format!(
                         "::error file={}::File is not formatted. Run groovyfmt to fix.",
                         gh_escape(&shown(path), true)
-                    );
+                    ));
                 } else {
-                    println!("{}", shown(path));
+                    say(&shown(path));
                 }
             }
         }
@@ -356,11 +411,10 @@ fn fmt(files: &[PathBuf], cfg: &Config, a: &Args) -> i32 {
 fn lint_files(files: &[PathBuf], cfg: &Config, a: &Args, stats_only: bool) -> i32 {
     let t = Instant::now();
     let results = par_map(files, |p| {
-        read(p).map(|src| src.map_or(Err(NOT_UTF8), |s| lint::lint(&s)))
+        read(p).map(|src| src.and_then(|s| lint::lint(&s)))
     });
     let (mut skipped, mut total, mut failed) = (0usize, 0usize, false);
     let mut by_rule: BTreeMap<&str, usize> = BTreeMap::new();
-    let mut out = std::io::stdout().lock();
     for (path, r) in files.iter().zip(results) {
         match r {
             Err(e) => {
@@ -380,27 +434,25 @@ fn lint_files(files: &[PathBuf], cfg: &Config, a: &Args, stats_only: bool) -> i3
                     if stats_only {
                         continue;
                     }
-                    let _ = if a.github {
-                        writeln!(
-                            out,
+                    let message = printable(&v.message);
+                    say(&if a.github {
+                        format!(
                             "::warning file={},line={},col={},title={}::{}",
                             gh_escape(&shown(path), true),
                             v.line,
                             v.col,
                             v.rule,
-                            gh_escape(&v.message, false)
+                            gh_escape(&message, false)
                         )
                     } else {
-                        writeln!(
-                            out,
-                            "{}:{}:{}: {}: {}",
+                        format!(
+                            "{}:{}:{}: {}: {message}",
                             shown(path),
                             v.line,
                             v.col,
-                            v.rule,
-                            printable(&v.message)
+                            v.rule
                         )
-                    };
+                    });
                 }
             }
         }
@@ -424,7 +476,10 @@ fn lint_files(files: &[PathBuf], cfg: &Config, a: &Args, stats_only: bool) -> i3
 fn stats(files: &[PathBuf], cfg: &Config) -> i32 {
     let t = Instant::now();
     let results = par_map(files, |p| {
-        let src = read(p).ok()??;
+        let src = match read(p)? {
+            Ok(src) => src,
+            Err(why) => return Ok((0, Outcome::Skipped(why), false, 0)),
+        };
         let out = format(&src, &cfg.style);
         let nonidem =
             matches!(&out, Outcome::Formatted(o) if format(o, &cfg.style) != Outcome::Unchanged);
@@ -435,11 +490,15 @@ fn stats(files: &[PathBuf], cfg: &Config) -> i32 {
             }
             _ => 0,
         };
-        Some((src.len(), out, nonidem, lines, p.to_path_buf()))
+        Ok((src.len(), out, nonidem, lines))
     });
     let (mut bytes, mut unchanged, mut changed, mut nonidem, mut lines, mut skipped) =
         (0, 0, 0, 0, 0, 0);
-    for (len, out, ni, l, path) in results.into_iter().flatten() {
+    for (path, r) in files.iter().zip(results) {
+        let Ok((len, out, ni, l)) = r else {
+            skipped += 1;
+            continue;
+        };
         bytes += len;
         lines += l;
         match out {
@@ -449,24 +508,26 @@ fn stats(files: &[PathBuf], cfg: &Config) -> i32 {
         }
         if ni {
             nonidem += 1;
-            println!("NONIDEMPOTENT {}", shown(&path));
+            say(&format!("NONIDEMPOTENT {}", shown(path)));
         }
     }
     let secs = t.elapsed().as_secs_f64();
-    println!(
+    say(&format!(
         "files={} unchanged={unchanged} formatted={changed} lines_changed={lines} nonidempotent={nonidem} skipped={skipped} MB={:.1} secs={secs:.2}",
         files.len(),
         bytes as f64 / 1e6
-    );
+    ));
     i32::from(nonidem > 0)
 }
 
 /// Development: "<parent kind>\t<ERROR|MISSING x>\t<line>\t<path:line>" per file that fails to parse.
 fn errors(files: &[PathBuf]) -> i32 {
     let rows = par_map(files, |p| {
-        let src = read(p).ok()??;
+        let Ok(src) = read(p)? else { return Ok(None) };
         let tree = groovyfmt::parse(&src);
-        let e = groovyfmt::first_error(&tree)?;
+        let Some(e) = groovyfmt::first_error(&tree) else {
+            return Ok(None);
+        };
         let line = src.lines().nth(e.start_position().row).unwrap_or("").trim();
         let parent = e.parent().map_or("-", |p| p.kind());
         let kind = if e.is_missing() {
@@ -474,15 +535,15 @@ fn errors(files: &[PathBuf]) -> i32 {
         } else {
             "ERROR".into()
         };
-        Some(format!(
+        Ok(Some(format!(
             "{parent}\t{kind}\t{}\t{}:{}",
-            line.chars().take(100).collect::<String>(),
-            p.display(),
+            printable(&line.chars().take(100).collect::<String>()),
+            shown(p),
             e.start_position().row + 1
-        ))
+        )))
     });
-    for r in rows.into_iter().flatten() {
-        println!("{r}");
+    for r in rows.into_iter().flatten().flatten() {
+        say(&r);
     }
     0
 }
@@ -491,8 +552,8 @@ fn errors(files: &[PathBuf]) -> i32 {
 fn tree(files: &[PathBuf]) -> i32 {
     for f in files {
         match read(f) {
-            Ok(Some(src)) => println!("{}", groovyfmt::parse(&src).root_node().to_sexp()),
-            Ok(None) => eprintln!("groovyfmt: {}: {NOT_UTF8}", shown(f)),
+            Ok(Ok(src)) => say(&groovyfmt::parse(&src).root_node().to_sexp()),
+            Ok(Err(why)) => eprintln!("groovyfmt: {}: {why}", shown(f)),
             Err(e) => eprintln!("groovyfmt: {e}"),
         }
     }
@@ -510,5 +571,20 @@ mod tests {
             "a\\n::set-env name=X::y\\r"
         );
         assert_eq!(printable("plain é"), "plain é");
+    }
+
+    #[test]
+    fn shown_never_starts_a_line_with_a_colon() {
+        assert_eq!(
+            shown(Path::new("::warning title=x::y.groovy")),
+            "./::warning title=x::y.groovy"
+        );
+        assert_eq!(shown(Path::new("src/A.groovy")), "src/A.groovy");
+    }
+
+    #[test]
+    fn gh_escape_properties_and_messages() {
+        assert_eq!(gh_escape("a:b,c%\r\n", true), "a%3Ab%2Cc%25%0D%0A");
+        assert_eq!(gh_escape("a:b,c%\n", false), "a:b,c%25%0A");
     }
 }

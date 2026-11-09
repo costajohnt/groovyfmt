@@ -1,6 +1,7 @@
 //! Native lint rules, named after their CodeNarc equivalents so CI configs map across.
 //! Files with parse errors are not linted (a broken tree would produce false positives).
 
+use crate::text;
 use std::collections::HashSet;
 use tree_sitter::{Node, Tree};
 
@@ -110,7 +111,10 @@ pub fn lint(src: &str) -> Result<Vec<Violation>, &'static str> {
     let mut v = Vec::new();
     imports(src, &tree, &mut v);
     let mut nodes = Vec::new();
-    each(tree.root_node(), &mut |n| nodes.push(n));
+    crate::preorder(tree.root_node(), |n| {
+        nodes.push(n);
+        true
+    });
     for (i, &n) in nodes.iter().enumerate() {
         match n.kind() {
             "string_literal" => unnecessary_gstring(src, n, &mut v),
@@ -149,20 +153,17 @@ pub fn lint(src: &str) -> Result<Vec<Violation>, &'static str> {
             _ => {}
         }
     }
+    // tree-sitter columns count bytes; report characters, as editors and GitHub do
+    let lines: Vec<&str> = src.split('\n').collect();
+    for x in &mut v {
+        if let Some(l) = lines.get(x.line - 1) {
+            x.col = l
+                .get(..x.col - 1)
+                .map_or(x.col, |prefix| prefix.chars().count() + 1);
+        }
+    }
     v.sort_by_key(|x| (x.line, x.col));
     Ok(v)
-}
-
-fn each<'a>(n: Node<'a>, f: &mut impl FnMut(Node<'a>)) {
-    f(n);
-    let mut c = n.walk();
-    for child in n.children(&mut c) {
-        each(child, f);
-    }
-}
-
-fn text<'a>(n: Node, src: &'a str) -> &'a str {
-    n.utf8_text(src.as_bytes()).unwrap_or("")
 }
 
 fn at(n: Node, rule: &'static str, message: String) -> Violation {
@@ -177,32 +178,25 @@ fn at(n: Node, rule: &'static str, message: String) -> Violation {
 
 /// UnusedImport + DuplicateImport.
 fn imports(src: &str, tree: &Tree, v: &mut Vec<Violation>) {
-    fn scan<'a>(
-        n: Node<'a>,
-        src: &'a str,
-        decls: &mut Vec<Node<'a>>,
-        used: &mut HashSet<&'a str>,
-        comments: &mut String,
-    ) {
-        match n.kind() {
-            "import_declaration" => decls.push(n), // don't descend: names inside imports aren't uses
-            k if k.contains("comment") => {
-                comments.push_str(text(n, src));
-                comments.push('\n');
-            }
-            _ if n.child_count() == 0 => {
+    let (mut decls, mut used, mut comments) = (Vec::new(), HashSet::new(), String::new());
+    crate::preorder(tree.root_node(), |n| match n.kind() {
+        // don't descend: names inside imports aren't uses
+        "import_declaration" => {
+            decls.push(n);
+            false
+        }
+        k if k.contains("comment") => {
+            comments.push_str(text(n, src));
+            comments.push('\n');
+            false
+        }
+        _ => {
+            if n.child_count() == 0 {
                 used.insert(text(n, src));
             }
-            _ => {
-                let mut c = n.walk();
-                for child in n.children(&mut c) {
-                    scan(child, src, decls, used, comments);
-                }
-            }
+            true
         }
-    }
-    let (mut decls, mut used, mut comments) = (Vec::new(), HashSet::new(), String::new());
-    scan(tree.root_node(), src, &mut decls, &mut used, &mut comments);
+    });
     let mut seen = HashSet::new();
     for d in decls {
         let full = text(d, src)
@@ -239,11 +233,7 @@ fn imports(src: &str, tree: &Tree, v: &mut Vec<Violation>) {
 /// UnnecessaryGString: double-quoted string with nothing to interpolate.
 fn unnecessary_gstring(src: &str, n: Node, v: &mut Vec<Violation>) {
     let t = text(n, src);
-    let mut c = n.walk();
-    let interpolates = n
-        .named_children(&mut c)
-        .any(|k| k.kind().starts_with("gstring_"));
-    if t.starts_with('"') && !interpolates && !t.contains('\'') && !t.contains('$') {
+    if t.starts_with('"') && !has_interpolation(n) && !t.contains('\'') && !t.contains('$') {
         v.push(at(
             n,
             "UnnecessaryGString",
@@ -540,15 +530,35 @@ mod tests {
     }
 
     #[test]
-    fn every_emitted_rule_is_registered() {
-        let src = "import a.B\nimport a.B\ndef s = \"x\";\ntry { f() } catch (e) { }\nif (true) { }\nif (a = 1) { f() } else { }\ntry { } finally { }\nwhile (a) { }\nfor (i in xs) { }\ndef m = [a: 1, a: 2]\nswitch (x) { case 1: f(); break\n case 1: g() }\nif (x == x) { f() }\n";
-        for v in lint(src).expect("parses") {
-            assert!(
-                RULES.iter().any(|r| r.name == v.rule),
-                "{} missing from RULES",
-                v.rule
-            );
-        }
+    fn every_rule_fires_and_every_emitted_rule_is_registered() {
+        let src = "import a.B\nimport a.B\nimport c.Unused\ndef s = \"x\";\ntry { f() } catch (e) { }\nif (true) { }\nif (a = 1) { f() } else { }\ntry { } finally { }\nwhile (a) { }\nfor (i in xs) { }\ndef m = [a: 1, a: 2]\nswitch (x) { case 1: f(); break\n case 1: g() }\nif (x == x) { f() }\nB.go()\n";
+        let emitted: HashSet<&str> = lint(src).expect("parses").iter().map(|v| v.rule).collect();
+        let all: HashSet<&str> = RULES.iter().map(|r| r.name).collect();
+        assert_eq!(emitted, all);
+    }
+
+    #[test]
+    fn exemptions_do_not_fire() {
+        let src = "try { f() } catch (Exception ignore) { }\nif (x += 1) { f() }\nif (\"${x}\") { f() }\nenum E { A, B;\n  int v }\n";
+        assert_eq!(rules(src), vec![]);
+    }
+
+    #[test]
+    fn columns_count_characters_not_bytes() {
+        // `é` is two bytes; the `;` is the 12th character but the 13th byte
+        let v = lint("def s = 'é';\n").expect("parses");
+        assert_eq!(
+            (v[0].rule, v[0].line, v[0].col),
+            ("UnnecessarySemicolon", 1, 12)
+        );
+    }
+
+    #[test]
+    fn empty_loop_body_semicolon_is_never_reported() {
+        // The grammar can't parse an empty loop body yet, so the file isn't linted at all.
+        // If it learns to, this fails until UnnecessarySemicolon exempts that `;`.
+        let r = lint("while (it.next());\nprintln 'x'\n");
+        assert!(r.map_or(true, |v| v.is_empty()));
     }
 
     #[test]

@@ -212,27 +212,128 @@ fn indent_after_labels_from_config() {
 }
 
 #[test]
-fn errors_exit_2() {
-    let d = Dir::new("errors");
-    d.write(".groovyfmt.toml", "indnet = 2\n");
-    let cfg = run(&d.0, &["--check"], None);
-    assert_eq!(cfg.status.code(), Some(2));
-    assert!(stderr(&cfg).contains("unknown key `indnet`"));
-    assert_eq!(run(&d.0, &["--bogus"], None).status.code(), Some(2));
+fn errors_exit_2_with_specific_messages() {
+    // each case in its own directory, so one failure mode can't mask another
+    let cases: &[(&str, Option<&str>, &[&str], &str)] = &[
+        (
+            "cfg",
+            Some("indnet = 2\n"),
+            &["--check"],
+            "unknown key `indnet`",
+        ),
+        ("bogus", None, &["--bogus"], "unknown option `--bogus`"),
+        ("combo", None, &["--check", "--lint"], "can't be combined"),
+        (
+            "nocfg",
+            None,
+            &["--config", "nope.toml", "--check"],
+            "nope.toml",
+        ),
+        (
+            "missing",
+            None,
+            &["--check", "missing.groovy"],
+            "missing.groovy: no such file or directory",
+        ),
+        (
+            "indent",
+            None,
+            &["--indent", "0", "--check"],
+            "--indent must be 1 to 16",
+        ),
+        (
+            "format",
+            None,
+            &["--output-format", "xml", "--lint"],
+            "unknown --output-format `xml`",
+        ),
+    ];
+    for (name, toml, args, msg) in cases {
+        let d = Dir::new(&format!("err-{name}"));
+        d.write("A.groovy", PRETTY);
+        if let Some(t) = toml {
+            d.write(".groovyfmt.toml", t);
+        }
+        let o = run(&d.0, args, None);
+        assert_eq!(o.status.code(), Some(2), "{name}: {}", stderr(&o));
+        assert!(
+            stderr(&o).contains(msg),
+            "{name}: expected `{msg}` in {}",
+            stderr(&o)
+        );
+    }
+}
+
+#[test]
+fn check_github_output_is_exact() {
+    let d = Dir::new("ghcheck");
+    d.write("src/A.groovy", UGLY);
+    let o = run(&d.0, &["--check", "--output-format", "github"], None);
+    assert_eq!(o.status.code(), Some(1));
     assert_eq!(
-        run(&d.0, &["--check", "--lint"], None).status.code(),
-        Some(2)
+        stdout(&o),
+        "::error file=src/A.groovy::File is not formatted. Run groovyfmt to fix.\n"
     );
-    assert_eq!(
-        run(&d.0, &["--config", "nope.toml", "--check"], None)
-            .status
-            .code(),
-        Some(2)
+}
+
+#[test]
+fn file_name_cannot_start_a_report_line_with_colons() {
+    let d = Dir::new("colons");
+    d.write("::warning title=x::y.groovy", "def a = 1;\n");
+    let o = run(&d.0, &["--lint"], None);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(
+        stdout(&o).starts_with("./::warning title=x::y.groovy:1:10: UnnecessarySemicolon"),
+        "{}",
+        stdout(&o)
     );
-    assert_eq!(
-        run(&d.0, &["--check", "missing.groovy"], None)
-            .status
-            .code(),
-        Some(2)
-    );
+    assert!(stdout(&o).lines().all(|l| !l.starts_with("::")));
+}
+
+#[test]
+fn discovers_groovy_files_and_skips_build_dirs() {
+    let d = Dir::new("discover");
+    d.write("Jenkinsfile", UGLY);
+    d.write("scripts/x.gvy", UGLY);
+    d.write("out/O.groovy", UGLY);
+    d.write("target/T.groovy", UGLY);
+    d.write("README.md", "not groovy");
+    let o = run(&d.0, &["--check"], None);
+    assert_eq!(stdout(&o), "Jenkinsfile\nscripts/x.gvy\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinks_and_special_files_are_not_followed() {
+    let d = Dir::new("links");
+    d.write("A.groovy", UGLY);
+    std::os::unix::fs::symlink(".", d.0.join("loop1")).unwrap();
+    std::os::unix::fs::symlink(".", d.0.join("loop2")).unwrap();
+    std::os::unix::fs::symlink("/dev/zero", d.0.join("Zero.groovy")).unwrap();
+    let o = run(&d.0, &["--check"], None);
+    assert_eq!(stdout(&o), "A.groovy\n", "each file once, links ignored");
+    assert_eq!(o.status.code(), Some(1));
+}
+
+#[cfg(unix)]
+#[test]
+fn write_and_walk_failures_exit_2() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = Dir::new("perms");
+    let ro = d.write("ReadOnly.groovy", UGLY);
+    d.write("Ok.groovy", UGLY);
+    std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let w = run(&d.0, &[], None);
+    assert_eq!(w.status.code(), Some(2), "{}", stderr(&w));
+    assert!(stderr(&w).contains("ReadOnly.groovy"), "{}", stderr(&w));
+    assert_eq!(d.read("Ok.groovy"), PRETTY, "other files still formatted");
+
+    let locked = d.0.join("locked");
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let c = run(&d.0, &["--check", "Ok.groovy", "locked"], None);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(c.status.code(), Some(2), "{}", stderr(&c));
+    assert!(stderr(&c).contains("locked"), "{}", stderr(&c));
 }

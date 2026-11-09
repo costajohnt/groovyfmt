@@ -53,7 +53,7 @@ cargo install --locked --git https://github.com/costajohnt/groovyfmt
 groovyfmt [OPTIONS] [PATH]...
 ```
 
-With no paths it works on the current directory. Directories are searched for `*.groovy`, `*.gradle`, `*.gvy`, `*.gy`, `*.gsh` and `Jenkinsfile`, skipping hidden directories and `build`, `out`, `target` and `node_modules`. A file named on the command line is always processed.
+With no paths it works on the current directory. Directories are searched for `*.groovy`, `*.gradle`, `*.gvy`, `*.gy`, `*.gsh` and `Jenkinsfile`, skipping hidden directories and `build`, `out`, `target` and `node_modules`. Symlinks inside those directories are not followed. A file named on the command line is always processed. Files that aren't valid UTF-8, aren't regular files, are larger than 10 MB, or would need more than 200 columns of indentation (50 levels at the default indent) are skipped and listed under `-v`.
 
 | Command | Does |
 |---|---|

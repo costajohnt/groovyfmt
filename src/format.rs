@@ -3,6 +3,7 @@
 //! the output is re-parsed and its token stream compared against the input's before it is
 //! accepted, so a wrong heuristic below yields `Skipped`, never a corrupted file.
 
+use crate::text;
 use tree_sitter::{Node, Tree};
 
 #[derive(Debug, PartialEq)]
@@ -45,7 +46,9 @@ pub fn format(src: &str, style: &Style) -> Outcome {
     if tree.root_node().has_error() {
         return Outcome::Skipped("parse error");
     }
-    let out = reindent(src, &tree, style);
+    let Some(out) = reindent(src, &tree, style) else {
+        return Outcome::Skipped("nesting too deep to format");
+    };
     if out == src {
         return Outcome::Unchanged;
     }
@@ -56,16 +59,32 @@ pub fn format(src: &str, style: &Style) -> Outcome {
     Outcome::Formatted(out)
 }
 
-fn reindent(src: &str, tree: &Tree, style: &Style) -> String {
-    let eol = if src.contains("\r\n") { "\r\n" } else { "\n" };
+/// Indents beyond this many columns mean pathological nesting (generated or hostile input).
+/// Giving up keeps output linear in the input instead of growing with depth squared.
+const MAX_INDENT: usize = 200;
+
+/// `None` when nesting exceeds `MAX_INDENT`.
+fn reindent(src: &str, tree: &Tree, style: &Style) -> Option<String> {
     let root = tree.root_node();
-    let mut out: Vec<String> = Vec::new();
+    // each output line keeps its own terminator, so mixed line endings (and line breaks
+    // inside multi-line strings) survive unchanged
+    let mut out: Vec<(String, &str)> = Vec::new();
     let mut line_start = 0usize;
     let mut row_indent: Vec<usize> = Vec::new(); // final indent of each row, for children to inherit
+    let mut labels = LabelCache::default();
+    let segments: Vec<&str> = src.split('\n').collect();
+    let last = segments.len() - 1;
 
-    for raw in src.split('\n') {
+    for (i, raw) in segments.iter().enumerate() {
         let line_end = line_start + raw.len(); // offset of the '\n' (or EOF)
         let content = raw.strip_suffix('\r').unwrap_or(raw);
+        let eol = if i == last {
+            out.last().map_or("\n", |(_, e)| *e) // no terminator in the source: add one
+        } else if raw.ends_with('\r') {
+            "\r\n"
+        } else {
+            "\n"
+        };
         let lead = content.len() - content.trim_start_matches([' ', '\t']).len();
         let pos = line_start + lead;
         let body = &content[lead..];
@@ -73,11 +92,11 @@ fn reindent(src: &str, tree: &Tree, style: &Style) -> String {
         if inside_token(root, line_start, src) {
             // Line begins inside a multi-line string or comment: emit verbatim.
             row_indent.push(lead);
-            out.push(content.to_string());
+            out.push((content.to_string(), eol));
         } else if body.trim().is_empty() {
             row_indent.push(0);
-            if out.last().is_some_and(|l| !l.is_empty()) {
-                out.push(String::new());
+            if out.last().is_some_and(|(l, _)| !l.is_empty()) {
+                out.push((String::new(), eol));
             }
         } else {
             let keep_trailing = line_end < src.len() && inside_token(root, line_end, src);
@@ -87,19 +106,53 @@ fn reindent(src: &str, tree: &Tree, style: &Style) -> String {
             let indent = if lead == 0 && body.starts_with("//") {
                 0
             } else {
-                indent_for(root, src, pos, &row_indent, style)
+                indent_for(root, src, pos, &row_indent, style, &mut labels)
             };
+            if indent > MAX_INDENT {
+                return None;
+            }
             row_indent.push(indent);
-            out.push(format!("{}{}", " ".repeat(indent), text));
+            out.push((format!("{}{}", " ".repeat(indent), text), eol));
         }
         line_start = line_end + 1;
     }
-    while out.last().is_some_and(|l| l.is_empty()) {
+    while out.last().is_some_and(|(l, _)| l.is_empty()) {
         out.pop();
     }
-    let mut s = out.join(eol);
-    s.push_str(eol);
-    s
+    let mut s = String::with_capacity(src.len() + src.len() / 4);
+    for (line, eol) in out {
+        s.push_str(&line);
+        s.push_str(eol);
+    }
+    Some(s)
+}
+
+/// Spock's block labels. Other labels (`outer:` before a loop) don't open a block.
+const SPOCK_LABELS: &[&str] = &[
+    "given", "setup", "when", "then", "expect", "and", "where", "cleanup",
+];
+
+fn is_spock_label(n: Node, src: &str) -> bool {
+    n.kind() == "labeled_statement"
+        && n.child_by_field_name("label")
+            .is_some_and(|l| SPOCK_LABELS.contains(&text(l, src)))
+}
+
+/// Start byte of each block's first Spock label (`None`: no label), computed once per block
+/// so the `indent_after_labels` check is a comparison rather than a sibling scan per line.
+#[derive(Default)]
+struct LabelCache(std::collections::HashMap<usize, Option<usize>>);
+
+impl LabelCache {
+    fn first_label(&mut self, block: Node, src: &str) -> Option<usize> {
+        *self.0.entry(block.id()).or_insert_with(|| {
+            let mut c = block.walk();
+            block
+                .named_children(&mut c)
+                .find(|n| is_spock_label(*n, src))
+                .map(|n| n.start_byte())
+        })
+    }
 }
 
 /// True when `byte` falls strictly inside a string or comment token (not at its first byte).
@@ -124,10 +177,6 @@ fn inside_token(root: Node, byte: usize, src: &str) -> bool {
     false
 }
 
-fn text<'a>(n: Node, src: &'a str) -> &'a str {
-    n.utf8_text(src.as_bytes()).unwrap_or("")
-}
-
 fn leaf_at(root: Node, pos: usize) -> Node {
     let mut n = root.descendant_for_byte_range(pos, pos).unwrap_or(root);
     while n.child_count() > 0 {
@@ -141,7 +190,14 @@ fn leaf_at(root: Node, pos: usize) -> Node {
 
 /// Indent of the row where the nearest enclosing node that began on an earlier row starts,
 /// plus one step, except closers, `else`/`catch`/`finally`, Spock labels, and lines after annotations.
-fn indent_for(root: Node, src: &str, pos: usize, row_indent: &[usize], style: &Style) -> usize {
+fn indent_for(
+    root: Node,
+    src: &str,
+    pos: usize,
+    row_indent: &[usize],
+    style: &Style,
+    labels: &mut LabelCache,
+) -> usize {
     let step = style.indent;
     let leaf = leaf_at(root, pos);
     let row = leaf.start_position().row;
@@ -185,28 +241,39 @@ fn indent_for(root: Node, src: &str, pos: usize, row_indent: &[usize], style: &S
     }
     // The statement right after a label (`when:` then a newline) hangs off the label.
     if a.kind() == "labeled_statement" {
-        return base + if style.indent_after_labels { step } else { 0 };
+        let deeper = style.indent_after_labels && is_spock_label(a, src);
+        return base + if deeper { step } else { 0 };
     }
-    // Later statements of a labelled block are siblings of the labeled_statement.
-    // ponytail: scans earlier siblings per line, quadratic in block length; fine for test methods.
+    // Later statements of a Spock block are siblings that follow the block's first label.
     if style.indent_after_labels
         && child.kind() != "labeled_statement"
-        && std::iter::successors(child.prev_named_sibling(), |s| s.prev_named_sibling())
-            .any(|s| s.kind() == "labeled_statement")
+        && labels
+            .first_label(a, src)
+            .is_some_and(|start| child.start_byte() > start)
     {
         return base + 2 * step;
     }
     base + step
 }
 
-/// Leaf tokens as (kind, text), trailing whitespace trimmed (line comments may lose it).
+/// Leaf tokens as (kind, text). Only comments are compared without trailing whitespace,
+/// since stripping it from a line comment is a legitimate change; any other leaf, string
+/// fragments included, must match exactly.
 fn tokens<'a>(src: &'a str, tree: &Tree) -> Vec<(u16, &'a str)> {
     let mut v = Vec::new();
     let mut c = tree.walk();
     'outer: loop {
         let n = c.node();
         if n.child_count() == 0 {
-            v.push((n.kind_id(), text(n, src).trim_end()));
+            let t = text(n, src);
+            v.push((
+                n.kind_id(),
+                if n.kind().contains("comment") {
+                    t.trim_end()
+                } else {
+                    t
+                },
+            ));
         } else if c.goto_first_child() {
             continue;
         }
@@ -293,6 +360,61 @@ mod tests {
     fn first_column_line_comments_stay_put() {
         let src = "def f() {\n// old()\n  // note\n    a()\n}\n";
         assert_eq!(fmt(src), "def f() {\n// old()\n    // note\n    a()\n}\n");
+    }
+
+    #[test]
+    fn token_guard_sees_whitespace_inside_strings_and_comments() {
+        // the safety net that turns a formatter bug into Skipped instead of a changed file
+        let toks = |s: &str| {
+            let t = crate::parse(s);
+            tokens(s, &t)
+                .into_iter()
+                .map(|(k, x)| (k, x.to_string()))
+                .collect::<Vec<_>>()
+        };
+        assert_ne!(toks("def s = '''a\nb'''\n"), toks("def s = '''a\n  b'''\n"));
+        assert_ne!(toks("/* a\n b */\nx()\n"), toks("/* a\n   b */\nx()\n"));
+        assert_ne!(
+            toks("def s = \"\"\"a\n${x}\"\"\"\n"),
+            toks("def s = \"\"\"a\n  ${x}\"\"\"\n")
+        );
+    }
+
+    #[test]
+    fn mixed_line_endings_are_kept_per_line() {
+        let src = "x = 1\r\ndef s = '''a\nb'''\r\nif (y) {\nz()\n}\r\n";
+        assert_eq!(
+            fmt(src),
+            "x = 1\r\ndef s = '''a\nb'''\r\nif (y) {\n    z()\n}\r\n"
+        );
+        let crlf = "class A {\r\ndef f() {}\r\n}\r\n";
+        assert_eq!(fmt(crlf), "class A {\r\n    def f() {}\r\n}\r\n");
+    }
+
+    #[test]
+    fn trailing_whitespace_inside_multiline_tokens_survives() {
+        let src = "def s = '''abc   \nx'''\n/* a   \n b */\n";
+        assert_eq!(format(src, &Style::default()), Outcome::Unchanged);
+    }
+
+    #[test]
+    fn pathological_nesting_is_skipped_not_blown_up() {
+        let deep = format!("def x = {}1{}\n", "(\n".repeat(60), "\n)".repeat(60));
+        assert_eq!(
+            format(&deep, &Style::default()),
+            Outcome::Skipped("nesting too deep to format")
+        );
+    }
+
+    #[test]
+    fn non_spock_labels_do_not_open_a_block() {
+        let style = Style {
+            indent_after_labels: true,
+            ..Style::default()
+        };
+        let src =
+            "def f() {\n    outer:\n    for (x in xs) {\n        g()\n    }\n    return 1\n}\n";
+        assert_eq!(format(src, &style), Outcome::Unchanged);
     }
 
     #[test]
