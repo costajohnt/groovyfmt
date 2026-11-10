@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- The grammar pin moves to a newer `groovyfmt-base` of the tree-sitter-groovy fork, which parses many more files. On the 23,766-file corpus, files skipped for a parse error go from 2,827 to 934; across 13 open source repositories outside the corpus, from 1,488 to 513. Newly accepted: annotated script and field declarations (`@Field String NAME = 'x'`, Spock's `@Shared log = []`), parenthesis-free calls with several arguments, quoted named-argument keys or a dotted receiver (`bind Foo, Bar`, `attributes 'Main-Class': m`, `script.writeFile file: f, text: t`), array creation (`new byte[10]`, `new String[] { 'a' }`), Java lambdas, nested annotations as annotation values, typed and def-less multiple assignment, `assert e, message`, `def static`, `def <T> T f()`, bodiless untyped methods, annotation element defaults, `synchronized` blocks, `?.@` and `*.@`, `[*a, *b]`, `System::'print'` and `Collections.<String>emptyList()`.
+- Some files that already parsed now format differently because the grammar reads them more accurately. A `(` or a string on the line after an expression starts a new statement instead of continuing it (`println 'x'` followed by `(1..n).each { }`), so the next line is no longer indented as a continuation. Files that parsed cleanly before still parse.
+
 ## 0.5.0 (2026-11-10)
 
 Most of this release comes from a second full audit (`docs/audit-2026-11-09-full.md`). groovyfmt runs in CI on pull-request content, so these matter:

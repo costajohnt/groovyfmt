@@ -30,7 +30,7 @@ Against [npm-groovy-lint](https://github.com/nvuillam/npm-groovy-lint) 19.0.1 (C
 | lint, npm-groovy-lint's default rule set | 30.3 s | |
 | format | did not finish in 15 min (two attempts) | 0.25 s |
 
-The comparison flatters groovyfmt somewhat. It skips the 119 spock files it can't parse, which npm-groovy-lint still processes, and CodeNarc's default rule set is far larger.
+The comparison flatters groovyfmt somewhat. It skips the 17 spock files it can't parse (9 of them are AST snapshot fixtures, 8 of which aren't valid Groovy source), which npm-groovy-lint still processes, and CodeNarc's default rule set is far larger.
 
 ## Install
 
@@ -194,7 +194,7 @@ Add `--stdin-filepath <path>` (it requires `--stdin`) to tell groovyfmt which fi
 
 ## Coverage
 
-groovyfmt only touches files it can parse. On a corpus of 23,766 files from grails-core, groovy, gradle, spock, CodeNarc, nextflow and Jenkins pipeline repositories, 88.1% parse cleanly. On [OpenBoxes](https://github.com/openboxes/openboxes), a production Grails application that isn't in the corpus, 95.6% of its 1,327 files do.
+groovyfmt only touches files it can parse. On a corpus of 23,766 files from grails-core, groovy, gradle, spock, CodeNarc, nextflow and Jenkins pipeline repositories, 96.1% parse cleanly. On [OpenBoxes](https://github.com/openboxes/openboxes), a production Grails application that isn't in the corpus, 97.8% of its 1,327 files do.
 
 The grammar is [dekobon/tree-sitter-groovy](https://github.com/dekobon/tree-sitter-groovy), currently pinned to the fork branch [`costajohnt/tree-sitter-groovy@groovyfmt-base`](https://github.com/costajohnt/tree-sitter-groovy/tree/groovyfmt-base), which adds upstream PR #49 plus our fixes to the 0.3.0 release:
 
@@ -205,6 +205,7 @@ The grammar is [dekobon/tree-sitter-groovy](https://github.com/dekobon/tree-sitt
 | + #56 (`final` locals) and #57 (named-argument calls) | 80.9% |
 | + nested type declarations (`static class`, member `interface`, …) | 85.6% |
 | + a `[` starting a new line is a list or map, not a subscript (Grails controllers returning `[model: …]`); `final` parameters; traits with `implements` | 88.1% |
+| + annotated script and field declarations (`@Field`, `@Shared`); command calls with several arguments, quoted keys or a dotted receiver; array creation; lambdas; nested annotations; multiple assignment; `def static`, `def <T>`, `synchronized` and smaller forms | 96.1% |
 
 ## Development
 
