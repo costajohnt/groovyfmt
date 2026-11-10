@@ -20,9 +20,18 @@ toml = "1.2"
 # fix/multi-assignment, fix/annotation-values, fix/array-creation,
 # fix/lambda-expressions, fix/method-declaration-forms, fix/synchronized-statement,
 # fix/attribute-access-forms, fix/method-reference-quoted-name,
-# fix/explicit-type-arguments, fix/list-spread, fix/reserved-keywords branches).
+# fix/explicit-type-arguments, fix/list-spread, fix/reserved-keywords,
+# fix/gstring-comment-text, fix/spread-map-argument, fix/annotation-type-modifiers,
+# fix/enum-implements, fix/enum-constant-bodies, fix/switch-case-label-lists,
+# fix/array-type-values, fix/subscript-multiple-indexes,
+# fix/annotation-generic-argument, fix/annotations-after-modifiers,
+# fix/modifier-quoted-method-name, fix/gstring-interpolation-statements,
+# fix/record-contextual-keyword, fix/value-command-calls,
+# fix/closure-parameter-defaults, fix/line-break-statements, fix/cast-generic-type,
+# fix/dotted-command-name-argument, fix/command-named-args-after-line-break
+# branches).
 # Back to the crates.io release once those land upstream.
-dekobon-tree-sitter-groovy = { git = "https://github.com/costajohnt/tree-sitter-groovy", rev = "8e89485fee20e4ac14f8d18e82dd2caab860b9e3" }
+dekobon-tree-sitter-groovy = { git = "https://github.com/costajohnt/tree-sitter-groovy", rev = "c01bc8f229334060666e26fc550ccfcf2f25ce2b" }
 
 [profile.release]
 lto = true

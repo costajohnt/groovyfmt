@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- The grammar pin moves to a newer `groovyfmt-base` of the tree-sitter-groovy fork. On the 23,766-file corpus, files skipped for a parse error go from 930 to 316; across 13 open source repositories outside the corpus, from 508 to 137. Newly accepted: array types as values (`byte[].class`, `getBean(String[], x)`, `String[]::new`), a command call as the value of a declaration or assignment (`def r = sh returnStdout: true, script: 'x'`, `x = foo bar`), named arguments on the line after a comma, `//` and `/*` inside a GString, statements in a GString interpolation (`${x.replace 'a', 'b'}`, `${-> x}`), annotations after modifiers (`static @Rule TestName name`, `final @Delegate Map m`), `record` as a name, `def String name`, uninitialized `List<String> x` locals, closure parameter defaults and varargs, `private "a feature"()`, `f(*: m)`, `map['a', 'b']`, `public @interface`, `enum E implements I`, enum constant bodies, `case 1, 2 ->`, and generic types as annotation arguments.
+- Some files that already parsed now format differently because the grammar reads them more accurately. A line that starts with a name or `(` after a complete statement starts a new statement: `x` followed by `bar = 1` used to be read as one declaration typed by `x`, and `if (c) return` took the next line as its value, so the second line was indented as a continuation (`classes.setFrom preparePluginValidationClasses` followed by `enableStricterValidation = true` did this). Fields and comments after an uninitialized typed field are no longer indented as continuations either, and an `else` after `if (c) a.b key` lines up with its `if`. Of the files that parsed cleanly before, 513 across the corpus and the 13 repositories now format differently: 2,826 lines move out to the level of their block, and 3 lines (two `else` lines and one `else` body) move in under their `if`. No statement is indented as a continuation. Files that parsed cleanly before still parse.
+
 ## 0.6.0 (2026-11-10)
 
 ### Added
