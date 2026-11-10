@@ -467,6 +467,48 @@ fn file_name_cannot_start_a_report_line_with_colons() {
 }
 
 #[test]
+fn no_output_line_carries_a_legacy_workflow_command() {
+    // the Actions runner takes `##[command]` anywhere in a line, from file names or quoted source
+    let d = Dir::new("hashcmd");
+    d.write("lint/x##[error]boo.groovy", "def a = 1;\n");
+    d.write(
+        "lint/M.groovy",
+        "def m = ['##[stop-commands]tok': 1, '##[stop-commands]tok': 2]\n",
+    );
+    d.write("check/y##[add-mask]secret.groovy", UGLY);
+    let runs: &[(&[&str], &str, i32)] = &[
+        (&["--lint"], "lint", 1),
+        (&["--lint", "--output-format", "github"], "lint", 1),
+        (&["--check"], "check", 1),
+        (&["--check", "--output-format", "github"], "check", 1),
+        (&["--check", "nope##[error]x.groovy"], "check", 2),
+        (
+            &["--stdin", "--stdin-filepath", "z##[error]q.groovy"],
+            "check",
+            2,
+        ),
+        (
+            &[
+                "--stdin",
+                "--stdin-filepath",
+                "z##[error]q.groovy",
+                "--output-format",
+                "github",
+            ],
+            "check",
+            2,
+        ),
+    ];
+    for (args, sub, code) in runs {
+        let o = run(&d.0.join(sub), args, Some("def x = {\n"));
+        assert_eq!(o.status.code(), Some(*code), "{args:?}: {}", stderr(&o));
+        let all = stdout(&o) + &stderr(&o);
+        assert!(all.contains("##\\["), "{args:?}: {all}");
+        assert!(all.lines().all(|l| !l.contains("##[")), "{args:?}: {all}");
+    }
+}
+
+#[test]
 fn discovers_groovy_files_and_skips_build_dirs() {
     let d = Dir::new("discover");
     d.write("Jenkinsfile", UGLY);

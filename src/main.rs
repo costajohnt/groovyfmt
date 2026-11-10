@@ -331,6 +331,9 @@ fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
 
 /// Control characters escaped, so a crafted file name or file content (lint messages quote
 /// source text) can't break a report line or inject CI workflow commands such as `::set-env`.
+/// The GitHub Actions runner also takes the older `##[command]` form anywhere in a line, so
+/// `##[` becomes `##\[`; nothing printed after this (`gh_escape`, `shown`) adds or removes
+/// a `\` or `[`, so the sequence can't come back.
 fn printable(s: &str) -> String {
     s.chars()
         .map(|c| {
@@ -340,7 +343,8 @@ fn printable(s: &str) -> String {
                 c.to_string()
             }
         })
-        .collect()
+        .collect::<String>()
+        .replace("##[", "##\\[")
 }
 
 /// A path for display. A leading `:` gets `./` in front, so no report line can start
@@ -369,6 +373,11 @@ fn gh_escape(s: &str, property: bool) -> String {
 }
 
 fn main() {
+    // a panic message can quote source text (a bad string slice prints the string), and
+    // par_map turns the panic into an error but the hook still prints it first
+    std::panic::set_hook(Box::new(|info| {
+        eprintln!("groovyfmt: {}", printable(&info.to_string()));
+    }));
     let a = parse_args();
     // the walk needs `exclude`; the parse-only diagnostics never read a config
     let cfg = if matches!(a.mode, Mode::Errors | Mode::Tree) {
@@ -657,6 +666,25 @@ mod tests {
             "a\\n::set-env name=X::y\\r"
         );
         assert_eq!(printable("plain é"), "plain é");
+    }
+
+    #[test]
+    fn printable_neutralizes_legacy_workflow_commands() {
+        assert_eq!(
+            printable("x##[error]y ###[add-mask]z ##[##[w"),
+            "x##\\[error]y ###\\[add-mask]z ##\\[##\\[w"
+        );
+        assert_eq!(printable("#\n#[x"), "#\\n#[x");
+        for s in ["a##[b", "##[stop-commands]t%:,\r"] {
+            let p = printable(s);
+            for out in [
+                shown(Path::new(s)),
+                gh_escape(&p, true),
+                gh_escape(&p, false),
+            ] {
+                assert!(!out.contains("##["), "{out}");
+            }
+        }
     }
 
     #[test]
