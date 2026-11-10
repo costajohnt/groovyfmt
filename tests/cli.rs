@@ -734,6 +734,36 @@ fn symlink_arguments_format_their_target() {
 
 #[cfg(unix)]
 #[test]
+fn symlink_arguments_never_rewrite_outside_the_working_directory() {
+    // `groovyfmt *.groovy` in a checkout with a committed link to a file elsewhere
+    let d = Dir::new("linkin");
+    let out = Dir::new("linkout");
+    let target = out.write("Real.groovy", UGLY);
+    std::os::unix::fs::symlink(&target, d.0.join("x.groovy")).unwrap();
+    d.write("A.groovy", UGLY);
+    let w = run(&d.0, &["x.groovy", "A.groovy"], None);
+    assert_eq!(w.status.code(), Some(2), "{}", stderr(&w));
+    assert!(
+        stderr(&w).starts_with(
+            "groovyfmt: x.groovy: symlink target is outside the working directory, not formatted\n"
+        ),
+        "{}",
+        stderr(&w)
+    );
+    assert_eq!(out.read("Real.groovy"), UGLY);
+    assert!(
+        std::fs::symlink_metadata(d.0.join("x.groovy"))
+            .unwrap()
+            .is_symlink()
+    );
+    assert_eq!(d.read("A.groovy"), PRETTY, "other files still formatted");
+    let c = run(&d.0, &["--check", "x.groovy"], None);
+    assert_eq!(c.status.code(), Some(1), "{}", stderr(&c));
+    assert_eq!(stdout(&c), "x.groovy\n");
+}
+
+#[cfg(unix)]
+#[test]
 fn write_and_walk_failures_exit_2() {
     use std::os::unix::fs::PermissionsExt;
     let d = Dir::new("perms");
