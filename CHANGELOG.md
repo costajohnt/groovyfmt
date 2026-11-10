@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `use_tabs` config option: indent with tabs instead of spaces. Indentation is still worked out in columns, with a tab `indent` columns wide, and each full tab width is written as a tab, so `continuation_indent` keeps its meaning (the default gives continued lines one extra tab; `continuation_indent = 8` with `indent = 4` gives two). On spring-boot, which indents with tabs, it cuts the first-run diff from 740 files to 86. Space-indented output is unchanged.
+
 ## 0.5.0 (2026-11-10)
 
 Most of this release comes from a second full audit (`docs/audit-2026-11-09-full.md`). groovyfmt runs in CI on pull-request content, so these matter:

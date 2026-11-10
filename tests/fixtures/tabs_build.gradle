@@ -1,0 +1,52 @@
+plugins {
+	id "java-library"
+	id "maven-publish"
+}
+
+description = "Tab-indented build script, in the style of spring-boot"
+
+configurations {
+	antUnit
+	all {
+		resolutionStrategy.eachDependency { details ->
+			if (details.requested.group == "org.example") {
+				details.useVersion("1.0")
+			}
+		}
+	}
+}
+
+dependencies {
+	api(project(":core"))
+	antUnit("org.apache.ant:ant-antunit:1.4.1")
+	testImplementation("org.junit.jupiter:junit-jupiter",
+		"org.assertj:assertj-core")
+}
+
+def mojoDocs = [
+	"build-image": "build-image",
+	"build-info": "build-info",
+	"run": "run"
+]
+
+tasks.register("antUnit") {
+	doLast {
+		ant.with {
+			taskdef(resource: "org/apache/ant/antunit/antlib.xml",
+				classpath: configurations.antUnit.asPath)
+			def banner = """\
+	keep this tab
+		and this one
+"""
+			echo(message: banner)
+		}
+	}
+}
+
+tasks.named("test") {
+	enabled = project.hasProperty("withTests") &&
+		!project.hasProperty("skipTests")
+	systemProperty "mojos", mojoDocs.keySet()
+		.toSorted()
+		.join(",")
+}

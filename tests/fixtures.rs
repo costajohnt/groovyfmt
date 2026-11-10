@@ -1,6 +1,6 @@
 //! The corpus invariants, over the files in tests/fixtures: formatting changes whitespace
 //! only, never skips these files, and a second pass changes nothing. Checked on each fixture
-//! as written and on a copy with every line's indent scrambled, at two styles.
+//! as written and on a copy with every line's indent scrambled, at three styles.
 
 use groovyfmt::format::{Outcome, Style, format};
 
@@ -53,6 +53,11 @@ fn fixtures_format_whitespace_only_and_idempotently() {
             indent: 2,
             continuation: Some(8),
             indent_after_labels: true,
+            use_tabs: false,
+        },
+        Style {
+            use_tabs: true,
+            ..Style::default()
         },
     ];
     let mut changed_when_scrambled = 0;

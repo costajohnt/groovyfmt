@@ -107,6 +107,7 @@ Each file is governed by the nearest `.groovyfmt.toml` or `groovyfmt.toml` found
 ```toml
 indent = 4                  # spaces per block level, 1 to 16
 continuation_indent = 8     # arguments, literals, continued lines (default: same as indent)
+use_tabs = false            # true: indent with tabs, one per indent level
 indent_after_labels = false # true: indent Spock when:/then: blocks under their label
 exclude = ["generated/**", "**/*.gsh"] # skip these files and directories
 
@@ -120,6 +121,8 @@ UnusedImport = false
 Unknown keys and misspelled rule names are errors, so a typo can't silently do nothing; a config file can only fail the run when groovyfmt reaches a file or directory it governs. `-v` prints each config in use.
 
 `continuation_indent = 8` matches IntelliJ's default and most Grails projects written in it. On OpenBoxes it cuts the first-run diff from 694 files to 426, and what remains is mostly trailing whitespace and runs of blank lines.
+
+`use_tabs = true` writes leading indentation as tabs. Indents are worked out in columns as usual, with a tab `indent` columns wide, and each full tab width becomes a tab. So with the default `continuation_indent` (the same as `indent`) a continued line gets one more tab than the line it continues, and `continuation_indent = 8` with `indent = 4` gives it two. A `continuation_indent` that isn't a multiple of `indent` leaves the remainder as spaces after the tabs. On spring-boot, which indents with tabs, `use_tabs = true` cuts the first-run diff from 740 files to 86, and what remains is mostly missing final newlines, runs of blank lines and a few files that are indented with spaces.
 
 Spock specs come in two styles. By default the statements of a `given:` / `when:` / `then:` block stay level with the label, as in Spock's documentation; `indent_after_labels = true` puts them one level deeper. In grails-core about half the specs use each style, so pick the one your project already uses before the first run.
 

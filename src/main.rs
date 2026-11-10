@@ -32,7 +32,8 @@ Modes:
 
 Options:
       --config <FILE>      Use FILE for every file instead of the nearest config
-      --indent <N>         Spaces per indent level (overrides the config file)
+      --indent <N>         Spaces per indent level, or the tab width with use_tabs
+                           (overrides the config file)
       --output-format <F>  text (default) or github (GitHub Actions annotations)
       --rules              List lint rules and whether each is on, then exit
   -v, --verbose            Also report skipped files and timing
