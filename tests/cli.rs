@@ -453,6 +453,83 @@ fn check_github_output_is_exact() {
 }
 
 #[test]
+fn lint_github_output_is_exact() {
+    let d = Dir::new("ghlint");
+    d.write("src/A.groovy", "import a.b.Unused\ndef a = 1;\n");
+    let o = run(&d.0, &["--lint", "--output-format", "github"], None);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(
+        stdout(&o),
+        "::warning file=src/A.groovy,line=1,col=1,title=UnusedImport::The [a.b.Unused] import is never referenced\n\
+         ::warning file=src/A.groovy,line=2,col=10,title=UnnecessarySemicolon::Semicolons as line endings can be removed safely\n"
+    );
+}
+
+#[test]
+fn lint_github_escapes_percent_in_messages() {
+    let d = Dir::new("ghlintmsg");
+    d.write("A.groovy", "def m = ['a%0Ab': 1, 'a%0Ab': 2]\n");
+    let o = run(&d.0, &["--lint", "--output-format", "github"], None);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(
+        stdout(&o),
+        "::warning file=A.groovy,line=1,col=22,title=DuplicateMapKey::Key `a%250Ab` appears more than once in this map\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn github_output_escapes_the_file_property() {
+    let d = Dir::new("ghfile");
+    d.write("a,b%2C.groovy", "def a = 1;\n");
+    let l = run(&d.0, &["--lint", "--output-format", "github"], None);
+    assert_eq!(
+        stdout(&l),
+        "::warning file=a%2Cb%252C.groovy,line=1,col=10,title=UnnecessarySemicolon::Semicolons as line endings can be removed safely\n"
+    );
+    d.write("a,b%2C.groovy", UGLY);
+    let c = run(&d.0, &["--check", "--output-format", "github"], None);
+    assert_eq!(c.status.code(), Some(1));
+    assert_eq!(
+        stdout(&c),
+        "::error file=a%2Cb%252C.groovy::File is not formatted. Run groovyfmt to fix.\n"
+    );
+}
+
+#[test]
+fn files_over_10_mb_are_skipped_unread() {
+    let d = Dir::new("big");
+    let p = d.write("Big.groovy", UGLY);
+    // sparse: no 10 MB written to disk
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&p)
+        .unwrap()
+        .set_len(10 * 1024 * 1024 + 1)
+        .unwrap();
+    let o = run(&d.0, &["-v"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains("skipped Big.groovy: larger than 10 MB\n"),
+        "{}",
+        stderr(&o)
+    );
+    assert_eq!(std::fs::metadata(&p).unwrap().len(), 10 * 1024 * 1024 + 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn fatal_errors_escape_control_characters_in_paths() {
+    let d = Dir::new("diectl");
+    let o = run(&d.0, &["--check", "a\x1b[31mb\nc.groovy"], None);
+    assert_eq!(o.status.code(), Some(2));
+    assert_eq!(
+        stderr(&o),
+        "groovyfmt: a\\u{1b}[31mb\\nc.groovy: no such file or directory\n"
+    );
+}
+
+#[test]
 fn file_name_cannot_start_a_report_line_with_colons() {
     let d = Dir::new("colons");
     d.write("::warning title=x::y.groovy", "def a = 1;\n");
