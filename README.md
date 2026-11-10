@@ -102,7 +102,7 @@ A block holding only a comment doesn't count as empty.
 
 ## Configuration
 
-groovyfmt looks for `.groovyfmt.toml` or `groovyfmt.toml` in the current directory and its parents (with `--stdin-filepath`, that file's directory and its parents). Everything is optional:
+Each file is governed by the nearest `.groovyfmt.toml` or `groovyfmt.toml` found by walking up from that file's own directory (with `--stdin-filepath`, from that path's directory), wherever groovyfmt runs from. `groovyfmt --check ../proj` uses `proj`'s config, and one run from a repository root formats a subproject with its own config by that config. A nested config replaces its parent's completely: nothing is merged, so repeat any settings the subproject should keep. Files with no config above them use the defaults. `--config <file>` skips discovery and applies that one file to everything; `--indent` overrides the indent of whichever config applies. `--rules` and `--stdin` without `--stdin-filepath` use the config for the current directory. Everything is optional:
 
 ```toml
 indent = 4                  # spaces per block level, 1 to 16
@@ -115,9 +115,9 @@ UnnecessaryGString = true
 UnusedImport = false
 ```
 
-`exclude` patterns are relative to the directory holding the config file, whatever directory groovyfmt runs from. They match whole paths: `*` and `?` stay within one path segment, `**` spans any number of segments, and a matching directory is skipped with everything under it. So `vendor` skips only the top-level `vendor`, `**/vendor` skips one at any depth, and `src/*.groovy` doesn't reach into `src/main/`. Excludes also apply to files named on the command line (pre-commit passes them that way) and to `--stdin-filepath`.
+`exclude` patterns are relative to the directory holding the config file, whatever directory groovyfmt runs from. They match whole paths: `*` and `?` stay within one path segment, `**` spans any number of segments, and a matching directory is skipped with everything under it, including any config inside it. A nested config's `exclude` applies only inside its own directory, and whether that directory is searched at all is up to the config above it. That holds for files named on the command line, `--stdin-filepath`, and runs from inside the excluded directory too; pass `--config` to format such a directory anyway. So `vendor` skips only the top-level `vendor`, `**/vendor` skips one at any depth, and `src/*.groovy` doesn't reach into `src/main/`. Excludes also apply to files named on the command line (pre-commit passes them that way) and to `--stdin-filepath`.
 
-Unknown keys and misspelled rule names are errors, so a typo can't silently do nothing. `--indent` overrides the file.
+Unknown keys and misspelled rule names are errors, so a typo can't silently do nothing; a config file can only fail the run when groovyfmt reaches a file or directory it governs. `-v` prints each config in use.
 
 `continuation_indent = 8` matches IntelliJ's default and most Grails projects written in it. On OpenBoxes it cuts the first-run diff from 694 files to 426, and what remains is mostly trailing whitespace and runs of blank lines.
 
@@ -173,7 +173,7 @@ pre-commit passes the staged files by name, and `exclude` in `.groovyfmt.toml` s
 
 All of these call `groovyfmt --stdin`, which prints nothing and exits 2 when it can't format the buffer, so a parse error never replaces your code.
 
-Add `--stdin-filepath <path>` (it requires `--stdin`) to tell groovyfmt which file the buffer belongs to. The config is then found by walking up from that file's directory instead of the working directory, the path names the buffer in error messages, and if the path matches `exclude` the buffer comes back unchanged with exit 0. The file doesn't have to exist yet.
+Add `--stdin-filepath <path>` (it requires `--stdin`) to tell groovyfmt which file the buffer belongs to. The config is then found by walking up from that file's directory, as for a file named on the command line, instead of from the working directory; the path names the buffer in error messages, and if the path matches `exclude` the buffer comes back unchanged with exit 0. The file doesn't have to exist yet.
 
 - **Neovim** ([conform.nvim](https://github.com/stevearc/conform.nvim)):
   ```lua

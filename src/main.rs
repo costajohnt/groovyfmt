@@ -1,9 +1,10 @@
-use groovyfmt::config::{self, Config};
+use groovyfmt::config::{self, Config, Resolver};
 use groovyfmt::format::{Outcome, format};
 use groovyfmt::lint::{self, RULES};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
@@ -16,6 +17,8 @@ PATHs are files or directories (default: the current directory). Directories are
 searched for *.groovy, *.gradle, *.gvy, *.gy, *.gsh and Jenkinsfile, skipping
 hidden directories, build, out, target and node_modules, and anything matching
 the config file's `exclude` patterns (which also apply to files named here).
+Each file uses the nearest .groovyfmt.toml / groovyfmt.toml in its directory or
+above it; a nested config replaces its parent's, nothing is merged.
 
 Modes:
       (default)            Format files in place
@@ -28,7 +31,7 @@ Modes:
                            excluded, echo stdin unchanged
 
 Options:
-      --config <FILE>      Use FILE instead of the nearest .groovyfmt.toml / groovyfmt.toml
+      --config <FILE>      Use FILE for every file instead of the nearest config
       --indent <N>         Spaces per indent level (overrides the config file)
       --output-format <F>  text (default) or github (GitHub Actions annotations)
       --rules              List lint rules and whether each is on, then exit
@@ -158,49 +161,80 @@ fn parse_args() -> Args {
     a
 }
 
-fn load_config(a: &Args) -> Config {
-    let cwd = std::env::current_dir().unwrap_or_default();
-    // the config that formatting the file at --stdin-filepath from disk would see
-    let start = match &a.stdin_filepath {
-        Some(p) => config::normalize(&cwd.join(p))
-            .parent()
-            .map_or(cwd, Path::to_path_buf),
-        None => cwd,
+/// The config governing each file to process.
+type Configs = HashMap<PathBuf, Arc<Config>>;
+
+fn resolver(a: &Args) -> Resolver {
+    let fixed = match a.mode {
+        // the parse-only diagnostics never read a config
+        Mode::Errors | Mode::Tree => Some(Config::default()),
+        _ => a
+            .config
+            .as_ref()
+            .map(|p| Config::load(p).unwrap_or_else(|e| die(e))),
     };
-    let path = a.config.clone().or_else(|| config::discover(&start));
-    let mut cfg = match &path {
-        Some(p) => Config::load(p).unwrap_or_else(|e| die(e)),
-        None => Config::default(),
-    };
-    if let Some(n) = a.indent {
-        cfg.style.indent = n;
+    let mut res = Resolver::new(fixed, a.indent);
+    // the development reports keep using the working directory's config for every file
+    if matches!(a.mode, Mode::Stats | Mode::LintStats) {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let cfg = res.dir(&cwd).unwrap_or_else(|e| die(e));
+        res = Resolver::new(Some((*cfg).clone()), None);
     }
-    if a.verbose {
-        match &path {
-            Some(p) => eprintln!("config: {}", shown(p)),
-            None => eprintln!("config: none found, using defaults"),
+    res
+}
+
+/// `-v`: one line per config in play, in first-use order.
+fn report<'a>(cfgs: impl IntoIterator<Item = &'a Config>) {
+    let mut seen = HashSet::new();
+    for c in cfgs {
+        if seen.insert(&c.file) {
+            match &c.file {
+                Some(p) => eprintln!("config: {}", shown(p)),
+                None => eprintln!("config: none found, using defaults"),
+            }
         }
     }
-    cfg
 }
 
 /// Paths named on the command line are taken as given (a named symlink is followed).
 /// Below them, symlinks are never followed, so a link cycle can't loop the walk and a link
 /// out of the tree can't make us read or rewrite files elsewhere; only regular files count.
-fn walk(p: &Path, top: bool, out: &mut Vec<PathBuf>, cfg: &Config) {
+/// Whether a path is excluded is up to the config governing its directory (`dir_cfg`, found
+/// here for an argument), so a nested config is never read when its parent's excludes the
+/// directory holding it. A config that failed to load is fatal only once something needs it.
+fn walk(
+    p: &Path,
+    dir_cfg: Option<&Result<Arc<Config>, String>>,
+    out: &mut Vec<(PathBuf, Arc<Config>)>,
+    res: &mut Resolver,
+) {
+    let top = dir_cfg.is_none();
     let meta = if top {
         std::fs::metadata(p)
     } else {
         std::fs::symlink_metadata(p)
     };
     let Ok(meta) = meta else { return };
+    let wanted = if meta.is_dir() {
+        top || !groovyfmt::is_skipped_dir(p)
+    } else {
+        meta.is_file() && (top || groovyfmt::is_groovy_file(p))
+    };
+    if !wanted {
+        return;
+    }
+    // an argument also answers to the configs above its own, as in a walk from there
+    if top && res.excluded(p).unwrap_or_else(|e| die(e)) {
+        return;
+    }
+    let cfg = dir_cfg
+        .cloned()
+        .unwrap_or_else(|| res.of(p))
+        .unwrap_or_else(|e| die(e));
     if cfg.excluded(p) {
         return;
     }
     if meta.is_dir() {
-        if !top && groovyfmt::is_skipped_dir(p) {
-            return;
-        }
         let rd = match std::fs::read_dir(p) {
             Ok(rd) => rd,
             Err(e) => {
@@ -211,12 +245,22 @@ fn walk(p: &Path, top: bool, out: &mut Vec<PathBuf>, cfg: &Config) {
         };
         let mut entries: Vec<_> = rd.flatten().map(|e| e.path()).collect();
         entries.sort();
+        // without a config file of its own, `p` has the config that governs its parent
+        let named = |e: &PathBuf| {
+            e.file_name()
+                .is_some_and(|n| config::FILE_NAMES.iter().any(|c| n == *c))
+        };
+        let inner = if entries.iter().any(named) {
+            res.inside(p)
+        } else {
+            Ok(cfg)
+        };
         for path in entries {
-            walk(&path, false, out, cfg);
+            walk(&path, Some(&inner), out, res);
         }
-    } else if meta.is_file() && (top || groovyfmt::is_groovy_file(p)) {
+    } else {
         // `./src/A.groovy` reads as `src/A.groovy`, as in git and cargo output
-        out.push(p.strip_prefix(".").unwrap_or(p).to_path_buf());
+        out.push((p.strip_prefix(".").unwrap_or(p).to_path_buf(), cfg));
     }
 }
 
@@ -234,9 +278,9 @@ fn walk(p: &Path, top: bool, out: &mut Vec<PathBuf>, cfg: &Config) {
 /// through a symlinked parent (`/tmp` on macOS) are the user's own choice.
 fn collect(
     paths: &[PathBuf],
-    cfg: &Config,
+    res: &mut Resolver,
     write: bool,
-) -> (Vec<PathBuf>, HashMap<PathBuf, PathBuf>) {
+) -> (Vec<PathBuf>, HashMap<PathBuf, PathBuf>, Configs) {
     let mut files = Vec::new();
     let mut links = HashMap::new();
     let cwd = std::fs::canonicalize(".").ok();
@@ -259,13 +303,13 @@ fn collect(
             }
         }
         let n = files.len();
-        walk(p, true, &mut files, cfg);
+        walk(p, None, &mut files, res);
         if files.len() > n && p.is_symlink() && p.is_file() {
             match std::fs::canonicalize(p) {
                 // excluding the target excludes it under any name
-                Ok(real) if cfg.excluded(&real) => files.truncate(n),
+                Ok(real) if res.excluded(&real).unwrap_or_else(|e| die(e)) => files.truncate(n),
                 Ok(real) => {
-                    links.insert(files[n].clone(), real);
+                    links.insert(files[n].0.clone(), real);
                 }
                 Err(e) => die(format!("{}: {e}", p.display())),
             }
@@ -274,8 +318,9 @@ fn collect(
     // overlapping arguments (`. src`, a file named twice or spelled differently): each file
     // once, first-seen order
     let mut seen = std::collections::HashSet::new();
-    files.retain(|f| seen.insert(std::fs::canonicalize(f).unwrap_or_else(|_| f.clone())));
-    (files, links)
+    files.retain(|(f, _)| seen.insert(std::fs::canonicalize(f).unwrap_or_else(|_| f.clone())));
+    let cfgs = files.iter().cloned().collect();
+    (files.into_iter().map(|(f, _)| f).collect(), links, cfgs)
 }
 
 /// Run `f` over every file on all cores; results come back in input order. A panic while
@@ -527,25 +572,25 @@ fn main() {
         eprintln!("groovyfmt: {}", printable(&info.to_string()));
     }));
     let a = parse_args();
-    // the walk needs `exclude`; the parse-only diagnostics never read a config
-    let cfg = if matches!(a.mode, Mode::Errors | Mode::Tree) {
-        Config::default()
-    } else {
-        load_config(&a)
-    };
+    let mut res = resolver(&a);
     let code = match a.mode {
-        Mode::Rules => rules(&cfg),
-        Mode::Stdin => stdin(&cfg, &a),
-        Mode::Write | Mode::Check => {
-            let (files, links) = collect(&a.paths, &cfg, a.mode == Mode::Write);
-            fmt(&files, &links, &cfg, &a)
+        Mode::Rules => rules(&one_config(&mut res, &a)),
+        Mode::Stdin => stdin(&mut res, &a),
+        _ => {
+            // only write mode rewrites; reading through a named link is reading its target
+            let (files, links, cfgs) = collect(&a.paths, &mut res, a.mode == Mode::Write);
+            if a.verbose && !matches!(a.mode, Mode::Errors | Mode::Tree) {
+                report(files.iter().map(|f| &*cfgs[f]));
+            }
+            match a.mode {
+                Mode::Lint => lint_files(&files, &cfgs, &a, false),
+                Mode::LintStats => lint_files(&files, &cfgs, &a, true),
+                Mode::Stats => stats(&files, &cfgs),
+                Mode::Errors => errors(&files),
+                Mode::Tree => tree(&files),
+                _ => fmt(&files, &links, &cfgs, &a),
+            }
         }
-        // these only read, and reading through a named link is reading its target
-        Mode::Lint => lint_files(&collect(&a.paths, &cfg, false).0, &cfg, &a, false),
-        Mode::LintStats => lint_files(&collect(&a.paths, &cfg, false).0, &cfg, &a, true),
-        Mode::Stats => stats(&collect(&a.paths, &cfg, false).0, &cfg),
-        Mode::Errors => errors(&collect(&a.paths, &cfg, false).0),
-        Mode::Tree => tree(&collect(&a.paths, &cfg, false).0),
     };
     std::process::exit(if WALK_FAILED.load(Ordering::Relaxed) {
         2
@@ -566,16 +611,31 @@ fn rules(cfg: &Config) -> i32 {
     0
 }
 
-fn stdin(cfg: &Config, a: &Args) -> i32 {
+/// The config for `--rules` and `--stdin`: the one formatting the file at `--stdin-filepath`
+/// from disk would use, else the working directory's.
+fn one_config(res: &mut Resolver, a: &Args) -> Arc<Config> {
+    let cfg = match &a.stdin_filepath {
+        Some(p) => res.of(p),
+        None => res.dir(&std::env::current_dir().unwrap_or_default()),
+    }
+    .unwrap_or_else(|e| die(e));
+    if a.verbose {
+        report([&*cfg]);
+    }
+    cfg
+}
+
+fn stdin(res: &mut Resolver, a: &Args) -> i32 {
     let mut src = Vec::new();
     if let Err(e) = std::io::stdin().read_to_end(&mut src) {
         die(format!("reading stdin: {e}"));
     }
     let path = a.stdin_filepath.as_deref();
     // excluded: hand the buffer back byte for byte, so editors and hooks see no change
-    if path.is_some_and(|p| cfg.excluded(p)) {
+    if path.is_some_and(|p| res.excluded(p).unwrap_or_else(|e| die(e))) {
         return std::io::stdout().write_all(&src).map_or(2, |_| 0);
     }
+    let cfg = one_config(res, a);
     let src = String::from_utf8(src)
         .unwrap_or_else(|_| die("reading stdin: stream did not contain valid UTF-8"));
     let out = match format(&src, &cfg.style) {
@@ -597,7 +657,7 @@ fn stdin(cfg: &Config, a: &Args) -> i32 {
     std::io::stdout().write_all(out.as_bytes()).map_or(2, |_| 0)
 }
 
-fn fmt(files: &[PathBuf], links: &HashMap<PathBuf, PathBuf>, cfg: &Config, a: &Args) -> i32 {
+fn fmt(files: &[PathBuf], links: &HashMap<PathBuf, PathBuf>, cfgs: &Configs, a: &Args) -> i32 {
     let t = Instant::now();
     let check = a.mode == Mode::Check;
     // Each worker writes (or, for --check, drops) the new text itself, so no more than one
@@ -609,7 +669,7 @@ fn fmt(files: &[PathBuf], links: &HashMap<PathBuf, PathBuf>, cfg: &Config, a: &A
             Ok(read) => read,
             Err(why) => return Ok(Err(why)),
         };
-        Ok(match format(&src, &cfg.style) {
+        Ok(match format(&src, &cfgs[p].style) {
             Outcome::Unchanged => Ok(None),
             Outcome::Skipped(why) => Err(why),
             Outcome::Formatted(_) if check => Ok(Some(Ok(()))),
@@ -666,7 +726,7 @@ fn fmt(files: &[PathBuf], links: &HashMap<PathBuf, PathBuf>, cfg: &Config, a: &A
     }
 }
 
-fn lint_files(files: &[PathBuf], cfg: &Config, a: &Args, stats_only: bool) -> i32 {
+fn lint_files(files: &[PathBuf], cfgs: &Configs, a: &Args, stats_only: bool) -> i32 {
     let t = Instant::now();
     let results = par_map(files, |p| {
         read(p).map(|src| src.and_then(|s| lint::lint(&s)))
@@ -686,6 +746,7 @@ fn lint_files(files: &[PathBuf], cfg: &Config, a: &Args, stats_only: bool) -> i3
                 }
             }
             Ok(Ok(vs)) => {
+                let cfg = &cfgs[path];
                 for v in vs.into_iter().filter(|v| cfg.rule_enabled(v.rule)) {
                     total += 1;
                     *by_rule.entry(v.rule).or_default() += 1;
@@ -731,16 +792,17 @@ fn lint_files(files: &[PathBuf], cfg: &Config, a: &Args, stats_only: bool) -> i3
 }
 
 /// Development: corpus report with an idempotence probe.
-fn stats(files: &[PathBuf], cfg: &Config) -> i32 {
+fn stats(files: &[PathBuf], cfgs: &Configs) -> i32 {
     let t = Instant::now();
     let results = par_map(files, |p| {
         let src = match read(p)? {
             Ok(src) => src,
             Err(why) => return Ok((0, Outcome::Skipped(why), false, 0)),
         };
-        let out = format(&src, &cfg.style);
+        let style = &cfgs[p].style;
+        let out = format(&src, style);
         let nonidem =
-            matches!(&out, Outcome::Formatted(o) if format(o, &cfg.style) != Outcome::Unchanged);
+            matches!(&out, Outcome::Formatted(o) if format(o, style) != Outcome::Unchanged);
         let lines = match &out {
             Outcome::Formatted(o) => {
                 src.lines().zip(o.lines()).filter(|(a, b)| a != b).count()
