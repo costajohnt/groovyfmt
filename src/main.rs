@@ -227,6 +227,10 @@ fn collect(paths: &[PathBuf], cfg: &Config) -> Vec<PathBuf> {
         }
         walk(p, true, &mut files, cfg);
     }
+    // overlapping arguments (`. src`, a file named twice or spelled differently): each file
+    // once, first-seen order
+    let mut seen = std::collections::HashSet::new();
+    files.retain(|f| seen.insert(std::fs::canonicalize(f).unwrap_or_else(|_| f.clone())));
     files
 }
 
@@ -292,6 +296,8 @@ fn read(path: &Path) -> Result<Result<String, &'static str>, String> {
     Ok(String::from_utf8(bytes).map_err(|_| NOT_UTF8))
 }
 
+static TMP_SEQ: AtomicUsize = AtomicUsize::new(0);
+
 /// Replace a file's contents atomically: write a temporary file beside it with the same
 /// permissions, then rename it over the path. A crash can't leave a truncated file, and if
 /// the path was swapped for a symlink after the walk, the link is replaced rather than
@@ -309,15 +315,18 @@ fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
         .file_name()
         .map(|n| n.to_string_lossy())
         .unwrap_or_default();
-    let tmp = path.with_file_name(format!(".{name}.groovyfmt-{}", std::process::id()));
+    // unique per call, so two workers given one file under different spellings can't collide
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_file_name(format!(".{name}.groovyfmt-{}-{seq}", std::process::id()));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    // owner-only until the original permissions are applied, so the contents of a
+    // private file are never readable by others in between
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+    // a file already at that name isn't ours: fail without removing it
+    let mut f = opts.open(&tmp)?;
     let result = (|| {
-        let mut opts = std::fs::OpenOptions::new();
-        opts.write(true).create_new(true);
-        // owner-only until the original permissions are applied, so the contents of a
-        // private file are never readable by others in between
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
-        let mut f = opts.open(&tmp)?;
         f.write_all(contents.as_bytes())?;
         f.set_permissions(perms)?;
         f.sync_all()?;
@@ -331,6 +340,9 @@ fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
 
 /// Control characters escaped, so a crafted file name or file content (lint messages quote
 /// source text) can't break a report line or inject CI workflow commands such as `::set-env`.
+/// The GitHub Actions runner also takes the older `##[command]` form anywhere in a line, so
+/// `##[` becomes `##\[`; nothing printed after this (`gh_escape`, `shown`) adds or removes
+/// a `\` or `[`, so the sequence can't come back.
 fn printable(s: &str) -> String {
     s.chars()
         .map(|c| {
@@ -340,7 +352,8 @@ fn printable(s: &str) -> String {
                 c.to_string()
             }
         })
-        .collect()
+        .collect::<String>()
+        .replace("##[", "##\\[")
 }
 
 /// A path for display. A leading `:` gets `./` in front, so no report line can start
@@ -369,6 +382,11 @@ fn gh_escape(s: &str, property: bool) -> String {
 }
 
 fn main() {
+    // a panic message can quote source text (a bad string slice prints the string), and
+    // par_map turns the panic into an error but the hook still prints it first
+    std::panic::set_hook(Box::new(|info| {
+        eprintln!("groovyfmt: {}", printable(&info.to_string()));
+    }));
     let a = parse_args();
     // the walk needs `exclude`; the parse-only diagnostics never read a config
     let cfg = if matches!(a.mode, Mode::Errors | Mode::Tree) {
@@ -439,8 +457,20 @@ fn stdin(cfg: &Config, a: &Args) -> i32 {
 fn fmt(files: &[PathBuf], cfg: &Config, a: &Args) -> i32 {
     let t = Instant::now();
     let check = a.mode == Mode::Check;
+    // Each worker writes (or, for --check, drops) the new text itself, so no more than one
+    // output per thread is alive at once; only the small per-file results are kept, and
+    // they're reported below in input order.
     let results = par_map(files, |p| {
-        read(p).map(|src| src.map_or_else(Outcome::Skipped, |s| format(&s, &cfg.style)))
+        let src = match read(p)? {
+            Ok(src) => src,
+            Err(why) => return Ok(Err(why)),
+        };
+        Ok(match format(&src, &cfg.style) {
+            Outcome::Unchanged => Ok(None),
+            Outcome::Skipped(why) => Err(why),
+            Outcome::Formatted(_) if check => Ok(Some(Ok(()))),
+            Outcome::Formatted(out) => Ok(Some(write_atomic(p, &out))),
+        })
     });
     let (mut changed, mut skipped, mut failed) = (0usize, 0usize, false);
     for (path, r) in files.iter().zip(results) {
@@ -449,26 +479,24 @@ fn fmt(files: &[PathBuf], cfg: &Config, a: &Args) -> i32 {
                 eprintln!("groovyfmt: {e}");
                 failed = true;
             }
-            Ok(Outcome::Unchanged) => {}
-            Ok(Outcome::Skipped(why)) => {
+            Ok(Ok(None)) => {}
+            Ok(Err(why)) => {
                 skipped += 1;
                 if a.verbose {
                     eprintln!("skipped {}: {why}", shown(path));
                 }
             }
-            Ok(Outcome::Formatted(out)) => {
+            Ok(Ok(Some(written))) => {
                 changed += 1;
-                if !check {
-                    if let Err(e) = write_atomic(path, &out) {
-                        eprintln!("groovyfmt: {}: {e}", shown(path));
-                        failed = true;
-                    }
-                } else if a.github {
+                if let Err(e) = written {
+                    eprintln!("groovyfmt: {}: {e}", shown(path));
+                    failed = true;
+                } else if check && a.github {
                     say(&format!(
                         "::error file={}::File is not formatted. Run groovyfmt to fix.",
                         gh_escape(&shown(path), true)
                     ));
-                } else {
+                } else if check {
                     say(&shown(path));
                 }
             }
@@ -657,6 +685,44 @@ mod tests {
             "a\\n::set-env name=X::y\\r"
         );
         assert_eq!(printable("plain é"), "plain é");
+    }
+
+    #[test]
+    fn write_atomic_never_removes_a_file_it_did_not_create() {
+        let d = std::env::temp_dir().join(format!("groovyfmt-tmpname-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let path = d.join("A.groovy");
+        std::fs::write(&path, "old\n").unwrap();
+        // squat on the temp name the next call will pick
+        let seq = TMP_SEQ.load(Ordering::Relaxed);
+        let squat = d.join(format!(".A.groovy.groovyfmt-{}-{seq}", std::process::id()));
+        std::fs::write(&squat, "precious\n").unwrap();
+        let err = write_atomic(&path, "new\n").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(&squat).unwrap(), "precious\n");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "old\n");
+        write_atomic(&path, "new\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new\n");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn printable_neutralizes_legacy_workflow_commands() {
+        assert_eq!(
+            printable("x##[error]y ###[add-mask]z ##[##[w"),
+            "x##\\[error]y ###\\[add-mask]z ##\\[##\\[w"
+        );
+        assert_eq!(printable("#\n#[x"), "#\\n#[x");
+        for s in ["a##[b", "##[stop-commands]t%:,\r"] {
+            let p = printable(s);
+            for out in [
+                shown(Path::new(s)),
+                gh_escape(&p, true),
+                gh_escape(&p, false),
+            ] {
+                assert!(!out.contains("##["), "{out}");
+            }
+        }
     }
 
     #[test]

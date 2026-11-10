@@ -4,7 +4,7 @@
 //! accepted, so a wrong heuristic below yields `Skipped`, never a corrupted file.
 
 use crate::text;
-use tree_sitter::{Node, Tree};
+use tree_sitter::{Node, Tree, TreeCursor};
 
 #[derive(Debug, PartialEq)]
 pub enum Outcome {
@@ -76,6 +76,8 @@ fn reindent(src: &str, tree: &Tree, style: &Style) -> Option<String> {
     let mut line_start = 0usize;
     let mut row_indent: Vec<usize> = Vec::new(); // final indent of each row, for children to inherit
     let mut labels = LabelCache::default();
+    // asked about each line's start, then its first token, then its end: always forward
+    let mut walk = Walk::new(root);
     let segments: Vec<&str> = src.split('\n').collect();
     let last = segments.len() - 1;
 
@@ -93,7 +95,7 @@ fn reindent(src: &str, tree: &Tree, style: &Style) -> Option<String> {
         let pos = line_start + lead;
         let body = &content[lead..];
 
-        if inside_token(root, line_start, src) {
+        if inside_token(&mut walk, line_start, src) {
             // Line begins inside a multi-line string or comment: emit verbatim.
             row_indent.push(lead);
             out.push((content.to_string(), eol));
@@ -103,18 +105,19 @@ fn reindent(src: &str, tree: &Tree, style: &Style) -> Option<String> {
                 out.push((String::new(), eol));
             }
         } else {
-            let keep_trailing = line_end < src.len() && inside_token(root, line_end, src);
-            let text = if keep_trailing { body } else { body.trim_end() };
             // `//` at column 0 is commented-out code or a doc-snippet marker; IntelliJ leaves
             // these in place ("comment at first column"), and so do we.
             let indent = if lead == 0 && body.starts_with("//") {
                 0
             } else {
-                indent_for(root, src, pos, &row_indent, style, &mut labels)
+                let path = leaf_path(&mut walk, pos);
+                indent_for(&path, src, &row_indent, style, &mut labels)
             };
             if indent > MAX_INDENT {
                 return None;
             }
+            let keep_trailing = line_end < src.len() && inside_token(&mut walk, line_end, src);
+            let text = if keep_trailing { body } else { body.trim_end() };
             row_indent.push(indent);
             out.push((format!("{}{}", " ".repeat(indent), text), eol));
         }
@@ -159,87 +162,140 @@ impl LabelCache {
     }
 }
 
+/// A node, and whether its nearest earlier sibling that isn't a comment is an annotation or
+/// modifier (a trailing comment after `@Requires(x) // why` is a sibling node too).
+type Step<'t> = (Node<'t>, bool);
+
+/// The nodes holding a byte offset, for offsets asked about in increasing order. One cursor
+/// moves forward through the tree, so a pass over every line is linear. Asking the tree
+/// per line instead (`descendant_for_byte_range`, `parent()`, `prev_sibling()`) restarts
+/// from the root or from the first sibling each time: quadratic on long blocks and cubic
+/// on a run of indented comments, which are flat siblings.
+struct Walk<'t> {
+    cursor: TreeCursor<'t>,
+    /// The cursor's node and its ancestors, root first.
+    stack: Vec<Step<'t>>,
+    /// Every child of the cursor's node ends at or before the last offset asked about.
+    done: bool,
+}
+
+impl<'t> Walk<'t> {
+    fn new(root: Node<'t>) -> Self {
+        Walk {
+            cursor: root.walk(),
+            stack: vec![(root, false)],
+            done: false,
+        }
+    }
+
+    /// The nodes whose range holds `byte`, root first and the root always, as
+    /// `descendant_for_byte_range(byte, byte + 1)` and its parents would give them (an
+    /// error-free tree has no empty nodes). `byte` is never less than the previous one.
+    fn seek(&mut self, byte: usize) -> &[Step<'t>] {
+        let keep = loop {
+            let n = self.cursor.node();
+            let depth = self.stack.len();
+            if depth > 1 && n.end_byte() <= byte {
+                // wholly before `byte`: on to the next sibling, or back up after the last one
+                if self.cursor.goto_next_sibling() {
+                    let k = n.kind();
+                    let after = if k.contains("comment") {
+                        self.stack[depth - 1].1
+                    } else {
+                        k.contains("annotation") || k.contains("modifier")
+                    };
+                    self.stack[depth - 1] = (self.cursor.node(), after);
+                    self.done = false;
+                } else {
+                    self.cursor.goto_parent();
+                    self.stack.pop();
+                    self.done = true;
+                }
+            } else if n.start_byte() > byte {
+                // in the gap before this node: its parent is the innermost holder
+                break depth.saturating_sub(1).max(1);
+            } else if !self.done && self.cursor.goto_first_child() {
+                self.stack.push((self.cursor.node(), false));
+            } else {
+                break depth;
+            }
+        };
+        &self.stack[..keep]
+    }
+}
+
 /// True when `byte` falls strictly inside a string or comment token (not at its first byte).
-fn inside_token(root: Node, byte: usize, src: &str) -> bool {
+fn inside_token(walk: &mut Walk, byte: usize, src: &str) -> bool {
     if byte >= src.len() {
         return false;
     }
-    let mut n = root.descendant_for_byte_range(byte, byte + 1);
-    while let Some(node) = n {
+    walk.seek(byte).iter().any(|(node, _)| {
         let k = node.kind();
         // ponytail: kind-name sniffing is grammar-specific; the token check in format() catches misses.
-        if node.start_byte() < byte
+        node.start_byte() < byte
             && (node.child_count() == 0
                 || k.contains("string")
                 || k.contains("comment")
                 || k.contains("doc"))
-        {
-            return true;
-        }
-        n = node.parent();
-    }
-    false
+    })
 }
 
-fn leaf_at(root: Node, pos: usize) -> Node {
-    let mut n = root.descendant_for_byte_range(pos, pos).unwrap_or(root);
-    while n.child_count() > 0 {
-        match n.child(0) {
-            Some(c) if c.start_byte() == pos => n = c,
-            _ => break,
-        }
+/// The leaf at `pos` and its ancestors, root first.
+fn leaf_path<'t>(walk: &mut Walk<'t>, pos: usize) -> Vec<Step<'t>> {
+    let mut path = walk.seek(pos).to_vec();
+    while let Some(c) = path[path.len() - 1]
+        .0
+        .child(0)
+        .filter(|c| c.start_byte() == pos)
+    {
+        path.push((c, false));
     }
-    n
+    path
 }
 
 /// Indent of the row where the nearest enclosing node that began on an earlier row starts,
-/// plus one step, except closers, `else`/`catch`/`finally`, Spock labels, and lines after annotations.
+/// plus one step, except closers, `else`/`catch`/`finally`, Spock labels, and lines after
+/// annotations. `path` is the line's first leaf and its ancestors, root first.
 fn indent_for(
-    root: Node,
+    path: &[Step],
     src: &str,
-    pos: usize,
     row_indent: &[usize],
     style: &Style,
     labels: &mut LabelCache,
 ) -> usize {
     let step = style.indent;
-    let leaf = leaf_at(root, pos);
+    let leaf = path[path.len() - 1].0;
     let row = leaf.start_position().row;
-    let mut child = leaf;
-    let mut anchor = leaf.parent();
+    // climb while the parent starts on this row; path[i] ends as the anchor's child
+    let mut i = path.len() - 1;
     let mut after_annotation = false;
-    while let Some(a) = anchor {
-        // a trailing comment after the annotation (`@Requires(x) // why`) is a sibling node too
-        after_annotation |= std::iter::successors(child.prev_sibling(), |s| s.prev_sibling())
-            .find(|s| !s.kind().contains("comment"))
-            .is_some_and(|s| s.kind().contains("annotation") || s.kind().contains("modifier"));
-        if a.start_position().row < row {
+    while i > 0 {
+        after_annotation |= path[i].1;
+        if path[i - 1].0.start_position().row < row {
             break;
         }
-        child = a;
-        anchor = a.parent();
+        i -= 1;
     }
-    let Some(a) = anchor.filter(|a| a.parent().is_some()) else {
-        return 0;
-    }; // top level
+    if i < 2 {
+        return 0; // top level
+    }
+    let (child, a, above) = (path[i].0, path[i - 1].0, path[i - 2].0);
     // A `{` body belongs to its declaration or statement, which may have wrapped onto
     // continuation lines before the brace (`void f(String a,\n        String b) {`): indent the
     // body from the line the declaration starts on. Closures keep their own line, since they
     // hang off chained calls.
     let anchor_row = match a.kind() {
-        "block" | "class_body" | "enum_body" | "switch_block" => {
-            a.parent()
-                .filter(|p| !matches!(p.kind(), "block" | "closure" | "source_file"))
-                .unwrap_or(a)
-                .start_position()
-                .row
+        "block" | "class_body" | "enum_body" | "switch_block"
+            if !matches!(above.kind(), "block" | "closure" | "source_file") =>
+        {
+            above.start_position().row
         }
         _ => a.start_position().row,
     };
     let base = row_indent.get(anchor_row).copied().unwrap_or(0);
 
     let first = text(leaf, src);
-    let closes_anchor = matches!(first, "}" | ")" | "]") && leaf.parent() == Some(a);
+    let closes_anchor = matches!(first, "}" | ")" | "]") && path[path.len() - 2].0 == a;
     if closes_anchor || after_annotation || matches!(first, "else" | "catch" | "finally") {
         return base;
     }
@@ -455,6 +511,23 @@ mod tests {
     fn annotation_with_trailing_comment() {
         let src = "class T {\n    @Requires(X) // why\n    def f() {\n        a()\n    }\n}\n";
         assert_eq!(fmt(src), src);
+    }
+
+    #[test]
+    fn indented_comment_runs_stay_linear() {
+        // a sibling walk-back per line took over 120 s on 4000 lines in a release build
+        let t = std::time::Instant::now();
+        for line in [" // c\n", " /* c */\n"] {
+            let body = line.repeat(4000);
+            let want = format!(
+                "def f() {{\n{}}}\n",
+                format!("    {}", line.trim_start()).repeat(4000)
+            );
+            assert_eq!(fmt(&format!("def f() {{\n{body}}}\n")), want);
+            let top = fmt(&body);
+            assert_eq!(top, line.trim_start().repeat(4000));
+        }
+        assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
     }
 
     #[test]
