@@ -1,7 +1,7 @@
 use groovyfmt::config::{self, Config};
 use groovyfmt::format::{Outcome, format};
 use groovyfmt::lint::{self, RULES};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -219,19 +219,35 @@ fn walk(p: &Path, top: bool, out: &mut Vec<PathBuf>, cfg: &Config) {
     }
 }
 
-fn collect(paths: &[PathBuf], cfg: &Config) -> Vec<PathBuf> {
+/// The files to process, named as the user typed them, and for each symlink to a file named
+/// on the command line, the file it points to. That file is the one read and rewritten, so
+/// the link stays a link; resolving it once here means a link retargeted later can't
+/// redirect the write.
+fn collect(paths: &[PathBuf], cfg: &Config) -> (Vec<PathBuf>, HashMap<PathBuf, PathBuf>) {
     let mut files = Vec::new();
+    let mut links = HashMap::new();
     for p in paths {
         if !p.exists() {
             die(format!("{}: no such file or directory", p.display()));
         }
+        let n = files.len();
         walk(p, true, &mut files, cfg);
+        if files.len() > n && p.is_symlink() && p.is_file() {
+            match std::fs::canonicalize(p) {
+                // excluding the target excludes it under any name
+                Ok(real) if cfg.excluded(&real) => files.truncate(n),
+                Ok(real) => {
+                    links.insert(files[n].clone(), real);
+                }
+                Err(e) => die(format!("{}: {e}", p.display())),
+            }
+        }
     }
     // overlapping arguments (`. src`, a file named twice or spelled differently): each file
     // once, first-seen order
     let mut seen = std::collections::HashSet::new();
     files.retain(|f| seen.insert(std::fs::canonicalize(f).unwrap_or_else(|_| f.clone())));
-    files
+    (files, links)
 }
 
 /// Run `f` over every file on all cores; results come back in input order. A panic while
@@ -277,7 +293,12 @@ const NOT_UTF8: &str = "not valid UTF-8";
 /// run: not UTF-8, not a regular file, or larger than `MAX_FILE_BYTES`. The checks run on
 /// the opened handle, so a file swapped for something else after the walk is still caught.
 fn read(path: &Path) -> Result<Result<String, &'static str>, String> {
-    let err = |e: std::io::Error| format!("{}: {e}", shown(path));
+    read_as(path, path)
+}
+
+/// `read`, naming the file `name` in errors.
+fn read_as(path: &Path, name: &Path) -> Result<Result<String, &'static str>, String> {
+    let err = |e: std::io::Error| format!("{}: {e}", shown(name));
     let f = std::fs::File::open(path).map_err(err)?;
     let meta = f.metadata().map_err(err)?;
     if !meta.is_file() {
@@ -466,12 +487,16 @@ fn main() {
     let code = match a.mode {
         Mode::Rules => rules(&cfg),
         Mode::Stdin => stdin(&cfg, &a),
-        Mode::Write | Mode::Check => fmt(&collect(&a.paths, &cfg), &cfg, &a),
-        Mode::Lint => lint_files(&collect(&a.paths, &cfg), &cfg, &a, false),
-        Mode::LintStats => lint_files(&collect(&a.paths, &cfg), &cfg, &a, true),
-        Mode::Stats => stats(&collect(&a.paths, &cfg), &cfg),
-        Mode::Errors => errors(&collect(&a.paths, &cfg)),
-        Mode::Tree => tree(&collect(&a.paths, &cfg)),
+        Mode::Write | Mode::Check => {
+            let (files, links) = collect(&a.paths, &cfg);
+            fmt(&files, &links, &cfg, &a)
+        }
+        // these only read, and reading through a named link is reading its target
+        Mode::Lint => lint_files(&collect(&a.paths, &cfg).0, &cfg, &a, false),
+        Mode::LintStats => lint_files(&collect(&a.paths, &cfg).0, &cfg, &a, true),
+        Mode::Stats => stats(&collect(&a.paths, &cfg).0, &cfg),
+        Mode::Errors => errors(&collect(&a.paths, &cfg).0),
+        Mode::Tree => tree(&collect(&a.paths, &cfg).0),
     };
     std::process::exit(if WALK_FAILED.load(Ordering::Relaxed) {
         2
@@ -523,14 +548,15 @@ fn stdin(cfg: &Config, a: &Args) -> i32 {
     std::io::stdout().write_all(out.as_bytes()).map_or(2, |_| 0)
 }
 
-fn fmt(files: &[PathBuf], cfg: &Config, a: &Args) -> i32 {
+fn fmt(files: &[PathBuf], links: &HashMap<PathBuf, PathBuf>, cfg: &Config, a: &Args) -> i32 {
     let t = Instant::now();
     let check = a.mode == Mode::Check;
     // Each worker writes (or, for --check, drops) the new text itself, so no more than one
     // output per thread is alive at once; only the small per-file results are kept, and
     // they're reported below in input order.
     let results = par_map(files, |p| {
-        let src = match read(p)? {
+        let real = links.get(p).map_or(p, PathBuf::as_path);
+        let src = match read_as(real, p)? {
             Ok(src) => src,
             Err(why) => return Ok(Err(why)),
         };
@@ -538,7 +564,7 @@ fn fmt(files: &[PathBuf], cfg: &Config, a: &Args) -> i32 {
             Outcome::Unchanged => Ok(None),
             Outcome::Skipped(why) => Err(why),
             Outcome::Formatted(_) if check => Ok(Some(Ok(()))),
-            Outcome::Formatted(out) => Ok(Some(write_atomic(p, &out))),
+            Outcome::Formatted(out) => Ok(Some(write_atomic(real, &out))),
         })
     });
     let (mut changed, mut skipped, mut failed) = (0usize, 0usize, false);

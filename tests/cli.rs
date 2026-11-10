@@ -675,6 +675,65 @@ fn hard_links_stay_linked() {
 
 #[cfg(unix)]
 #[test]
+fn symlink_arguments_format_their_target() {
+    use std::os::unix::fs::symlink;
+    let d = Dir::new("linkarg");
+    d.write("real/A.groovy", UGLY);
+    d.write("real/B.groovy", UGLY);
+    d.write("gen/G.groovy", UGLY);
+    d.write(".groovyfmt.toml", "exclude = [\"gen\"]\n");
+    symlink("real/A.groovy", d.0.join("link.groovy")).unwrap();
+    symlink("link.groovy", d.0.join("chain.groovy")).unwrap();
+    symlink("gen/G.groovy", d.0.join("gen.groovy")).unwrap();
+    symlink("real/Gone.groovy", d.0.join("dangling.groovy")).unwrap();
+    symlink("real", d.0.join("dir")).unwrap();
+
+    let c = run(
+        &d.0,
+        &["--check", "link.groovy", "chain.groovy", "gen.groovy"],
+        None,
+    );
+    assert_eq!(c.status.code(), Some(1), "{}", stderr(&c));
+    assert_eq!(
+        stdout(&c),
+        "link.groovy\n",
+        "named as typed, chain is the same file, excluded target skipped"
+    );
+    let c = run(&d.0, &["--check", "chain.groovy"], None);
+    assert_eq!(stdout(&c), "chain.groovy\n");
+
+    let w = run(&d.0, &["chain.groovy", "gen.groovy"], None);
+    assert_eq!(w.status.code(), Some(0), "{}", stderr(&w));
+    assert_eq!(stderr(&w), "reformatted 1 of 1 files\n");
+    assert_eq!(d.read("real/A.groovy"), PRETTY);
+    assert_eq!(d.read("gen/G.groovy"), UGLY);
+    for l in ["link.groovy", "chain.groovy", "gen.groovy"] {
+        assert!(
+            std::fs::symlink_metadata(d.0.join(l)).unwrap().is_symlink(),
+            "{l}"
+        );
+    }
+
+    let gone = run(&d.0, &["--check", "dangling.groovy"], None);
+    assert_eq!(gone.status.code(), Some(2));
+    assert_eq!(
+        stderr(&gone),
+        "groovyfmt: dangling.groovy: no such file or directory\n"
+    );
+
+    // a named directory link is walked, as before
+    let dir = run(&d.0, &["dir"], None);
+    assert_eq!(dir.status.code(), Some(0), "{}", stderr(&dir));
+    assert_eq!(d.read("real/B.groovy"), PRETTY);
+    assert!(
+        std::fs::symlink_metadata(d.0.join("dir"))
+            .unwrap()
+            .is_symlink()
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn write_and_walk_failures_exit_2() {
     use std::os::unix::fs::PermissionsExt;
     let d = Dir::new("perms");

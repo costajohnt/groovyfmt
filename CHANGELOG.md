@@ -17,6 +17,7 @@ From the second audit (`docs/audit-2026-11-09-full.md`):
 - A file named more than once, directly or through overlapping arguments (`groovyfmt . src`, `A.groovy ./A.groovy`, `sub/../A.groovy`), is formatted and reported once. Each in-place write uses its own temporary file name, and a failed write no longer deletes a file that already had that name.
 - UnusedImport no longer reports a class used only through a brace-less GString interpolation such as `"$Name"` or `"$Name.CONST"`; removing the import as advised broke the code.
 - Formatting a file in place keeps its owner and group (root formatting a bind-mounted checkout used to leave every changed file owned by root) and keeps its hard links: a file with more than one link, or whose owner can't be kept, is overwritten in place instead of replaced by a renamed temporary file. A path swapped for a symlink or anything else between the walk and the write is now left alone with an error, where it used to be replaced.
+- A symlink named on the command line stays a symlink: the file it points to is formatted, through any chain of links, and reports name the link as typed. Before, the link was replaced by a formatted regular file and its target left untouched. A link whose target matches `exclude` is skipped.
 
 ## 0.4.0 (2026-11-09)
 
