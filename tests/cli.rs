@@ -764,6 +764,43 @@ fn symlink_arguments_never_rewrite_outside_the_working_directory() {
 
 #[cfg(unix)]
 #[test]
+fn symlinked_directory_arguments_never_rewrite_outside_the_working_directory() {
+    // `groovyfmt *` in a checkout with a committed `vendor -> /elsewhere`
+    let d = Dir::new("dirlinkin");
+    let out = Dir::new("dirlinkout");
+    out.write("V.groovy", UGLY);
+    d.write("real/R.groovy", UGLY);
+    std::os::unix::fs::symlink(&out.0, d.0.join("vendor")).unwrap();
+    std::os::unix::fs::symlink("real", d.0.join("inside")).unwrap();
+    for arg in ["vendor", "vendor/", "vendor/."] {
+        let w = run(&d.0, &[arg], None);
+        assert_eq!(w.status.code(), Some(2), "{arg}: {}", stderr(&w));
+        assert!(
+            stderr(&w).starts_with(&format!(
+                "groovyfmt: {arg}: symlink target is outside the working directory, not formatted\n"
+            )),
+            "{}",
+            stderr(&w)
+        );
+        assert_eq!(out.read("V.groovy"), UGLY, "{arg}");
+    }
+    let c = run(&d.0, &["--check", "vendor"], None);
+    assert_eq!(c.status.code(), Some(1), "{}", stderr(&c));
+    assert_eq!(stdout(&c), "vendor/V.groovy\n");
+
+    // a link inside the working directory is walked as before
+    let w = run(&d.0, &["inside"], None);
+    assert_eq!(w.status.code(), Some(0), "{}", stderr(&w));
+    assert_eq!(d.read("real/R.groovy"), PRETTY);
+    // an argument that isn't a link is never checked
+    let sibling = format!("../{}", out.0.file_name().unwrap().to_str().unwrap());
+    let w = run(&d.0, &[&sibling], None);
+    assert_eq!(w.status.code(), Some(0), "{}", stderr(&w));
+    assert_eq!(out.read("V.groovy"), PRETTY);
+}
+
+#[cfg(unix)]
+#[test]
 fn write_and_walk_failures_exit_2() {
     use std::os::unix::fs::PermissionsExt;
     let d = Dir::new("perms");

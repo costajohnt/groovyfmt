@@ -72,7 +72,8 @@ fn die(msg: impl std::fmt::Display) -> ! {
     std::process::exit(2);
 }
 
-/// Set when a directory couldn't be read during the walk; the run then exits 2.
+/// Set when a directory couldn't be read during the walk, or an argument was refused; the
+/// run then exits 2.
 static WALK_FAILED: AtomicBool = AtomicBool::new(false);
 
 /// Files larger than this are skipped: generated or vendored code, and a guard against
@@ -225,12 +226,37 @@ fn walk(p: &Path, top: bool, out: &mut Vec<PathBuf>, cfg: &Config) {
 /// redirect the write. Only the final component is checked again at write time (both write
 /// paths refuse a symlink there); the directories above it are not pinned, which needs a
 /// concurrent local attacker, as in the audit's accepted risk.
-fn collect(paths: &[PathBuf], cfg: &Config) -> (Vec<PathBuf>, HashMap<PathBuf, PathBuf>) {
+///
+/// With `write`, an argument that is itself a symlink to somewhere outside the working
+/// directory is refused (exit 2): `groovyfmt *` or `git ls-files` in an untrusted checkout
+/// can hand us a committed link as an argument, but not a path beneath one. So only the
+/// argument's own last component is checked; `../other-project`, absolute paths and paths
+/// through a symlinked parent (`/tmp` on macOS) are the user's own choice.
+fn collect(
+    paths: &[PathBuf],
+    cfg: &Config,
+    write: bool,
+) -> (Vec<PathBuf>, HashMap<PathBuf, PathBuf>) {
     let mut files = Vec::new();
     let mut links = HashMap::new();
+    let cwd = std::fs::canonicalize(".").ok();
     for p in paths {
         if !p.exists() {
             die(format!("{}: no such file or directory", p.display()));
+        }
+        // components() drops a trailing `/` or `/.`, which would make the link resolve
+        let last: PathBuf = p.components().collect();
+        if write && last.is_symlink() {
+            let real =
+                std::fs::canonicalize(p).unwrap_or_else(|e| die(format!("{}: {e}", p.display())));
+            if cwd.as_ref().is_none_or(|c| !real.starts_with(c)) {
+                eprintln!(
+                    "groovyfmt: {}: symlink target is outside the working directory, not formatted",
+                    shown(p)
+                );
+                WALK_FAILED.store(true, Ordering::Relaxed);
+                continue;
+            }
         }
         let n = files.len();
         walk(p, true, &mut files, cfg);
@@ -511,15 +537,15 @@ fn main() {
         Mode::Rules => rules(&cfg),
         Mode::Stdin => stdin(&cfg, &a),
         Mode::Write | Mode::Check => {
-            let (files, links) = collect(&a.paths, &cfg);
+            let (files, links) = collect(&a.paths, &cfg, a.mode == Mode::Write);
             fmt(&files, &links, &cfg, &a)
         }
         // these only read, and reading through a named link is reading its target
-        Mode::Lint => lint_files(&collect(&a.paths, &cfg).0, &cfg, &a, false),
-        Mode::LintStats => lint_files(&collect(&a.paths, &cfg).0, &cfg, &a, true),
-        Mode::Stats => stats(&collect(&a.paths, &cfg).0, &cfg),
-        Mode::Errors => errors(&collect(&a.paths, &cfg).0),
-        Mode::Tree => tree(&collect(&a.paths, &cfg).0),
+        Mode::Lint => lint_files(&collect(&a.paths, &cfg, false).0, &cfg, &a, false),
+        Mode::LintStats => lint_files(&collect(&a.paths, &cfg, false).0, &cfg, &a, true),
+        Mode::Stats => stats(&collect(&a.paths, &cfg, false).0, &cfg),
+        Mode::Errors => errors(&collect(&a.paths, &cfg, false).0),
+        Mode::Tree => tree(&collect(&a.paths, &cfg, false).0),
     };
     std::process::exit(if WALK_FAILED.load(Ordering::Relaxed) {
         2
@@ -577,16 +603,8 @@ fn fmt(files: &[PathBuf], links: &HashMap<PathBuf, PathBuf>, cfg: &Config, a: &A
     // Each worker writes (or, for --check, drops) the new text itself, so no more than one
     // output per thread is alive at once; only the small per-file results are kept, and
     // they're reported below in input order.
-    let cwd = std::fs::canonicalize(".").ok();
     let results = par_map(files, |p| {
         let real = links.get(p).map_or(p, PathBuf::as_path);
-        // a committed link named by `groovyfmt *.groovy` must not rewrite files elsewhere
-        if !check && links.contains_key(p) && cwd.as_ref().is_none_or(|c| !real.starts_with(c)) {
-            return Err(format!(
-                "{}: symlink target is outside the working directory, not formatted",
-                shown(p)
-            ));
-        }
         let (src, id) = match read_as(real, p)? {
             Ok(read) => read,
             Err(why) => return Ok(Err(why)),
