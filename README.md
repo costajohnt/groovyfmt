@@ -34,14 +34,14 @@ The comparison flatters groovyfmt somewhat. It skips the 119 spock files it can'
 
 ## Install
 
-Prebuilt binaries for Linux (x86_64 static, arm64) and macOS (Apple Silicon, Intel) are attached to each [release](https://github.com/costajohnt/groovyfmt/releases):
+Prebuilt binaries for Linux (x86_64 and arm64, both static musl builds that need no glibc) and macOS (Apple Silicon, Intel) are attached to each [release](https://github.com/costajohnt/groovyfmt/releases):
 
 ```sh
 gh release download --repo costajohnt/groovyfmt --pattern '*aarch64-apple-darwin.tar.gz'
 tar -xzf groovyfmt-*.tar.gz && mv groovyfmt-*/groovyfmt /usr/local/bin/
 ```
 
-Or build from source (Rust 1.85+, a C compiler):
+Or build from source (Rust 1.90+, a C compiler):
 
 ```sh
 cargo install --locked --git https://github.com/costajohnt/groovyfmt
@@ -216,7 +216,7 @@ groovyfmt --errors <dir>                 # first parse error per failing file, f
 groovyfmt --tree <file>                  # dump the parse tree
 ```
 
-Releases: push a `v*` tag and the release workflow builds and attaches the binaries.
+Releases: push a `v*` tag on `main` matching the Cargo.toml version and with a CHANGELOG heading; the release workflow publishes only after those checks, fmt, clippy, the tests on stable and Rust 1.90, and a build and smoke test of all four binaries pass.
 
 ## License
 

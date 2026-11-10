@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # release.yml calls this workflow, so a tag publishes only if every job here passes.
+  workflow_call:
 
 permissions:
   contents: read
@@ -30,8 +32,93 @@ jobs:
       - run: cargo test --locked
       - name: Format and lint our own fixtures
         run: |
-          cargo build --release
+          cargo build --release --locked
           printf 'class A {\ndef f() {\nprintln 1\n}\n}\n' > /tmp/A.groovy
           ./target/release/groovyfmt --check /tmp/A.groovy && exit 1 || true
           ./target/release/groovyfmt /tmp/A.groovy
           ./target/release/groovyfmt --check /tmp/A.groovy
+
+  msrv:
+    # Keep in step with rust-version in Cargo.toml.
+    name: test (Rust 1.90.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: 1.90.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cargo +1.90.0 test --locked
+
+  # The release targets, built and run on every push and pull request. On a tag,
+  # release.yml publishes the archives this job uploads.
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - name: musl tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+      - name: Build
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+        run: cargo build --release --locked --target "$TARGET"
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -exo pipefail
+          bin=target/$TARGET/release/groovyfmt
+          file "$bin"
+          run=
+          case $TARGET in
+            *linux*)
+              # Rust's musl targets link static-pie, which file(1) reports as "static-pie linked".
+              file "$bin" | grep -Eq 'statically linked|static-pie linked'
+              readelf -d "$bin" > dyn.txt || true
+              cat dyn.txt
+              if grep -q NEEDED dyn.txt; then exit 1; fi
+              # No glibc: the binary must start on Alpine.
+              docker run --rm -v "$PWD/$bin:/groovyfmt:ro" alpine:3 /groovyfmt --version ;;
+            x86_64-apple-darwin) run='arch -x86_64' ;;
+          esac
+          $run "$bin" --version
+          printf 'class A {\ndef f() {\nprintln 1\n}\n}\n' > "$RUNNER_TEMP/A.groovy"
+          if $run "$bin" --check "$RUNNER_TEMP/A.groovy"; then exit 1; fi
+          $run "$bin" "$RUNNER_TEMP/A.groovy"
+          $run "$bin" --check "$RUNNER_TEMP/A.groovy"
+          cat "$RUNNER_TEMP/A.groovy"
+      - name: Package
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then label=$GITHUB_REF_NAME; else label=dev; fi
+          name=groovyfmt-$label-$TARGET
+          mkdir "$name"
+          cp "target/$TARGET/release/groovyfmt" README.md LICENSE "$name"/
+          tar -czf "$name.tar.gz" "$name"
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.target }}
+          path: groovyfmt-*.tar.gz*
