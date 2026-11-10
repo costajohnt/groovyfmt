@@ -15,9 +15,14 @@ tree-sitter = "0.26"
 toml = "1.2"
 # Fork branch groovyfmt-base = upstream main + dekobon PR #49 + our fixes
 # (dekobon/tree-sitter-groovy#56, #57, #60, and the fix/subscript-same-line,
-# fix/final-parameters, fix/trait-implements branches). Back to the crates.io release once
-# those land upstream.
-dekobon-tree-sitter-groovy = { git = "https://github.com/costajohnt/tree-sitter-groovy", rev = "25b1f4b79d113862ba4e9d698fe18d2e73a42017" }
+# fix/final-parameters, fix/trait-implements, fix/script-annotated-declaration,
+# fix/command-args, fix/assert-comma-message, fix/annotated-untyped-field,
+# fix/multi-assignment, fix/annotation-values, fix/array-creation,
+# fix/lambda-expressions, fix/method-declaration-forms, fix/synchronized-statement,
+# fix/attribute-access-forms, fix/method-reference-quoted-name,
+# fix/explicit-type-arguments, fix/list-spread, fix/reserved-keywords branches).
+# Back to the crates.io release once those land upstream.
+dekobon-tree-sitter-groovy = { git = "https://github.com/costajohnt/tree-sitter-groovy", rev = "8e89485fee20e4ac14f8d18e82dd2caab860b9e3" }
 
 [profile.release]
 lto = true
