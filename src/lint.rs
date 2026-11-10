@@ -190,6 +190,11 @@ fn imports(src: &str, tree: &Tree, v: &mut Vec<Violation>) {
             comments.push('\n');
             false
         }
+        // `"$Name.CONST"` is one leaf whose text keeps the `$` and the dots
+        "gstring_dollar_interpolation" => {
+            used.extend(text(n, src).trim_start_matches('$').split('.'));
+            false
+        }
         _ => {
             if n.child_count() == 0 {
                 used.insert(text(n, src));
@@ -459,6 +464,27 @@ mod tests {
             rules(src),
             vec![("UnusedImport", 2), ("DuplicateImport", 3)]
         );
+    }
+
+    #[test]
+    fn dollar_interpolation_is_a_use() {
+        for s in [
+            "\"$N\"",
+            "\"${M.X} $N\"",
+            "\"$N.CONST\"",
+            "\"$N.a.b\"",
+            "\"\"\"x\n$N y\"\"\"",
+            "/x $N y/",
+            "$/x $N y/$",
+        ] {
+            let src = format!("import a.N\nimport a.M\nprintln {s}\nM.go()\n");
+            assert_eq!(rules(&src), vec![], "{s}");
+        }
+        // escaped, or in a string that doesn't interpolate: not a use
+        for s in ["\"\\$N\"", "'$N'", "'''$N'''", "\"$Nx\""] {
+            let src = format!("import a.N\nprintln {s}\n");
+            assert_eq!(rules(&src), vec![("UnusedImport", 1)], "{s}");
+        }
     }
 
     #[test]

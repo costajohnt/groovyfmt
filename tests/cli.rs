@@ -659,6 +659,148 @@ fn symlinks_and_special_files_are_not_followed() {
 
 #[cfg(unix)]
 #[test]
+fn hard_links_stay_linked() {
+    use std::os::unix::fs::MetadataExt;
+    let d = Dir::new("hardlink");
+    let h = d.write("H.groovy", UGLY);
+    std::fs::hard_link(&h, d.0.join("H2.groovy")).unwrap();
+    let ino = std::fs::metadata(&h).unwrap().ino();
+    let w = run(&d.0, &["H.groovy"], None);
+    assert_eq!(w.status.code(), Some(0), "{}", stderr(&w));
+    assert_eq!(d.read("H.groovy"), PRETTY);
+    assert_eq!(d.read("H2.groovy"), PRETTY);
+    let m = std::fs::metadata(&h).unwrap();
+    assert_eq!((m.ino(), m.nlink()), (ino, 2));
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_arguments_format_their_target() {
+    use std::os::unix::fs::symlink;
+    let d = Dir::new("linkarg");
+    d.write("real/A.groovy", UGLY);
+    d.write("real/B.groovy", UGLY);
+    d.write("gen/G.groovy", UGLY);
+    d.write(".groovyfmt.toml", "exclude = [\"gen\"]\n");
+    symlink("real/A.groovy", d.0.join("link.groovy")).unwrap();
+    symlink("link.groovy", d.0.join("chain.groovy")).unwrap();
+    symlink("gen/G.groovy", d.0.join("gen.groovy")).unwrap();
+    symlink("real/Gone.groovy", d.0.join("dangling.groovy")).unwrap();
+    symlink("real", d.0.join("dir")).unwrap();
+
+    let c = run(
+        &d.0,
+        &["--check", "link.groovy", "chain.groovy", "gen.groovy"],
+        None,
+    );
+    assert_eq!(c.status.code(), Some(1), "{}", stderr(&c));
+    assert_eq!(
+        stdout(&c),
+        "link.groovy\n",
+        "named as typed, chain is the same file, excluded target skipped"
+    );
+    let c = run(&d.0, &["--check", "chain.groovy"], None);
+    assert_eq!(stdout(&c), "chain.groovy\n");
+
+    let w = run(&d.0, &["chain.groovy", "gen.groovy"], None);
+    assert_eq!(w.status.code(), Some(0), "{}", stderr(&w));
+    assert_eq!(stderr(&w), "reformatted 1 of 1 files\n");
+    assert_eq!(d.read("real/A.groovy"), PRETTY);
+    assert_eq!(d.read("gen/G.groovy"), UGLY);
+    for l in ["link.groovy", "chain.groovy", "gen.groovy"] {
+        assert!(
+            std::fs::symlink_metadata(d.0.join(l)).unwrap().is_symlink(),
+            "{l}"
+        );
+    }
+
+    let gone = run(&d.0, &["--check", "dangling.groovy"], None);
+    assert_eq!(gone.status.code(), Some(2));
+    assert_eq!(
+        stderr(&gone),
+        "groovyfmt: dangling.groovy: no such file or directory\n"
+    );
+
+    // a named directory link is walked, as before
+    let dir = run(&d.0, &["dir"], None);
+    assert_eq!(dir.status.code(), Some(0), "{}", stderr(&dir));
+    assert_eq!(d.read("real/B.groovy"), PRETTY);
+    assert!(
+        std::fs::symlink_metadata(d.0.join("dir"))
+            .unwrap()
+            .is_symlink()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_arguments_never_rewrite_outside_the_working_directory() {
+    // `groovyfmt *.groovy` in a checkout with a committed link to a file elsewhere
+    let d = Dir::new("linkin");
+    let out = Dir::new("linkout");
+    let target = out.write("Real.groovy", UGLY);
+    std::os::unix::fs::symlink(&target, d.0.join("x.groovy")).unwrap();
+    d.write("A.groovy", UGLY);
+    let w = run(&d.0, &["x.groovy", "A.groovy"], None);
+    assert_eq!(w.status.code(), Some(2), "{}", stderr(&w));
+    assert!(
+        stderr(&w).starts_with(
+            "groovyfmt: x.groovy: symlink target is outside the working directory, not formatted\n"
+        ),
+        "{}",
+        stderr(&w)
+    );
+    assert_eq!(out.read("Real.groovy"), UGLY);
+    assert!(
+        std::fs::symlink_metadata(d.0.join("x.groovy"))
+            .unwrap()
+            .is_symlink()
+    );
+    assert_eq!(d.read("A.groovy"), PRETTY, "other files still formatted");
+    let c = run(&d.0, &["--check", "x.groovy"], None);
+    assert_eq!(c.status.code(), Some(1), "{}", stderr(&c));
+    assert_eq!(stdout(&c), "x.groovy\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_directory_arguments_never_rewrite_outside_the_working_directory() {
+    // `groovyfmt *` in a checkout with a committed `vendor -> /elsewhere`
+    let d = Dir::new("dirlinkin");
+    let out = Dir::new("dirlinkout");
+    out.write("V.groovy", UGLY);
+    d.write("real/R.groovy", UGLY);
+    std::os::unix::fs::symlink(&out.0, d.0.join("vendor")).unwrap();
+    std::os::unix::fs::symlink("real", d.0.join("inside")).unwrap();
+    for arg in ["vendor", "vendor/", "vendor/."] {
+        let w = run(&d.0, &[arg], None);
+        assert_eq!(w.status.code(), Some(2), "{arg}: {}", stderr(&w));
+        assert!(
+            stderr(&w).starts_with(&format!(
+                "groovyfmt: {arg}: symlink target is outside the working directory, not formatted\n"
+            )),
+            "{}",
+            stderr(&w)
+        );
+        assert_eq!(out.read("V.groovy"), UGLY, "{arg}");
+    }
+    let c = run(&d.0, &["--check", "vendor"], None);
+    assert_eq!(c.status.code(), Some(1), "{}", stderr(&c));
+    assert_eq!(stdout(&c), "vendor/V.groovy\n");
+
+    // a link inside the working directory is walked as before
+    let w = run(&d.0, &["inside"], None);
+    assert_eq!(w.status.code(), Some(0), "{}", stderr(&w));
+    assert_eq!(d.read("real/R.groovy"), PRETTY);
+    // an argument that isn't a link is never checked
+    let sibling = format!("../{}", out.0.file_name().unwrap().to_str().unwrap());
+    let w = run(&d.0, &[&sibling], None);
+    assert_eq!(w.status.code(), Some(0), "{}", stderr(&w));
+    assert_eq!(out.read("V.groovy"), PRETTY);
+}
+
+#[cfg(unix)]
+#[test]
 fn write_and_walk_failures_exit_2() {
     use std::os::unix::fs::PermissionsExt;
     let d = Dir::new("perms");

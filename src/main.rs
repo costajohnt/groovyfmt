@@ -1,7 +1,7 @@
 use groovyfmt::config::{self, Config};
 use groovyfmt::format::{Outcome, format};
 use groovyfmt::lint::{self, RULES};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -72,7 +72,8 @@ fn die(msg: impl std::fmt::Display) -> ! {
     std::process::exit(2);
 }
 
-/// Set when a directory couldn't be read during the walk; the run then exits 2.
+/// Set when a directory couldn't be read during the walk, or an argument was refused; the
+/// run then exits 2.
 static WALK_FAILED: AtomicBool = AtomicBool::new(false);
 
 /// Files larger than this are skipped: generated or vendored code, and a guard against
@@ -219,19 +220,62 @@ fn walk(p: &Path, top: bool, out: &mut Vec<PathBuf>, cfg: &Config) {
     }
 }
 
-fn collect(paths: &[PathBuf], cfg: &Config) -> Vec<PathBuf> {
+/// The files to process, named as the user typed them, and for each symlink to a file named
+/// on the command line, the file it points to. That file is the one read and rewritten, so
+/// the link stays a link; resolving it once here means a link retargeted later can't
+/// redirect the write. Only the final component is checked again at write time (both write
+/// paths refuse a symlink there); the directories above it are not pinned, which needs a
+/// concurrent local attacker, as in the audit's accepted risk.
+///
+/// With `write`, an argument that is itself a symlink to somewhere outside the working
+/// directory is refused (exit 2): `groovyfmt *` or `git ls-files` in an untrusted checkout
+/// can hand us a committed link as an argument, but not a path beneath one. So only the
+/// argument's own last component is checked; `../other-project`, absolute paths and paths
+/// through a symlinked parent (`/tmp` on macOS) are the user's own choice.
+fn collect(
+    paths: &[PathBuf],
+    cfg: &Config,
+    write: bool,
+) -> (Vec<PathBuf>, HashMap<PathBuf, PathBuf>) {
     let mut files = Vec::new();
+    let mut links = HashMap::new();
+    let cwd = std::fs::canonicalize(".").ok();
     for p in paths {
         if !p.exists() {
             die(format!("{}: no such file or directory", p.display()));
         }
+        // components() drops a trailing `/` or `/.`, which would make the link resolve
+        let last: PathBuf = p.components().collect();
+        if write && last.is_symlink() {
+            let real =
+                std::fs::canonicalize(p).unwrap_or_else(|e| die(format!("{}: {e}", p.display())));
+            if cwd.as_ref().is_none_or(|c| !real.starts_with(c)) {
+                eprintln!(
+                    "groovyfmt: {}: symlink target is outside the working directory, not formatted",
+                    shown(p)
+                );
+                WALK_FAILED.store(true, Ordering::Relaxed);
+                continue;
+            }
+        }
+        let n = files.len();
         walk(p, true, &mut files, cfg);
+        if files.len() > n && p.is_symlink() && p.is_file() {
+            match std::fs::canonicalize(p) {
+                // excluding the target excludes it under any name
+                Ok(real) if cfg.excluded(&real) => files.truncate(n),
+                Ok(real) => {
+                    links.insert(files[n].clone(), real);
+                }
+                Err(e) => die(format!("{}: {e}", p.display())),
+            }
+        }
     }
     // overlapping arguments (`. src`, a file named twice or spelled differently): each file
     // once, first-seen order
     let mut seen = std::collections::HashSet::new();
     files.retain(|f| seen.insert(std::fs::canonicalize(f).unwrap_or_else(|_| f.clone())));
-    files
+    (files, links)
 }
 
 /// Run `f` over every file on all cores; results come back in input order. A panic while
@@ -277,7 +321,13 @@ const NOT_UTF8: &str = "not valid UTF-8";
 /// run: not UTF-8, not a regular file, or larger than `MAX_FILE_BYTES`. The checks run on
 /// the opened handle, so a file swapped for something else after the walk is still caught.
 fn read(path: &Path) -> Result<Result<String, &'static str>, String> {
-    let err = |e: std::io::Error| format!("{}: {e}", shown(path));
+    read_as(path, path).map(|r| r.map(|(src, _)| src))
+}
+
+/// `read`, naming the file `name` in errors, with the identity of the file read so a write
+/// can check it is still the same file.
+fn read_as(path: &Path, name: &Path) -> Result<Result<(String, FileId), &'static str>, String> {
+    let err = |e: std::io::Error| format!("{}: {e}", shown(name));
     let f = std::fs::File::open(path).map_err(err)?;
     let meta = f.metadata().map_err(err)?;
     if !meta.is_file() {
@@ -293,23 +343,65 @@ fn read(path: &Path) -> Result<Result<String, &'static str>, String> {
     if bytes.len() as u64 > MAX_FILE_BYTES {
         return Ok(Err("larger than 10 MB"));
     }
-    Ok(String::from_utf8(bytes).map_err(|_| NOT_UTF8))
+    Ok(String::from_utf8(bytes)
+        .map(|src| (src, file_id(&meta)))
+        .map_err(|_| NOT_UTF8))
+}
+
+/// Device and inode on unix; elsewhere there is nothing to compare.
+type FileId = (u64, u64);
+
+#[cfg(unix)]
+fn file_id(m: &std::fs::Metadata) -> FileId {
+    use std::os::unix::fs::MetadataExt;
+    (m.dev(), m.ino())
+}
+
+#[cfg(not(unix))]
+fn file_id(_: &std::fs::Metadata) -> FileId {
+    (0, 0)
+}
+
+fn changed() -> std::io::Error {
+    std::io::Error::other("file changed while formatting")
 }
 
 static TMP_SEQ: AtomicUsize = AtomicUsize::new(0);
 
 /// Replace a file's contents atomically: write a temporary file beside it with the same
-/// permissions, then rename it over the path. A crash can't leave a truncated file, and if
-/// the path was swapped for a symlink after the walk, the link is replaced rather than
-/// written through.
-fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
-    let perms = std::fs::metadata(path)?.permissions();
+/// permissions and owner, then rename it over the path. A crash can't leave a truncated
+/// file. A file with other hard links, or whose owner can't be kept, is written in place
+/// instead. `read` is the identity of the file the contents came from; if the path no
+/// longer names that regular file (swapped for a symlink or another file), nothing is
+/// written.
+fn write_atomic(path: &Path, contents: &str, read: FileId) -> std::io::Result<()> {
+    write_keeping_owner(path, contents, read, keep_owner)
+}
+
+fn write_keeping_owner(
+    path: &Path,
+    contents: &str,
+    read: FileId,
+    keep_owner: impl Fn(&std::fs::File, &std::fs::Metadata) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    // This narrows the gap between the check and the rename below but can't close it: std
+    // has no rename relative to a pinned file. The in-place path checks its open handle.
+    let meta = std::fs::symlink_metadata(path)?;
+    if !meta.is_file() || file_id(&meta) != read {
+        return Err(changed());
+    }
+    let perms = meta.permissions();
     // a rename would replace a read-only file too; read-only means hands off
     if perms.readonly() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "file is read-only",
         ));
+    }
+    // a rename would leave the other names pointing at the old contents
+    #[cfg(unix)]
+    if std::os::unix::fs::MetadataExt::nlink(&meta) > 1 {
+        return write_in_place(path, read, contents);
     }
     let name = path
         .file_name()
@@ -320,6 +412,12 @@ fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
     let tmp = path.with_file_name(format!(".{name}.groovyfmt-{}-{seq}", std::process::id()));
     // a file already at that name isn't ours: fail without removing it
     let mut f = create_tmp(&tmp)?;
+    // the new file belongs to whoever runs us (root, in a container); give it back
+    if keep_owner(&f, &meta).is_err() {
+        drop(f);
+        let _ = std::fs::remove_file(&tmp);
+        return write_in_place(path, read, contents);
+    }
     let result = (|| {
         f.write_all(contents.as_bytes())?;
         f.set_permissions(perms)?;
@@ -340,6 +438,43 @@ fn create_tmp(tmp: &Path) -> std::io::Result<std::fs::File> {
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
     opts.open(tmp)
+}
+
+/// Give the new file `orig`'s owner and group. Only root can give a file away, so this
+/// fails for most users when the owner differs.
+#[cfg(unix)]
+fn keep_owner(f: &std::fs::File, orig: &std::fs::Metadata) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let new = f.metadata()?;
+    if (new.uid(), new.gid()) == (orig.uid(), orig.gid()) {
+        return Ok(());
+    }
+    std::os::unix::fs::fchown(f, Some(orig.uid()), Some(orig.gid()))
+}
+
+#[cfg(not(unix))]
+fn keep_owner(_: &std::fs::File, _: &std::fs::Metadata) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Overwrite the existing file. Not atomic: a crash mid-write can leave it part new, part
+/// old. Taken only when a rename would split the file's hard links or hand it to another
+/// owner (root formatting a developer's checkout), which is worse than that window.
+fn write_in_place(path: &Path, read: FileId, contents: &str) -> std::io::Result<()> {
+    // No truncation on open: nothing changes until the open handle is known to be the
+    // regular file that was read, so a path swapped for a symlink or another file since is
+    // not written. This compares identities instead of passing O_NOFOLLOW, whose value
+    // differs by platform, isn't in std, and would need the libc crate. Without it (or
+    // O_NONBLOCK), a path swapped for a FIFO makes the open wait for a reader; like the
+    // read side, that needs a concurrent local attacker (the first audit's accepted risk).
+    let mut f = std::fs::OpenOptions::new().write(true).open(path)?;
+    let now = f.metadata()?;
+    if !now.is_file() || file_id(&now) != read {
+        return Err(changed());
+    }
+    f.set_len(0)?;
+    f.write_all(contents.as_bytes())?;
+    f.sync_all()
 }
 
 /// Control characters escaped, so a crafted file name or file content (lint messages quote
@@ -401,12 +536,16 @@ fn main() {
     let code = match a.mode {
         Mode::Rules => rules(&cfg),
         Mode::Stdin => stdin(&cfg, &a),
-        Mode::Write | Mode::Check => fmt(&collect(&a.paths, &cfg), &cfg, &a),
-        Mode::Lint => lint_files(&collect(&a.paths, &cfg), &cfg, &a, false),
-        Mode::LintStats => lint_files(&collect(&a.paths, &cfg), &cfg, &a, true),
-        Mode::Stats => stats(&collect(&a.paths, &cfg), &cfg),
-        Mode::Errors => errors(&collect(&a.paths, &cfg)),
-        Mode::Tree => tree(&collect(&a.paths, &cfg)),
+        Mode::Write | Mode::Check => {
+            let (files, links) = collect(&a.paths, &cfg, a.mode == Mode::Write);
+            fmt(&files, &links, &cfg, &a)
+        }
+        // these only read, and reading through a named link is reading its target
+        Mode::Lint => lint_files(&collect(&a.paths, &cfg, false).0, &cfg, &a, false),
+        Mode::LintStats => lint_files(&collect(&a.paths, &cfg, false).0, &cfg, &a, true),
+        Mode::Stats => stats(&collect(&a.paths, &cfg, false).0, &cfg),
+        Mode::Errors => errors(&collect(&a.paths, &cfg, false).0),
+        Mode::Tree => tree(&collect(&a.paths, &cfg, false).0),
     };
     std::process::exit(if WALK_FAILED.load(Ordering::Relaxed) {
         2
@@ -458,22 +597,23 @@ fn stdin(cfg: &Config, a: &Args) -> i32 {
     std::io::stdout().write_all(out.as_bytes()).map_or(2, |_| 0)
 }
 
-fn fmt(files: &[PathBuf], cfg: &Config, a: &Args) -> i32 {
+fn fmt(files: &[PathBuf], links: &HashMap<PathBuf, PathBuf>, cfg: &Config, a: &Args) -> i32 {
     let t = Instant::now();
     let check = a.mode == Mode::Check;
     // Each worker writes (or, for --check, drops) the new text itself, so no more than one
     // output per thread is alive at once; only the small per-file results are kept, and
     // they're reported below in input order.
     let results = par_map(files, |p| {
-        let src = match read(p)? {
-            Ok(src) => src,
+        let real = links.get(p).map_or(p, PathBuf::as_path);
+        let (src, id) = match read_as(real, p)? {
+            Ok(read) => read,
             Err(why) => return Ok(Err(why)),
         };
         Ok(match format(&src, &cfg.style) {
             Outcome::Unchanged => Ok(None),
             Outcome::Skipped(why) => Err(why),
             Outcome::Formatted(_) if check => Ok(Some(Ok(()))),
-            Outcome::Formatted(out) => Ok(Some(write_atomic(p, &out))),
+            Outcome::Formatted(out) => Ok(Some(write_atomic(real, &out, id))),
         })
     });
     let (mut changed, mut skipped, mut failed) = (0usize, 0usize, false);
@@ -682,6 +822,13 @@ fn tree(files: &[PathBuf]) -> i32 {
 mod tests {
     use super::*;
 
+    /// Held by tests that call `write_atomic`, so none takes the temp name another predicts.
+    static TMP_NAMES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn id(p: &Path) -> FileId {
+        file_id(&std::fs::metadata(p).unwrap())
+    }
+
     #[test]
     fn printable_neutralizes_line_breaks() {
         assert_eq!(
@@ -693,6 +840,7 @@ mod tests {
 
     #[test]
     fn write_atomic_never_removes_a_file_it_did_not_create() {
+        let _lock = TMP_NAMES.lock();
         let d = std::env::temp_dir().join(format!("groovyfmt-tmpname-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let path = d.join("A.groovy");
@@ -701,11 +849,11 @@ mod tests {
         let seq = TMP_SEQ.load(Ordering::Relaxed);
         let squat = d.join(format!(".A.groovy.groovyfmt-{}-{seq}", std::process::id()));
         std::fs::write(&squat, "precious\n").unwrap();
-        let err = write_atomic(&path, "new\n").unwrap_err();
+        let err = write_atomic(&path, "new\n", id(&path)).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
         assert_eq!(std::fs::read_to_string(&squat).unwrap(), "precious\n");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "old\n");
-        write_atomic(&path, "new\n").unwrap();
+        write_atomic(&path, "new\n", id(&path)).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "new\n");
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -779,6 +927,75 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&d);
         assert_eq!(mode, 0o600, "{mode:o}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rename_unless_hard_linked_or_owner_lost() {
+        use std::os::unix::fs::MetadataExt;
+        let _lock = TMP_NAMES.lock();
+        let d = std::env::temp_dir().join(format!("groovyfmt-inplace-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let (a, b) = (d.join("A.groovy"), d.join("B.groovy"));
+        let ino = |p: &Path| std::fs::metadata(p).unwrap().ino();
+
+        // the common case renames: a new inode
+        std::fs::write(&a, "old\n").unwrap();
+        let before = ino(&a);
+        write_atomic(&a, "new\n", id(&a)).unwrap();
+        assert_ne!(ino(&a), before, "renamed");
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "new\n");
+
+        // owner can't be kept: written in place, temp file removed
+        let before = ino(&a);
+        write_keeping_owner(&a, "longer than before\n", id(&a), |_, _| {
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        })
+        .unwrap();
+        assert_eq!(ino(&a), before, "in place");
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "longer than before\n");
+        write_keeping_owner(&a, "short\n", id(&a), |_, _| {
+            Err(std::io::Error::other("x"))
+        })
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "short\n", "truncated");
+
+        // only the file that was read is written, by either path
+        let other = d.join("Other.groovy");
+        std::fs::write(&other, "other\n").unwrap();
+        assert!(write_atomic(&a, "evil\n", id(&other)).is_err(), "rename");
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "short\n");
+
+        // a second hard link: both names see the new text
+        std::fs::hard_link(&a, &b).unwrap();
+        write_atomic(&b, "linked\n", id(&b)).unwrap();
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "linked\n");
+        assert_eq!((ino(&a), ino(&b)), (before, before));
+        assert_eq!(std::fs::metadata(&a).unwrap().nlink(), 2);
+
+        assert!(write_in_place(&a, id(&other), "evil\n").is_err());
+        assert!(write_atomic(&a, "evil\n", id(&other)).is_err());
+        assert!(write_atomic(&b, "evil\n", id(&other)).is_err(), "linked");
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "linked\n");
+        let was = id(&a);
+        std::fs::remove_file(&a).unwrap();
+        std::os::unix::fs::symlink(&other, &a).unwrap();
+        assert!(write_in_place(&a, was, "evil\n").is_err());
+        assert!(
+            write_atomic(&a, "evil\n", was).is_err(),
+            "not a regular file"
+        );
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "other\n");
+        assert!(std::fs::symlink_metadata(&a).unwrap().is_symlink());
+
+        let leftovers: Vec<_> = std::fs::read_dir(&d)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".groovyfmt-"))
+            .collect();
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(leftovers.is_empty(), "no temp files left behind");
     }
 
     #[test]
