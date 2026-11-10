@@ -10,14 +10,14 @@ Jenkinsfile
 test/groovy/BaseTest.groovy
 test/groovy/BuildDockerAndPublishImageStepTests.groovy
 ...
-would reformat 21 of 27 files, 6 skipped (-v shows why)
+would reformat 22 of 27 files, 5 skipped (-v shows why)
 $ groovyfmt
-reformatted 21 of 27 files, 6 skipped (-v shows why)
+reformatted 22 of 27 files, 5 skipped (-v shows why)
 $ groovyfmt --lint
 test/groovy/BaseTest.groovy:2:1: UnusedImport: The [mock.CurrentBuild] import is never referenced
 test/groovy/BaseTest.groovy:4:1: UnusedImport: The [org.junit.Before] import is never referenced
 ...
-7 violations in 27 files (UnusedImport 7), 6 skipped (-v shows why)
+7 violations in 27 files (UnusedImport 7), 5 skipped (-v shows why)
 ```
 
 ## Speed
@@ -26,11 +26,11 @@ Against [npm-groovy-lint](https://github.com/nvuillam/npm-groovy-lint) 19.0.1 (C
 
 | task | npm-groovy-lint | groovyfmt |
 |---|---|---|
-| lint, the same four rules | 19.5 s | 0.12 s (all 14 default rules) |
+| lint, the same four rules | 19.5 s | 0.11 s (all 14 default rules) |
 | lint, npm-groovy-lint's default rule set | 30.3 s | |
-| format | did not finish in 15 min (two attempts) | 0.25 s |
+| format | did not finish in 15 min (two attempts) | 0.19 s |
 
-The comparison flatters groovyfmt somewhat. It skips the 17 spock files it can't parse (9 of them are AST snapshot fixtures, 8 of which aren't valid Groovy source), which npm-groovy-lint still processes, and CodeNarc's default rule set is far larger.
+The comparison flatters groovyfmt somewhat. It skips the 17 spock files it can't parse, which npm-groovy-lint still processes, and CodeNarc's default rule set is far larger. Of those 17, 9 are generated AST snapshots used as test fixtures (8 of them aren't valid Groovy source) and 8 are specs using syntax the grammar doesn't cover yet.
 
 ## Install
 
@@ -121,23 +121,23 @@ UnusedImport = false
 
 Unknown keys and misspelled rule names are errors, so a typo can't silently do nothing; a config file can only fail the run when groovyfmt reaches a file or directory it governs. `-v` prints each config in use.
 
-`continuation_indent = 8` matches IntelliJ's default and most Grails projects written in it. On OpenBoxes it cuts the first-run diff from 694 files to 426, and what remains is mostly trailing whitespace and runs of blank lines.
+`continuation_indent = 8` matches IntelliJ's default and most Grails projects written in it. On OpenBoxes it cuts the first-run diff from 720 files to 449, and what remains is mostly trailing whitespace and runs of blank lines.
 
-`use_tabs = true` writes leading indentation as tabs. Indents are worked out in columns as usual, with a tab `indent` columns wide, and each full tab width becomes a tab. So with the default `continuation_indent` (the same as `indent`) a continued line gets one more tab than the line it continues, and `continuation_indent = 8` with `indent = 4` gives it two. A `continuation_indent` that isn't a multiple of `indent` leaves the remainder as spaces after the tabs. On spring-boot, which indents with tabs, `use_tabs = true` cuts the first-run diff from 740 files to 86, and what remains is mostly missing final newlines, runs of blank lines and a few files that are indented with spaces.
+`use_tabs = true` writes leading indentation as tabs. Indents are worked out in columns as usual, with a tab `indent` columns wide, and each full tab width becomes a tab. So with the default `continuation_indent` (the same as `indent`) a continued line gets one more tab than the line it continues, and `continuation_indent = 8` with `indent = 4` gives it two. A `continuation_indent` that isn't a multiple of `indent` leaves the remainder as spaces after the tabs. On spring-boot, which indents with tabs, `use_tabs = true` cuts the first-run diff from 760 files to 97, and what remains is mostly missing final newlines, runs of blank lines and a few files that are indented with spaces.
 
 To find the settings that fit existing code before the first run, use `groovyfmt --suggest-style [PATH]...`. It formats every file in memory, writing nothing, under six styles: the defaults, `indent = 2`, `use_tabs = true`, `continuation_indent = 8`, `indent = 2` with `continuation_indent = 4`, and `use_tabs = true` with `continuation_indent = 8`. It prints the config lines for the style that leaves the most files unchanged on stdout, ready to paste into `.groovyfmt.toml` in place of any indent settings already there, and a table of how many files and lines each style would change on stderr. A tie goes to the style that changes fewer lines, then to the defaults, then to the style with fewer settings. Everything else in the config applies as usual (`exclude`, `indent_after_labels`), `--indent` can't be combined with it, and it exits 2 when there are no files or none of them can be formatted.
 
 ```console
 $ groovyfmt --suggest-style
   style                                        files   lines
-  defaults                                       366   19868
-* indent = 2                                      84    4339
-  use_tabs = true                                369   20096
-  continuation_indent = 8                        365   19766
-  indent = 2, continuation_indent = 4            129    5142
-  continuation_indent = 8, use_tabs = true       368   20022
-files: files changed, of 454 (83 skipped under every style); lines: lines changed; in 0.57s
-# suggested by groovyfmt --suggest-style: 287 of 454 files unchanged
+  defaults                                       430   30563
+* indent = 2                                     108    6675
+  use_tabs = true                                433   30806
+  continuation_indent = 8                        430   30536
+  indent = 2, continuation_indent = 4            166    7698
+  continuation_indent = 8, use_tabs = true       433   30806
+files: files changed, of 454 (19 skipped under every style); lines: lines changed; in 0.82s
+# suggested by groovyfmt --suggest-style: 327 of 454 files unchanged
 indent = 2
 ```
 

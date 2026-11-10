@@ -4,7 +4,7 @@
 
 ### Added
 
-- `use_tabs` config option: indent with tabs instead of spaces. Indentation is still worked out in columns, with a tab `indent` columns wide, and each full tab width is written as a tab, so `continuation_indent` keeps its meaning (the default gives continued lines one extra tab; `continuation_indent = 8` with `indent = 4` gives two). On spring-boot, which indents with tabs, it cuts the first-run diff from 740 files to 86. Space-indented output is unchanged.
+- `use_tabs` config option: indent with tabs instead of spaces. Indentation is still worked out in columns, with a tab `indent` columns wide, and each full tab width is written as a tab, so `continuation_indent` keeps its meaning (the default gives continued lines one extra tab; `continuation_indent = 8` with `indent = 4` gives two). On spring-boot, which indents with tabs, it cuts the first-run diff from 760 files to 97. Space-indented output is unchanged.
 - `--suggest-style`: format the files in memory under six indent styles (the defaults, `indent = 2`, `use_tabs = true`, `continuation_indent = 8`, and two combinations), print the config lines for the one that leaves the most files unchanged (a tie goes to the one changing fewer lines, then to the defaults, then to the simpler style), and show what each would change. Nothing is written. On ratpack it suggests `indent = 2`, on spring-boot `use_tabs = true`, on OpenBoxes `continuation_indent = 8`, and on geb it reports that the defaults fit.
 
 ### Changed
