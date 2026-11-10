@@ -121,23 +121,23 @@ UnusedImport = false
 
 Unknown keys and misspelled rule names are errors, so a typo can't silently do nothing; a config file can only fail the run when groovyfmt reaches a file or directory it governs. `-v` prints each config in use.
 
-`continuation_indent = 8` matches IntelliJ's default and most Grails projects written in it. On OpenBoxes it cuts the first-run diff from 721 files to 453, and what remains is mostly trailing whitespace and runs of blank lines.
+`continuation_indent = 8` matches IntelliJ's default and most Grails projects written in it. On OpenBoxes it cuts the first-run diff from 723 files to 454, and what remains is mostly trailing whitespace and runs of blank lines.
 
-`use_tabs = true` writes leading indentation as tabs. Indents are worked out in columns as usual, with a tab `indent` columns wide, and each full tab width becomes a tab. So with the default `continuation_indent` (the same as `indent`) a continued line gets one more tab than the line it continues, and `continuation_indent = 8` with `indent = 4` gives it two. A `continuation_indent` that isn't a multiple of `indent` leaves the remainder as spaces after the tabs. On spring-boot, which indents with tabs, `use_tabs = true` cuts the first-run diff from 760 files to 93, and what remains is mostly missing final newlines, runs of blank lines and a few files that are indented with spaces.
+`use_tabs = true` writes leading indentation as tabs. Indents are worked out in columns as usual, with a tab `indent` columns wide, and each full tab width becomes a tab. So with the default `continuation_indent` (the same as `indent`) a continued line gets one more tab than the line it continues, and `continuation_indent = 8` with `indent = 4` gives it two. A `continuation_indent` that isn't a multiple of `indent` leaves the remainder as spaces after the tabs. On spring-boot, which indents with tabs, `use_tabs = true` cuts the first-run diff from 762 files to 95, and what remains is mostly missing final newlines, runs of blank lines and a few files that are indented with spaces.
 
 To find the settings that fit existing code before the first run, use `groovyfmt --suggest-style [PATH]...`. It formats every file in memory, writing nothing, under six styles: the defaults, `indent = 2`, `use_tabs = true`, `continuation_indent = 8`, `indent = 2` with `continuation_indent = 4`, and `use_tabs = true` with `continuation_indent = 8`. It prints the config lines for the style that leaves the most files unchanged on stdout, ready to paste into `.groovyfmt.toml` in place of any indent settings already there, and a table of how many files and lines each style would change on stderr. A tie goes to the style that changes fewer lines, then to the defaults, then to the style with fewer settings. Everything else in the config applies as usual (`exclude`, `indent_after_labels`), `--indent` can't be combined with it, and it exits 2 when there are no files or none of them can be formatted.
 
 ```console
 $ groovyfmt --suggest-style
   style                                        files   lines
-  defaults                                       438   32298
-* indent = 2                                     110    7004
-  use_tabs = true                                441   32543
-  continuation_indent = 8                        438   32271
-  indent = 2, continuation_indent = 4            171    8031
-  continuation_indent = 8, use_tabs = true       441   32543
-files: files changed, of 454 (11 skipped under every style); lines: lines changed; in 0.82s
-# suggested by groovyfmt --suggest-style: 333 of 454 files unchanged
+  defaults                                       445   33891
+* indent = 2                                     113    8036
+  use_tabs = true                                448   34175
+  continuation_indent = 8                        445   33898
+  indent = 2, continuation_indent = 4            176    9050
+  continuation_indent = 8, use_tabs = true       448   34175
+files: files changed, of 454 (4 skipped under every style); lines: lines changed; in 0.82s
+# suggested by groovyfmt --suggest-style: 337 of 454 files unchanged
 indent = 2
 ```
 
@@ -214,7 +214,7 @@ Add `--stdin-filepath <path>` (it requires `--stdin`) to tell groovyfmt which fi
 
 ## Coverage
 
-groovyfmt only touches files it can parse. On a corpus of 23,766 files from grails-core, groovy, gradle, spock, CodeNarc, nextflow and Jenkins pipeline repositories, 98.7% parse cleanly. On [OpenBoxes](https://github.com/openboxes/openboxes), a production Grails application that isn't in the corpus, 99.3% of its 1,327 files do.
+groovyfmt only touches files it can parse. On a corpus of 23,766 files from grails-core, groovy, gradle, spock, CodeNarc, nextflow and Jenkins pipeline repositories, 99.5% parse cleanly. On [OpenBoxes](https://github.com/openboxes/openboxes), a production Grails application that isn't in the corpus, 99.5% of its 1,327 files do.
 
 The grammar is [dekobon/tree-sitter-groovy](https://github.com/dekobon/tree-sitter-groovy), currently pinned to the fork branch [`costajohnt/tree-sitter-groovy@groovyfmt-base`](https://github.com/costajohnt/tree-sitter-groovy/tree/groovyfmt-base), which adds upstream PR #49 plus our fixes to the 0.3.0 release:
 
@@ -227,6 +227,9 @@ The grammar is [dekobon/tree-sitter-groovy](https://github.com/dekobon/tree-sitt
 | + a `[` starting a new line is a list or map, not a subscript (Grails controllers returning `[model: …]`); `final` parameters; traits with `implements` | 88.1% |
 | + annotated script and field declarations (`@Field`, `@Shared`); command calls with several arguments, quoted keys or a dotted receiver; array creation; lambdas; nested annotations; multiple assignment; `def static`, `def <T>`, `synchronized` and smaller forms | 96.1% |
 | + array types as values (`String[].class`); command calls as declaration and assignment values (`def r = sh returnStdout: true, script: 'x'`); a name or `(` on a new line starts a statement; `record` as a name; annotations after modifiers; statements in GString interpolations; `//` inside GStrings; closure parameter defaults and smaller forms | 98.7% |
+| + `var`, `pipeline` and `trait` as names; generic types as values (`Mock(Supplier<Long>)`); command calls with `new`, `null`, `!` or dotted first arguments and in parentheses (`(el x).click()`); anonymous class bodies; `instanceof` pattern variables; slashy strings starting with a space; `\` line continuations; annotated and `final` closure parameters, `default` methods and smaller forms | 99.5% |
+
+Of the 117 corpus files still skipped, 80 aren't Groovy source: 70 Grails, Gradle and CodeNarc templates with `@artifact.package@`, `<% %>` or `${className}` placeholders, 9 Spock AST snapshots and one deliberately broken groovydoc fixture. The other 37 use forms the grammar doesn't parse yet, among them Groovy 5 syntax (`for await`, `case Integer i when`, indexed `for (i, x in xs)`, `??`), slashy strings containing `\\/`, and one-off forms such as nested array initializers and `{a, b}` annotation arrays.
 
 ## Development
 
