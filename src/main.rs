@@ -227,6 +227,10 @@ fn collect(paths: &[PathBuf], cfg: &Config) -> Vec<PathBuf> {
         }
         walk(p, true, &mut files, cfg);
     }
+    // overlapping arguments (`. src`, a file named twice or spelled differently): each file
+    // once, first-seen order
+    let mut seen = std::collections::HashSet::new();
+    files.retain(|f| seen.insert(std::fs::canonicalize(f).unwrap_or_else(|_| f.clone())));
     files
 }
 
@@ -292,6 +296,8 @@ fn read(path: &Path) -> Result<Result<String, &'static str>, String> {
     Ok(String::from_utf8(bytes).map_err(|_| NOT_UTF8))
 }
 
+static TMP_SEQ: AtomicUsize = AtomicUsize::new(0);
+
 /// Replace a file's contents atomically: write a temporary file beside it with the same
 /// permissions, then rename it over the path. A crash can't leave a truncated file, and if
 /// the path was swapped for a symlink after the walk, the link is replaced rather than
@@ -309,15 +315,18 @@ fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
         .file_name()
         .map(|n| n.to_string_lossy())
         .unwrap_or_default();
-    let tmp = path.with_file_name(format!(".{name}.groovyfmt-{}", std::process::id()));
+    // unique per call, so two workers given one file under different spellings can't collide
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_file_name(format!(".{name}.groovyfmt-{}-{seq}", std::process::id()));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    // owner-only until the original permissions are applied, so the contents of a
+    // private file are never readable by others in between
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+    // a file already at that name isn't ours: fail without removing it
+    let mut f = opts.open(&tmp)?;
     let result = (|| {
-        let mut opts = std::fs::OpenOptions::new();
-        opts.write(true).create_new(true);
-        // owner-only until the original permissions are applied, so the contents of a
-        // private file are never readable by others in between
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
-        let mut f = opts.open(&tmp)?;
         f.write_all(contents.as_bytes())?;
         f.set_permissions(perms)?;
         f.sync_all()?;
@@ -676,6 +685,25 @@ mod tests {
             "a\\n::set-env name=X::y\\r"
         );
         assert_eq!(printable("plain é"), "plain é");
+    }
+
+    #[test]
+    fn write_atomic_never_removes_a_file_it_did_not_create() {
+        let d = std::env::temp_dir().join(format!("groovyfmt-tmpname-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let path = d.join("A.groovy");
+        std::fs::write(&path, "old\n").unwrap();
+        // squat on the temp name the next call will pick
+        let seq = TMP_SEQ.load(Ordering::Relaxed);
+        let squat = d.join(format!(".A.groovy.groovyfmt-{}-{seq}", std::process::id()));
+        std::fs::write(&squat, "precious\n").unwrap();
+        let err = write_atomic(&path, "new\n").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(&squat).unwrap(), "precious\n");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "old\n");
+        write_atomic(&path, "new\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new\n");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

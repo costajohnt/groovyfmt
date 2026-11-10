@@ -14,6 +14,7 @@ From the second audit (`docs/audit-2026-11-09-full.md`):
 - File names and lint messages can no longer inject the older `##[command]` GitHub Actions workflow syntax, which the runner accepts anywhere in a line (`##[add-mask]`, `##[stop-commands]`, `##[error]`). Every printed path, message and panic report shows `##[` as `##\[`.
 - Formatting a run of indented comments was cubic in its length (4,000 lines took over two minutes) and long blocks were superlinear. The indent pass now moves one tree cursor forward through the file instead of looking up each line's node, parents and previous siblings from the root: 4,000 comment lines take 0.01 s, and an 800,000-line file 5.7 s instead of 30 s.
 - In-place formatting and `--check` no longer hold every changed file's new text in memory until the run ends. Each worker writes the file, or for `--check` only notes that it changed, as soon as it is formatted.
+- A file named more than once, directly or through overlapping arguments (`groovyfmt . src`, `A.groovy ./A.groovy`, `sub/../A.groovy`), is formatted and reported once. Each in-place write uses its own temporary file name, and a failed write no longer deletes a file that already had that name.
 
 ## 0.4.0 (2026-11-09)
 

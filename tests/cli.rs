@@ -511,6 +511,51 @@ fn no_output_line_carries_a_legacy_workflow_command() {
 }
 
 #[test]
+fn a_file_named_several_ways_is_handled_once() {
+    // workers writing one file at once used to collide on its temp name and exit 2
+    let d = Dir::new("overlap");
+    d.write("sub/keep.txt", "");
+    let names: Vec<String> = (0..40).map(|i| format!("F{i:02}.groovy")).collect();
+    let mut args: Vec<String> = vec![".".into()];
+    for n in &names {
+        d.write(n, UGLY);
+        args.extend([
+            n.clone(),
+            n.clone(),
+            format!("./{n}"),
+            format!("sub/../{n}"),
+        ]);
+    }
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut check = vec!["--check"];
+    check.extend(&args);
+    let c = run(&d.0, &check, None);
+    assert_eq!(c.status.code(), Some(1), "{}", stderr(&c));
+    assert_eq!(stdout(&c), names.join("\n") + "\n", "each file listed once");
+    for _ in 0..5 {
+        for n in &names {
+            d.write(n, UGLY);
+        }
+        let w = run(&d.0, &args, None);
+        assert_eq!(w.status.code(), Some(0), "{}", stderr(&w));
+        assert!(
+            stderr(&w).starts_with("reformatted 40 of 40 files"),
+            "{}",
+            stderr(&w)
+        );
+        for n in &names {
+            assert_eq!(d.read(n), PRETTY);
+        }
+        let leftovers: Vec<_> = std::fs::read_dir(&d.0)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".groovyfmt-"))
+            .collect();
+        assert!(leftovers.is_empty(), "no temp files left behind");
+    }
+}
+
+#[test]
 fn discovers_groovy_files_and_skips_build_dirs() {
     let d = Dir::new("discover");
     d.write("Jenkinsfile", UGLY);
