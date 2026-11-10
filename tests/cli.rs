@@ -659,6 +659,22 @@ fn symlinks_and_special_files_are_not_followed() {
 
 #[cfg(unix)]
 #[test]
+fn hard_links_stay_linked() {
+    use std::os::unix::fs::MetadataExt;
+    let d = Dir::new("hardlink");
+    let h = d.write("H.groovy", UGLY);
+    std::fs::hard_link(&h, d.0.join("H2.groovy")).unwrap();
+    let ino = std::fs::metadata(&h).unwrap().ino();
+    let w = run(&d.0, &["H.groovy"], None);
+    assert_eq!(w.status.code(), Some(0), "{}", stderr(&w));
+    assert_eq!(d.read("H.groovy"), PRETTY);
+    assert_eq!(d.read("H2.groovy"), PRETTY);
+    let m = std::fs::metadata(&h).unwrap();
+    assert_eq!((m.ino(), m.nlink()), (ino, 2));
+}
+
+#[cfg(unix)]
+#[test]
 fn write_and_walk_failures_exit_2() {
     use std::os::unix::fs::PermissionsExt;
     let d = Dir::new("perms");

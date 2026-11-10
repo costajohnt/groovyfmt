@@ -299,17 +299,35 @@ fn read(path: &Path) -> Result<Result<String, &'static str>, String> {
 static TMP_SEQ: AtomicUsize = AtomicUsize::new(0);
 
 /// Replace a file's contents atomically: write a temporary file beside it with the same
-/// permissions, then rename it over the path. A crash can't leave a truncated file, and if
-/// the path was swapped for a symlink after the walk, the link is replaced rather than
-/// written through.
+/// permissions and owner, then rename it over the path. A crash can't leave a truncated
+/// file. A file with other hard links, or whose owner can't be kept, is written in place
+/// instead. If the path was swapped for a symlink or anything else after the walk, nothing
+/// is written.
 fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
-    let perms = std::fs::metadata(path)?.permissions();
+    write_keeping_owner(path, contents, keep_owner)
+}
+
+fn write_keeping_owner(
+    path: &Path,
+    contents: &str,
+    keep_owner: impl Fn(&std::fs::File, &std::fs::Metadata) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if !meta.is_file() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    let perms = meta.permissions();
     // a rename would replace a read-only file too; read-only means hands off
     if perms.readonly() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "file is read-only",
         ));
+    }
+    // a rename would leave the other names pointing at the old contents
+    #[cfg(unix)]
+    if std::os::unix::fs::MetadataExt::nlink(&meta) > 1 {
+        return write_in_place(path, &meta, contents);
     }
     let name = path
         .file_name()
@@ -320,6 +338,12 @@ fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
     let tmp = path.with_file_name(format!(".{name}.groovyfmt-{}-{seq}", std::process::id()));
     // a file already at that name isn't ours: fail without removing it
     let mut f = create_tmp(&tmp)?;
+    // the new file belongs to whoever runs us (root, in a container); give it back
+    if keep_owner(&f, &meta).is_err() {
+        drop(f);
+        let _ = std::fs::remove_file(&tmp);
+        return write_in_place(path, &meta, contents);
+    }
     let result = (|| {
         f.write_all(contents.as_bytes())?;
         f.set_permissions(perms)?;
@@ -340,6 +364,47 @@ fn create_tmp(tmp: &Path) -> std::io::Result<std::fs::File> {
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
     opts.open(tmp)
+}
+
+/// Give the new file `orig`'s owner and group. Only root can give a file away, so this
+/// fails for most users when the owner differs.
+#[cfg(unix)]
+fn keep_owner(f: &std::fs::File, orig: &std::fs::Metadata) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let new = f.metadata()?;
+    if (new.uid(), new.gid()) == (orig.uid(), orig.gid()) {
+        return Ok(());
+    }
+    std::os::unix::fs::fchown(f, Some(orig.uid()), Some(orig.gid()))
+}
+
+#[cfg(not(unix))]
+fn keep_owner(_: &std::fs::File, _: &std::fs::Metadata) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Overwrite the existing file. Not atomic: a crash mid-write can leave it part new, part
+/// old. Taken only when a rename would split the file's hard links or hand it to another
+/// owner (root formatting a developer's checkout), which is worse than that window.
+fn write_in_place(path: &Path, orig: &std::fs::Metadata, contents: &str) -> std::io::Result<()> {
+    let mut f = std::fs::OpenOptions::new().write(true).open(path)?;
+    // Only the regular file checked before, so a path swapped for a symlink since is not
+    // written through. This compares the opened inode instead of passing O_NOFOLLOW, whose
+    // value differs by platform and isn't in std.
+    let now = f.metadata()?;
+    #[cfg(unix)]
+    let same = {
+        use std::os::unix::fs::MetadataExt;
+        now.is_file() && (now.dev(), now.ino()) == (orig.dev(), orig.ino())
+    };
+    #[cfg(not(unix))]
+    let same = now.is_file() && orig.is_file();
+    if !same {
+        return Err(std::io::Error::other("file changed while formatting"));
+    }
+    f.write_all(contents.as_bytes())?;
+    f.set_len(contents.len() as u64)?;
+    f.sync_all()
 }
 
 /// Control characters escaped, so a crafted file name or file content (lint messages quote
@@ -682,6 +747,9 @@ fn tree(files: &[PathBuf]) -> i32 {
 mod tests {
     use super::*;
 
+    /// Held by tests that call `write_atomic`, so none takes the temp name another predicts.
+    static TMP_NAMES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn printable_neutralizes_line_breaks() {
         assert_eq!(
@@ -693,6 +761,7 @@ mod tests {
 
     #[test]
     fn write_atomic_never_removes_a_file_it_did_not_create() {
+        let _lock = TMP_NAMES.lock();
         let d = std::env::temp_dir().join(format!("groovyfmt-tmpname-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let path = d.join("A.groovy");
@@ -779,6 +848,62 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&d);
         assert_eq!(mode, 0o600, "{mode:o}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rename_unless_hard_linked_or_owner_lost() {
+        use std::os::unix::fs::MetadataExt;
+        let _lock = TMP_NAMES.lock();
+        let d = std::env::temp_dir().join(format!("groovyfmt-inplace-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let (a, b) = (d.join("A.groovy"), d.join("B.groovy"));
+        let ino = |p: &Path| std::fs::metadata(p).unwrap().ino();
+
+        // the common case renames: a new inode
+        std::fs::write(&a, "old\n").unwrap();
+        let before = ino(&a);
+        write_atomic(&a, "new\n").unwrap();
+        assert_ne!(ino(&a), before, "renamed");
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "new\n");
+
+        // owner can't be kept: written in place, temp file removed
+        let before = ino(&a);
+        write_keeping_owner(&a, "longer than before\n", |_, _| {
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        })
+        .unwrap();
+        assert_eq!(ino(&a), before, "in place");
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "longer than before\n");
+        write_keeping_owner(&a, "short\n", |_, _| Err(std::io::Error::other("x"))).unwrap();
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "short\n", "truncated");
+
+        // a second hard link: both names see the new text
+        std::fs::hard_link(&a, &b).unwrap();
+        write_atomic(&b, "linked\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "linked\n");
+        assert_eq!((ino(&a), ino(&b)), (before, before));
+        assert_eq!(std::fs::metadata(&a).unwrap().nlink(), 2);
+
+        // the in-place path writes only the file it checked
+        let other = d.join("Other.groovy");
+        std::fs::write(&other, "other\n").unwrap();
+        let meta = std::fs::symlink_metadata(&a).unwrap();
+        std::fs::remove_file(&a).unwrap();
+        std::os::unix::fs::symlink(&other, &a).unwrap();
+        assert!(write_in_place(&a, &meta, "evil\n").is_err());
+        assert!(write_atomic(&a, "evil\n").is_err(), "not a regular file");
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "other\n");
+        assert!(std::fs::symlink_metadata(&a).unwrap().is_symlink());
+
+        let leftovers: Vec<_> = std::fs::read_dir(&d)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".groovyfmt-"))
+            .collect();
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(leftovers.is_empty(), "no temp files left behind");
     }
 
     #[test]
