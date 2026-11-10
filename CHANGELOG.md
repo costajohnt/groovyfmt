@@ -7,6 +7,12 @@
 - `--stdin-filepath <path>` (with `--stdin`): find the config file by walking up from that path's directory, as if formatting the file on disk, and use the path as the name in error messages and `--output-format github` annotations. The file need not exist. If the path matches `exclude`, stdin is written back unchanged and the exit status is 0.
 - `exclude = [...]` config option: glob patterns, relative to the config file's directory, for files and directories to skip on top of the built-in list. `*` and `?` match within a path segment, `**` across segments. Excluded directories are not descended into, and excludes also apply to files named on the command line.
 
+### Changed
+
+- The Linux arm64 release binary is now a static musl build, like the x86_64 one, so it runs without glibc (Alpine, Amazon Linux 2, RHEL 8, Debian 11, Ubuntu 20.04). Its asset is now named `groovyfmt-<tag>-aarch64-unknown-linux-musl.tar.gz` instead of `...-aarch64-unknown-linux-gnu.tar.gz`.
+- The minimum supported Rust version is 1.90 (`rust-version` said 1.85, which can't build the tree-sitter dependencies). CI now runs the tests on 1.90.0.
+- A release tag now publishes only if it matches the Cargo.toml version, is on `main`, has a CHANGELOG heading, and fmt, clippy, the tests and a build and smoke test of every release binary pass on the tagged commit. All four release targets are also built and run on every pull request.
+
 ### Fixed
 
 From the second audit (`docs/audit-2026-11-09-full.md`):
