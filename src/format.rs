@@ -38,6 +38,15 @@ impl Default for Style {
 }
 
 pub fn format(src: &str, style: &Style) -> Outcome {
+    format_with(src, style, reindent)
+}
+
+/// `format` with the re-indenter as a parameter, so a test can hand the guard a wrong output.
+fn format_with(
+    src: &str,
+    style: &Style,
+    reindent: impl Fn(&str, &Tree, &Style) -> Option<String>,
+) -> Outcome {
     // nothing but whitespace: the file becomes empty, as with rustfmt and prettier
     if src.trim().is_empty() {
         return if src.is_empty() {
@@ -453,6 +462,29 @@ mod tests {
             toks("def s = \"\"\"a\n${x}\"\"\"\n"),
             toks("def s = \"\"\"a\n  ${x}\"\"\"\n")
         );
+    }
+
+    #[test]
+    fn format_rejects_a_reindent_that_changes_tokens_or_breaks_the_parse() {
+        let src = "def s = '''a\n b'''\nif (x) {\nf(1)\n}\n";
+        let style = Style::default();
+        // the real re-indenter is accepted, so the cases below fail only on the guard
+        assert!(matches!(
+            format_with(src, &style, reindent),
+            Outcome::Formatted(_)
+        ));
+        let wrong = [
+            "def s = '''a\n b'''\nif (x) {\n    f(2)\n}\n", // a token changed
+            "def s = '''a\n  b'''\nif (x) {\n    f(1)\n}\n", // a string interior changed
+            "def s = '''a\n b'''\nif (x) {\n    f(1)\n}\n}\n", // no longer parses
+        ];
+        for out in wrong {
+            assert_eq!(
+                format_with(src, &style, |_, _, _| Some(out.to_string())),
+                Outcome::Skipped("token mismatch after formatting"),
+                "{out:?}"
+            );
+        }
     }
 
     #[test]

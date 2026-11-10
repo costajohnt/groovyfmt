@@ -318,14 +318,8 @@ fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
     // unique per call, so two workers given one file under different spellings can't collide
     let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let tmp = path.with_file_name(format!(".{name}.groovyfmt-{}-{seq}", std::process::id()));
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create_new(true);
-    // owner-only until the original permissions are applied, so the contents of a
-    // private file are never readable by others in between
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
     // a file already at that name isn't ours: fail without removing it
-    let mut f = opts.open(&tmp)?;
+    let mut f = create_tmp(&tmp)?;
     let result = (|| {
         f.write_all(contents.as_bytes())?;
         f.set_permissions(perms)?;
@@ -336,6 +330,16 @@ fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
         let _ = std::fs::remove_file(&tmp);
     }
     result
+}
+
+/// A new file at `tmp`, failing if one exists. Owner-only until the original permissions
+/// are applied, so the contents of a private file are never readable by others in between.
+fn create_tmp(tmp: &Path) -> std::io::Result<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+    opts.open(tmp)
 }
 
 /// Control characters escaped, so a crafted file name or file content (lint messages quote
@@ -733,6 +737,48 @@ mod tests {
         );
         assert_eq!(shown(Path::new("src/A.groovy")), "src/A.groovy");
         assert_eq!(shown(Path::new(" \u{a0}::x.groovy")), "./ \u{a0}::x.groovy");
+    }
+
+    #[test]
+    fn par_map_turns_a_panic_into_that_files_error() {
+        let files: Vec<PathBuf> = (0..20)
+            .map(|i| PathBuf::from(format!("F{i}.groovy")))
+            .collect();
+        let r = par_map(&files, |p| {
+            if p == Path::new("F7.groovy") {
+                panic!("boom");
+            }
+            Ok(p.display().to_string())
+        });
+        assert_eq!(r.len(), files.len());
+        for (f, r) in files.iter().zip(&r) {
+            if f == Path::new("F7.groovy") {
+                assert_eq!(
+                    r,
+                    &Err("F7.groovy: internal error, please report".to_string())
+                );
+            } else {
+                assert_eq!(r, &Ok(f.display().to_string()));
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn temp_file_is_created_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("groovyfmt-tmpmode-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let tmp = d.join(".A.groovy.tmp");
+        let _ = std::fs::remove_file(&tmp);
+        let f = create_tmp(&tmp).unwrap();
+        let mode = f.metadata().unwrap().permissions().mode() & 0o777;
+        assert!(
+            create_tmp(&tmp).is_err(),
+            "an existing file is never reused"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(mode, 0o600, "{mode:o}");
     }
 
     #[test]
