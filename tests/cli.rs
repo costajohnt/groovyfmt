@@ -400,6 +400,110 @@ fn use_tabs_from_config() {
 }
 
 #[test]
+fn suggest_style_picks_the_style_that_changes_fewest_files() {
+    let d = Dir::new("suggest");
+    let cont8 = "def f() {\n    render(view: 'x',\n            model: 1)\n}\n";
+    let tabbed = include_str!("fixtures/tabs_build.gradle");
+    // two files fit the expected style and the third doesn't
+    let cases: &[(&str, &[&str], &str)] = &[
+        // TWO also fits indent 2 with continuation 4: a tie goes to the simpler style
+        ("two", &[TWO, TWO, PRETTY], "indent = 2\n"),
+        ("tabs", &[tabbed, tabbed, PRETTY], "use_tabs = true\n"),
+        (
+            "cont8",
+            &[cont8, cont8, "f(a,\n    b)\n"],
+            "continuation_indent = 8\n",
+        ),
+    ];
+    for (name, srcs, want) in cases {
+        for (i, s) in srcs.iter().enumerate() {
+            d.write(&format!("{name}/F{i}.groovy"), s);
+        }
+        let o = run(&d.0, &["--suggest-style", name], None);
+        assert_eq!(o.status.code(), Some(0), "{name}: {}", stderr(&o));
+        assert_eq!(
+            stdout(&o),
+            format!("# suggested by groovyfmt --suggest-style: 2 of 3 files unchanged\n{want}"),
+            "{name}: {}",
+            stderr(&o)
+        );
+        assert!(
+            stderr(&o).contains(&format!("* {}", want.trim_end())),
+            "{}",
+            stderr(&o)
+        );
+        for (i, s) in srcs.iter().enumerate() {
+            assert_eq!(d.read(&format!("{name}/F{i}.groovy")), *s, "never writes");
+        }
+    }
+
+    // defaults, and a tie where every style fits goes to the defaults
+    d.write("fits/A.groovy", PRETTY);
+    d.write("flat/A.groovy", "x = 1\n");
+    for dir in ["fits", "flat"] {
+        let o = run(&d.0, &["--suggest-style", dir], None);
+        assert_eq!(o.status.code(), Some(0), "{dir}: {}", stderr(&o));
+        assert_eq!(
+            stdout(&o),
+            "# the defaults fit best: 1 of 1 files unchanged\n",
+            "{dir}"
+        );
+    }
+    // a missing final newline is a change, though no line's text differs
+    d.write("eof/A.groovy", "x = 1");
+    let o = run(&d.0, &["--suggest-style", "eof"], None);
+    assert_eq!(
+        stdout(&o),
+        "# the defaults fit best: 0 of 1 files unchanged\n"
+    );
+
+    // the config's style keys don't matter, its other settings do
+    d.write("cfg/.groovyfmt.toml", "indent = 8\nexclude = [\"gen\"]\n");
+    d.write("cfg/A.groovy", TWO);
+    d.write("cfg/gen/B.groovy", PRETTY);
+    d.write("cfg/gen/C.groovy", PRETTY);
+    let o = run(&d.0, &["--suggest-style", "cfg"], None);
+    assert_eq!(
+        stdout(&o),
+        "# suggested by groovyfmt --suggest-style: 1 of 1 files unchanged\nindent = 2\n",
+        "{}",
+        stderr(&o)
+    );
+}
+
+#[test]
+fn suggest_style_without_anything_to_measure() {
+    let d = Dir::new("suggestnone");
+    d.write("empty/notes.txt", "");
+    d.write("broken/A.groovy", "def x = {\n");
+    for (dir, msg) in [
+        ("empty", "no Groovy files found, nothing to suggest"),
+        (
+            "broken",
+            "none of the 1 files could be formatted, nothing to suggest",
+        ),
+    ] {
+        let o = run(&d.0, &["--suggest-style", dir], None);
+        assert_eq!(o.status.code(), Some(2), "{dir}: {}", stderr(&o));
+        assert_eq!(stdout(&o), "", "{dir}");
+        assert!(stderr(&o).contains(msg), "{dir}: {}", stderr(&o));
+    }
+    for (args, msg) in [
+        (&["--suggest-style", "--check"][..], "can't be combined"),
+        (&["--lint", "--suggest-style"], "can't be combined"),
+        (&["--suggest-style", "--stats"], "can't be combined"),
+        (
+            &["--suggest-style", "--indent", "2"],
+            "--indent can't be combined with --suggest-style",
+        ),
+    ] {
+        let o = run(&d.0, args, None);
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+        assert!(stderr(&o).contains(msg), "{args:?}: {}", stderr(&o));
+    }
+}
+
+#[test]
 fn indent_after_labels_from_config() {
     let d = Dir::new("labels");
     let spec = "def 'x'() {\nwhen:\nf()\nthen:\nok()\n}\n";
