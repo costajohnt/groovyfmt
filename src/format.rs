@@ -25,6 +25,10 @@ pub struct Style {
     /// than the label. grails-core uses this style in about half its specs; Spock's docs and
     /// most other code keep them level with the label.
     pub indent_after_labels: bool,
+    /// Write leading indentation as tabs: indents are still worked out in columns as above,
+    /// with a tab `indent` columns wide, and each full tab width becomes a tab. Any remainder
+    /// (a `continuation` that isn't a multiple of `indent`) stays as spaces after the tabs.
+    pub use_tabs: bool,
 }
 
 impl Default for Style {
@@ -33,6 +37,30 @@ impl Default for Style {
             indent: 4,
             continuation: None,
             indent_after_labels: false,
+            use_tabs: false,
+        }
+    }
+}
+
+impl Style {
+    /// Leading whitespace for `cols` columns of indentation.
+    fn pad(&self, cols: usize) -> String {
+        if self.use_tabs {
+            "\t".repeat(cols / self.indent) + &" ".repeat(cols % self.indent)
+        } else {
+            " ".repeat(cols)
+        }
+    }
+
+    /// Columns taken by leading whitespace `ws` that is kept as it is. Without tabs a tab
+    /// counts as one column, as it always has.
+    fn cols(&self, ws: &str) -> usize {
+        if self.use_tabs {
+            ws.chars()
+                .map(|c| if c == '\t' { self.indent } else { 1 })
+                .sum()
+        } else {
+            ws.len()
         }
     }
 }
@@ -106,7 +134,7 @@ fn reindent(src: &str, tree: &Tree, style: &Style) -> Option<String> {
 
         if inside_token(&mut walk, line_start, src) {
             // Line begins inside a multi-line string or comment: emit verbatim.
-            row_indent.push(lead);
+            row_indent.push(style.cols(&content[..lead]));
             out.push((content.to_string(), eol));
         } else if body.trim().is_empty() {
             row_indent.push(0);
@@ -128,7 +156,7 @@ fn reindent(src: &str, tree: &Tree, style: &Style) -> Option<String> {
             let keep_trailing = line_end < src.len() && inside_token(&mut walk, line_end, src);
             let text = if keep_trailing { body } else { body.trim_end() };
             row_indent.push(indent);
-            out.push((format!("{}{}", " ".repeat(indent), text), eol));
+            out.push((style.pad(indent) + text, eol));
         }
         line_start = line_end + 1;
     }
@@ -537,6 +565,38 @@ mod tests {
         };
         assert_eq!(out, want);
         assert_eq!(format(want, &style), Outcome::Unchanged, "idempotent");
+    }
+
+    #[test]
+    fn use_tabs_option() {
+        let tabs = |continuation| Style {
+            use_tabs: true,
+            continuation,
+            ..Style::default()
+        };
+        let src = "class A {\n  def f() {\n    render(view: 'x',\n  model: 1)\n    def s = '''\n\t keep\n'''\n  }\n}\n";
+        // continuation defaults to one indent: one tab
+        let want = "class A {\n\tdef f() {\n\t\trender(view: 'x',\n\t\t\tmodel: 1)\n\t\tdef s = '''\n\t keep\n'''\n\t}\n}\n";
+        let Outcome::Formatted(out) = format(src, &tabs(None)) else {
+            panic!("not formatted")
+        };
+        assert_eq!(out, want);
+        assert_eq!(format(want, &tabs(None)), Outcome::Unchanged, "idempotent");
+        // continuation in columns, a tab being `indent` wide: 8 is two tabs, 6 one and 2 spaces
+        let cont = |n, lead: &str| {
+            let Outcome::Formatted(out) = format(src, &tabs(Some(n))) else {
+                panic!("not formatted")
+            };
+            assert!(out.contains(&format!("\n{lead}model: 1)")), "{n}: {out:?}");
+            assert_eq!(format(&out, &tabs(Some(n))), Outcome::Unchanged, "{n}");
+        };
+        cont(8, "\t\t\t\t");
+        cont(6, "\t\t\t  ");
+        // tab-indented input is unchanged with tabs and re-indented with spaces
+        assert_eq!(
+            fmt(want),
+            "class A {\n    def f() {\n        render(view: 'x',\n            model: 1)\n        def s = '''\n\t keep\n'''\n    }\n}\n"
+        );
     }
 
     #[test]

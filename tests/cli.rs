@@ -373,6 +373,33 @@ fn indent_from_config_and_flag() {
 }
 
 #[test]
+fn use_tabs_from_config() {
+    let d = Dir::new("tabs");
+    let tabbed = include_str!("fixtures/tabs_build.gradle");
+    d.write("build.gradle", tabbed);
+    d.write("A.groovy", UGLY);
+    let spaces = run(&d.0, &["--check"], None);
+    assert_eq!(stdout(&spaces), "A.groovy\nbuild.gradle\n");
+    d.write(".groovyfmt.toml", "use_tabs = true\n");
+    let c = run(&d.0, &["--check"], None);
+    assert_eq!(c.status.code(), Some(1), "{}", stderr(&c));
+    assert_eq!(stdout(&c), "A.groovy\n", "the tab-indented fixture fits");
+    assert_eq!(
+        stdout(&run(&d.0, &["--stdin"], Some(UGLY))),
+        "class A {\n\tdef f() {\n\t\tprintln 'x'\n\t}\n}\n"
+    );
+    d.write(
+        ".groovyfmt.toml",
+        "use_tabs = true\ncontinuation_indent = 8\n",
+    );
+    assert_eq!(
+        stdout(&run(&d.0, &["--stdin"], Some("f(a,\nb)\n"))),
+        "f(a,\n\t\tb)\n",
+        "two tab widths"
+    );
+}
+
+#[test]
 fn indent_after_labels_from_config() {
     let d = Dir::new("labels");
     let spec = "def 'x'() {\nwhen:\nf()\nthen:\nok()\n}\n";

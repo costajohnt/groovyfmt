@@ -7,6 +7,7 @@
 //! ```toml
 //! indent = 4                  # spaces per level, 1..=16
 //! continuation_indent = 8     # arguments, literals, continued lines (default: indent)
+//! use_tabs = false            # a tab per `indent` columns of leading indentation
 //! indent_after_labels = false # indent Spock when:/then: blocks under their label
 //! exclude = ["generated/**"]  # globs relative to this file's directory
 //!
@@ -69,6 +70,8 @@ impl Config {
                 ("indent_after_labels", _) => {
                     return Err("`indent_after_labels` must be true or false".into());
                 }
+                ("use_tabs", toml::Value::Boolean(b)) => cfg.style.use_tabs = *b,
+                ("use_tabs", _) => return Err("`use_tabs` must be true or false".into()),
                 ("lint", toml::Value::Table(rules)) => {
                     for (rule, on) in rules {
                         if !RULES.iter().any(|r| r.name == rule) {
@@ -96,7 +99,7 @@ impl Config {
                 }
                 (other, _) => {
                     return Err(format!(
-                        "unknown key `{other}` (expected `indent`, `continuation_indent`, `indent_after_labels`, `exclude` or `[lint]`)"
+                        "unknown key `{other}` (expected `indent`, `continuation_indent`, `use_tabs`, `indent_after_labels`, `exclude` or `[lint]`)"
                     ));
                 }
             }
@@ -335,6 +338,13 @@ mod tests {
             Some(8)
         );
         assert!(Config::parse("continuation_indent = 0").is_err());
+        assert!(!Config::default().style.use_tabs);
+        assert!(Config::parse("use_tabs = true").unwrap().style.use_tabs);
+        assert!(
+            Config::parse("use_tabs = 1")
+                .unwrap_err()
+                .contains("`use_tabs` must be true or false")
+        );
         assert!(!c.rule_enabled("UnusedImport"));
         assert!(c.rule_enabled("UnnecessaryGString"));
         assert!(
