@@ -1,5 +1,5 @@
 use groovyfmt::config::{self, Config, Resolver};
-use groovyfmt::format::{Outcome, format};
+use groovyfmt::format::{Outcome, Style, format};
 use groovyfmt::lint::{self, RULES};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
@@ -29,6 +29,9 @@ Modes:
                            With --stdin: find the config as if formatting PATH (which
                            need not exist), name it in messages, and if PATH is
                            excluded, echo stdin unchanged
+      --suggest-style      Try a few indent styles without writing anything and print
+                           the .groovyfmt.toml lines for the one that changes the
+                           fewest files (a table of all of them goes to stderr)
 
 Options:
       --config <FILE>      Use FILE for every file instead of the nearest config
@@ -64,6 +67,7 @@ enum Mode {
     Lint,
     Stdin,
     Rules,
+    SuggestStyle,
     // development diagnostics, not in --help
     Stats,
     LintStats,
@@ -98,7 +102,7 @@ fn parse_args() -> Args {
         a.mode = match (std::mem::take(&mut a.mode), m) {
             (Mode::Write, m) => m,
             (Mode::Lint, Mode::Stats) | (Mode::Stats, Mode::Lint) => Mode::LintStats,
-            _ => die("--check, --lint, --stdin and --rules can't be combined"),
+            _ => die("--check, --lint, --stdin, --rules and --suggest-style can't be combined"),
         };
     };
     while let Some(arg) = it.next() {
@@ -125,6 +129,7 @@ fn parse_args() -> Args {
             "--lint" => set_mode(&mut a, Mode::Lint),
             "--stdin" => set_mode(&mut a, Mode::Stdin),
             "--rules" => set_mode(&mut a, Mode::Rules),
+            "--suggest-style" => set_mode(&mut a, Mode::SuggestStyle),
             "--stats" => set_mode(&mut a, Mode::Stats),
             "--errors" => set_mode(&mut a, Mode::Errors),
             "--tree" => set_mode(&mut a, Mode::Tree),
@@ -155,6 +160,9 @@ fn parse_args() -> Args {
     }
     if a.stdin_filepath.is_some() && a.mode != Mode::Stdin {
         die("--stdin-filepath needs --stdin");
+    }
+    if a.indent.is_some() && a.mode == Mode::SuggestStyle {
+        die("--indent can't be combined with --suggest-style, which tries the indents itself");
     }
     if a.paths.is_empty() && a.mode != Mode::Stdin {
         a.paths.push(PathBuf::from("."));
@@ -587,6 +595,7 @@ fn main() {
                 Mode::Lint => lint_files(&files, &cfgs, &a, false),
                 Mode::LintStats => lint_files(&files, &cfgs, &a, true),
                 Mode::Stats => stats(&files, &cfgs),
+                Mode::SuggestStyle => suggest_style(&files, &cfgs),
                 Mode::Errors => errors(&files),
                 Mode::Tree => tree(&files),
                 _ => fmt(&files, &links, &cfgs, &a),
@@ -805,10 +814,7 @@ fn stats(files: &[PathBuf], cfgs: &Configs) -> i32 {
         let nonidem =
             matches!(&out, Outcome::Formatted(o) if format(o, style) != Outcome::Unchanged);
         let lines = match &out {
-            Outcome::Formatted(o) => {
-                src.lines().zip(o.lines()).filter(|(a, b)| a != b).count()
-                    + src.lines().count().abs_diff(o.lines().count())
-            }
+            Outcome::Formatted(o) => lines_changed(&src, o),
             _ => 0,
         };
         Ok((src.len(), out, nonidem, lines))
@@ -839,6 +845,126 @@ fn stats(files: &[PathBuf], cfgs: &Configs) -> i32 {
         bytes as f64 / 1e6
     ));
     i32::from(nonidem > 0)
+}
+
+/// Lines that differ between `src` and its formatted text `out`.
+fn lines_changed(src: &str, out: &str) -> usize {
+    src.lines().zip(out.lines()).filter(|(a, b)| a != b).count()
+        + src.lines().count().abs_diff(out.lines().count())
+}
+
+/// `--suggest-style` candidates as (indent, continuation_indent, use_tabs), simplest first:
+/// the defaults, then one key, then two. A tie on files unchanged goes to the one changing
+/// fewer lines, then to the earlier one.
+const CANDIDATES: [(usize, Option<usize>, bool); 6] = [
+    (4, None, false),
+    (2, None, false),
+    (4, None, true),
+    (4, Some(8), false),
+    (2, Some(4), false),
+    (4, Some(8), true),
+];
+
+/// The config lines for a candidate; none for the defaults.
+fn style_lines((indent, continuation, tabs): (usize, Option<usize>, bool)) -> Vec<String> {
+    let mut v = Vec::new();
+    if indent != 4 {
+        v.push(format!("indent = {indent}"));
+    }
+    if let Some(c) = continuation {
+        v.push(format!("continuation_indent = {c}"));
+    }
+    if tabs {
+        v.push("use_tabs = true".into());
+    }
+    v
+}
+
+/// Format every file under each candidate style in memory, keeping each file's other config
+/// settings, and print the config lines for the one leaving the most files unchanged.
+fn suggest_style(files: &[PathBuf], cfgs: &Configs) -> i32 {
+    if files.is_empty() {
+        die("no Groovy files found, nothing to suggest");
+    }
+    let t = Instant::now();
+    // per file and candidate: `None` when skipped, else whether the file changes and how
+    // many lines do (0 when only the final newline does)
+    let results = par_map(files, |p| {
+        let src = match read(p)? {
+            Ok(src) => src,
+            Err(_) => return Ok([None; CANDIDATES.len()]),
+        };
+        // ponytail: one full format per candidate, about 6x a --check run; parsing the
+        // input once for all candidates would save roughly 40% if this ever matters
+        Ok(CANDIDATES.map(|(indent, continuation, use_tabs)| {
+            let style = Style {
+                indent,
+                continuation,
+                use_tabs,
+                ..cfgs[p].style
+            };
+            match format(&src, &style) {
+                Outcome::Unchanged => Some((false, 0)),
+                Outcome::Formatted(out) => Some((true, lines_changed(&src, &out))),
+                Outcome::Skipped(_) => None,
+            }
+        }))
+    });
+    let mut tally = [(0usize, 0usize, 0usize); CANDIDATES.len()]; // unchanged, changed, lines
+    let (mut measured, mut failed) = (0usize, false);
+    for r in results {
+        let per = r.unwrap_or_else(|e| {
+            eprintln!("groovyfmt: {e}");
+            failed = true;
+            [None; CANDIDATES.len()]
+        });
+        measured += usize::from(per.iter().any(Option::is_some));
+        for (c, l) in tally.iter_mut().zip(per) {
+            match l {
+                Some((false, _)) => c.0 += 1,
+                Some((true, l)) => (c.1, c.2) = (c.1 + 1, c.2 + l),
+                None => {}
+            }
+        }
+    }
+    if measured == 0 {
+        die(format!(
+            "none of the {} files could be formatted, nothing to suggest",
+            files.len()
+        ));
+    }
+    let best = (0..CANDIDATES.len())
+        .max_by_key(|&i| {
+            use std::cmp::Reverse;
+            (tally[i].0, Reverse(tally[i].2), Reverse(i))
+        })
+        .unwrap_or(0);
+    eprintln!("  {:<42} {:>7} {:>7}", "style", "files", "lines");
+    for (i, (c, (_, changed, lines))) in CANDIDATES.iter().zip(tally).enumerate() {
+        let name = style_lines(*c).join(", ");
+        let name = if name.is_empty() { "defaults" } else { &name };
+        let mark = if i == best { "*" } else { " " };
+        eprintln!("{mark} {name:<42} {changed:>7} {lines:>7}");
+    }
+    eprintln!(
+        "files: files changed, of {} ({} skipped under every style); lines: lines changed; in {:.2}s",
+        files.len(),
+        files.len() - measured,
+        t.elapsed().as_secs_f64()
+    );
+    let lines = style_lines(CANDIDATES[best]);
+    let unchanged = format!("{} of {} files unchanged", tally[best].0, files.len());
+    if lines.is_empty() {
+        say(&format!("# the defaults fit best: {unchanged}"));
+    } else {
+        say(&format!(
+            "# suggested by groovyfmt --suggest-style: {unchanged}"
+        ));
+        for l in lines {
+            say(&l);
+        }
+    }
+    if failed { 2 } else { 0 }
 }
 
 /// Development: "<parent kind>\t<ERROR|MISSING x>\t<line>\t<path:line>" per file that fails to parse.
