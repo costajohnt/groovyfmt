@@ -854,7 +854,8 @@ fn lines_changed(src: &str, out: &str) -> usize {
 }
 
 /// `--suggest-style` candidates as (indent, continuation_indent, use_tabs), simplest first:
-/// the defaults, then one key, then two. A tie goes to the earlier one.
+/// the defaults, then one key, then two. A tie on files unchanged goes to the one changing
+/// fewer lines, then to the earlier one.
 const CANDIDATES: [(usize, Option<usize>, bool); 6] = [
     (4, None, false),
     (2, None, false),
@@ -933,7 +934,10 @@ fn suggest_style(files: &[PathBuf], cfgs: &Configs) -> i32 {
         ));
     }
     let best = (0..CANDIDATES.len())
-        .max_by_key(|&i| (tally[i].0, std::cmp::Reverse(i)))
+        .max_by_key(|&i| {
+            use std::cmp::Reverse;
+            (tally[i].0, Reverse(tally[i].2), Reverse(i))
+        })
         .unwrap_or(0);
     eprintln!("  {:<42} {:>7} {:>7}", "style", "files", "lines");
     for (i, (c, (_, changed, lines))) in CANDIDATES.iter().zip(tally).enumerate() {

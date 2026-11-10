@@ -449,6 +449,18 @@ fn suggest_style_picks_the_style_that_changes_fewest_files() {
             "{dir}"
         );
     }
+    // every style changes the file: fewer lines changed decides, not candidate order
+    d.write(
+        "allchange/A.groovy",
+        "class A {\n\tdef f() {\n\t  x(1,\n\t\t\t2)\n\t}\n}\n",
+    );
+    let o = run(&d.0, &["--suggest-style", "allchange"], None);
+    assert_eq!(
+        stdout(&o),
+        "# suggested by groovyfmt --suggest-style: 0 of 1 files unchanged\nuse_tabs = true\n",
+        "{}",
+        stderr(&o)
+    );
     // a missing final newline is a change, though no line's text differs
     d.write("eof/A.groovy", "x = 1");
     let o = run(&d.0, &["--suggest-style", "eof"], None);
