@@ -821,3 +821,164 @@ fn write_and_walk_failures_exit_2() {
     assert_eq!(c.status.code(), Some(2), "{}", stderr(&c));
     assert!(stderr(&c).contains("locked"), "{}", stderr(&c));
 }
+
+const TWO: &str = "class A {\n  def f() {\n    println 'x'\n  }\n}\n";
+
+/// The `config:` lines `-v` printed.
+fn config_lines(o: &Output) -> Vec<String> {
+    stderr(o)
+        .lines()
+        .filter(|l| l.starts_with("config: "))
+        .map(String::from)
+        .collect()
+}
+
+#[test]
+fn config_is_found_from_each_file_not_the_working_directory() {
+    let d = Dir::new("cfgfile");
+    d.write("proj/.groovyfmt.toml", "indent = 2\n");
+    d.write("proj/A.groovy", TWO);
+    d.write("elsewhere/keep.txt", "");
+    let inside = run(&d.0.join("proj"), &["--check"], None);
+    assert_eq!(inside.status.code(), Some(0), "{}", stderr(&inside));
+    let elsewhere = d.0.join("elsewhere");
+    let c = run(&elsewhere, &["--check", "../proj"], None);
+    assert_eq!(c.status.code(), Some(0), "{}", stderr(&c));
+    assert_eq!(stdout(&c), "");
+    let w = run(&elsewhere, &["../proj", "../proj/A.groovy"], None);
+    assert_eq!(w.status.code(), Some(0), "{}", stderr(&w));
+    assert_eq!(stderr(&w), "reformatted 0 of 1 files\n");
+    assert_eq!(d.read("proj/A.groovy"), TWO);
+
+    // a file outside the working directory doesn't pick up the working directory's config
+    d.write("free/F.groovy", TWO);
+    let proj = d.0.join("proj");
+    let c = run(&proj, &["--check", "-v", "A.groovy", "../free"], None);
+    assert_eq!(c.status.code(), Some(1), "{}", stderr(&c));
+    assert_eq!(stdout(&c), "../free/F.groovy\n");
+    let cfgs = config_lines(&c);
+    assert_eq!(cfgs.len(), 2, "{}", stderr(&c));
+    assert!(cfgs[0].ends_with("proj/.groovyfmt.toml"), "{cfgs:?}");
+    assert_eq!(cfgs[1], "config: none found, using defaults");
+    let w = run(&proj, &["../free/F.groovy"], None);
+    assert_eq!(w.status.code(), Some(0), "{}", stderr(&w));
+    assert_eq!(d.read("free/F.groovy"), PRETTY);
+}
+
+#[test]
+fn nested_config_replaces_its_parent() {
+    let d = Dir::new("nested");
+    d.write(".groovyfmt.toml", "indent = 4\n");
+    d.write("sub/.groovyfmt.toml", "indent = 2\n");
+    d.write("A.groovy", UGLY);
+    d.write("sub/B.groovy", UGLY);
+    d.write("sub/deep/C.groovy", UGLY);
+    let w = run(&d.0, &[], None);
+    assert_eq!(w.status.code(), Some(0), "{}", stderr(&w));
+    assert_eq!(d.read("A.groovy"), PRETTY);
+    assert_eq!(d.read("sub/B.groovy"), TWO);
+    assert_eq!(d.read("sub/deep/C.groovy"), TWO);
+    let c = run(&d.0, &["--check", "-v"], None);
+    assert_eq!(c.status.code(), Some(0), "idempotent: {}", stderr(&c));
+    let cfgs = config_lines(&c);
+    assert_eq!(cfgs.len(), 2, "{}", stderr(&c));
+    assert!(
+        cfgs[0].ends_with("/.groovyfmt.toml") && !cfgs[0].contains("sub"),
+        "{cfgs:?}"
+    );
+    assert!(cfgs[1].ends_with("/sub/.groovyfmt.toml"), "{cfgs:?}");
+
+    // --config and --indent override both
+    d.write("custom.toml", "indent = 2\n");
+    let o = run(&d.0, &["--check", "--config", "custom.toml"], None);
+    assert_eq!(stdout(&o), "A.groovy\n", "{}", stderr(&o));
+    let o = run(&d.0, &["--check", "--indent", "2"], None);
+    assert_eq!(stdout(&o), "A.groovy\n", "{}", stderr(&o));
+    let o = run(&d.0, &["--check", "--indent=4"], None);
+    assert_eq!(
+        stdout(&o),
+        "sub/B.groovy\nsub/deep/C.groovy\n",
+        "{}",
+        stderr(&o)
+    );
+}
+
+#[test]
+fn nested_config_excludes_and_lint_apply_only_inside_it() {
+    let d = Dir::new("nestedexcl");
+    let import = "import a.b.Unused\n";
+    d.write("gen/G.groovy", UGLY);
+    d.write("sub/gen/G.groovy", UGLY);
+    d.write(
+        "sub/.groovyfmt.toml",
+        "exclude = [\"gen\"]\n[lint]\nUnusedImport = false\n",
+    );
+    d.write("I.groovy", import);
+    d.write("sub/I.groovy", import);
+    let c = run(&d.0, &["--check"], None);
+    assert_eq!(stdout(&c), "gen/G.groovy\n", "{}", stderr(&c));
+    let named = run(&d.0, &["--check", "sub/gen/G.groovy", "gen/G.groovy"], None);
+    assert_eq!(stdout(&named), "gen/G.groovy\n", "{}", stderr(&named));
+    let l = run(&d.0, &["--lint"], None);
+    assert_eq!(l.status.code(), Some(1), "{}", stderr(&l));
+    assert_eq!(
+        stdout(&l),
+        "I.groovy:1:1: UnusedImport: The [a.b.Unused] import is never referenced\n"
+    );
+}
+
+#[test]
+fn excluded_subtree_config_is_never_read() {
+    let d = Dir::new("exclsub");
+    d.write(".groovyfmt.toml", "exclude = [\"sub/**\", \"vendor\"]\n");
+    d.write("sub/.groovyfmt.toml", "indent = \n");
+    d.write("sub/S.groovy", UGLY);
+    d.write("vendor/x/.groovyfmt.toml", "indent = 2\n");
+    d.write("vendor/x/V.groovy", UGLY);
+    // nor one that governs no Groovy file
+    d.write("docs/.groovyfmt.toml", "indent = \n");
+    d.write("docs/notes.txt", "");
+    d.write("A.groovy", UGLY);
+    let w = run(&d.0, &[], None);
+    assert_eq!(w.status.code(), Some(0), "{}", stderr(&w));
+    assert_eq!(stderr(&w), "reformatted 1 of 1 files\n");
+    assert_eq!(d.read("A.groovy"), PRETTY);
+    assert_eq!(d.read("sub/S.groovy"), UGLY);
+    let l = run(&d.0, &["--lint"], None);
+    assert_eq!(l.status.code(), Some(0), "{}", stderr(&l));
+    // named files (pre-commit) and editor buffers in an excluded subtree with its own config
+    let named = ["sub/S.groovy", "vendor/x/V.groovy", "vendor/x", "sub"];
+    for arg in named {
+        let c = run(&d.0, &["--check", arg], None);
+        assert_eq!(c.status.code(), Some(0), "{arg}: {}", stderr(&c));
+        assert_eq!(stderr(&c), "would reformat 0 of 0 files\n", "{arg}");
+        let o = run(&d.0, &["--stdin", "--stdin-filepath", arg], Some(UGLY));
+        assert_eq!(o.status.code(), Some(0), "{arg}: {}", stderr(&o));
+        assert_eq!(stdout(&o), UGLY, "{arg}");
+    }
+    let from_sub = run(&d.0.join("vendor/x"), &["--check", "."], None);
+    assert_eq!(stderr(&from_sub), "would reformat 0 of 0 files\n");
+    assert_eq!(d.read("vendor/x/V.groovy"), UGLY);
+}
+
+#[test]
+fn broken_nested_config_governing_a_file_is_fatal_once() {
+    let d = Dir::new("brokennested");
+    d.write(".groovyfmt.toml", "indent = 4\n");
+    d.write("sub/.groovyfmt.toml", "indnet = 2\n");
+    d.write("sub/S.groovy", UGLY);
+    d.write("sub/T.groovy", UGLY);
+    d.write("A.groovy", UGLY);
+    let runs: [&[&str]; 3] = [&["--check"], &[], &["--lint"]];
+    for args in runs {
+        let o = run(&d.0, args, None);
+        assert_eq!(o.status.code(), Some(2), "{args:?}: {}", stderr(&o));
+        let err = stderr(&o);
+        assert_eq!(err.matches("unknown key `indnet`").count(), 1, "{err}");
+        assert!(err.contains("sub/.groovyfmt.toml: unknown key"), "{err}");
+    }
+    assert_eq!(d.read("A.groovy"), UGLY, "nothing written");
+    // --config replaces discovery, so the broken file isn't read
+    let o = run(&d.0, &["--check", "--config", ".groovyfmt.toml"], None);
+    assert_eq!(o.status.code(), Some(1), "{}", stderr(&o));
+}

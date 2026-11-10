@@ -1,5 +1,8 @@
-//! `.groovyfmt.toml` / `groovyfmt.toml`, found by walking up from the working directory
-//! (or from the directory of `--stdin-filepath`).
+//! `.groovyfmt.toml` / `groovyfmt.toml`. Each file is governed by the nearest one found by
+//! walking up from that file's own directory (for `--stdin-filepath`, from that path's
+//! directory); a nested config replaces its parents' entirely, nothing is merged. A
+//! directory is entered unless the config governing its parent excludes it. `--config`
+//! replaces discovery for every file. See `Resolver`.
 //!
 //! ```toml
 //! indent = 4                  # spaces per level, 1..=16
@@ -14,8 +17,9 @@
 
 use crate::format::Style;
 use crate::lint::RULES;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub const FILE_NAMES: [&str; 2] = [".groovyfmt.toml", "groovyfmt.toml"];
 
@@ -28,6 +32,8 @@ pub struct Config {
     pub exclude: Vec<String>,
     /// The config file's directory, absolute; set by `load`.
     pub root: PathBuf,
+    /// The file this was loaded from, as given to `load`; `None` for the defaults.
+    pub file: Option<PathBuf>,
 }
 
 impl Config {
@@ -103,6 +109,7 @@ impl Config {
         let mut cfg = Config::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
         let abs = normalize(&std::env::current_dir().unwrap_or_default().join(path));
         cfg.root = abs.parent().map(Path::to_path_buf).unwrap_or_default();
+        cfg.file = Some(path.to_path_buf());
         Ok(cfg)
     }
 
@@ -189,12 +196,117 @@ fn wildcard<P, S>(
     p[i..].iter().all(star)
 }
 
-/// Nearest config file in `start` or any parent directory.
-pub fn discover(start: &Path) -> Option<PathBuf> {
-    start
-        .ancestors()
-        .flat_map(|dir| FILE_NAMES.iter().map(move |n| dir.join(n)))
-        .find(|p| p.is_file())
+/// The config governing each path, found once per directory: `fixed` for every path if
+/// set, else the nearest config file at or above the path's directory, else the defaults.
+/// `indent` (`--indent`) overrides whichever applies. Paths are resolved lexically against
+/// the working directory, as typed, like `--stdin-filepath`.
+pub struct Resolver {
+    cwd: PathBuf,
+    indent: Option<usize>,
+    fixed: Option<Arc<Config>>,
+    defaults: Arc<Config>,
+    /// The nearest config file at or above each directory looked at.
+    found: HashMap<PathBuf, Option<PathBuf>>,
+    /// Each config file read, by path.
+    loaded: HashMap<PathBuf, Arc<Config>>,
+}
+
+impl Resolver {
+    pub fn new(fixed: Option<Config>, indent: Option<usize>) -> Resolver {
+        let mut r = Resolver {
+            cwd: std::env::current_dir().unwrap_or_default(),
+            indent,
+            fixed: None,
+            defaults: Arc::default(),
+            found: HashMap::new(),
+            loaded: HashMap::new(),
+        };
+        r.fixed = fixed.map(|c| r.finish(c));
+        r.defaults = r.finish(Config::default());
+        r
+    }
+
+    /// Whether `path` (named on the command line, or by `--stdin-filepath`) is excluded:
+    /// by its own config, or by a config above it that would have pruned it in a walk from
+    /// there. Each config decides down to the directory holding the next config below it,
+    /// and the highest is asked first, so a config below an excluded directory is not read.
+    pub fn excluded(&mut self, path: &Path) -> Result<bool, String> {
+        if let Some(c) = &self.fixed {
+            return Ok(c.excluded(path));
+        }
+        let abs = normalize(&self.cwd.join(path));
+        // (config file, the deepest path it decides), nearest first
+        let mut chain = Vec::new();
+        let (mut dir, mut target) = (abs.parent().map(Path::to_path_buf), abs.clone());
+        while let Some(file) = dir.and_then(|d| self.find(&d)) {
+            let root = file.parent().map(Path::to_path_buf).unwrap_or_default();
+            dir = root.parent().map(Path::to_path_buf);
+            chain.push((file, std::mem::replace(&mut target, root)));
+        }
+        for (file, target) in chain.iter().rev() {
+            if self.load(file)?.excluded(target) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// The config for `path`'s directory: for a file, the one that formats and lints it; for
+    /// a directory, the one whose `exclude` decides whether it is entered (a directory's own
+    /// config can't exclude it).
+    pub fn of(&mut self, path: &Path) -> Result<Arc<Config>, String> {
+        let abs = normalize(&self.cwd.join(path));
+        self.dir(abs.parent().unwrap_or(&abs))
+    }
+
+    /// The config governing files directly in `dir`, an absolute normalized path. A config
+    /// file that fails to load is an error only when something under it asks.
+    pub fn dir(&mut self, dir: &Path) -> Result<Arc<Config>, String> {
+        if let Some(c) = &self.fixed {
+            return Ok(c.clone());
+        }
+        match self.find(dir) {
+            Some(file) => self.load(&file),
+            None => Ok(self.defaults.clone()),
+        }
+    }
+
+    /// The nearest config file in `dir`, an absolute normalized path, or above it.
+    fn find(&mut self, dir: &Path) -> Option<PathBuf> {
+        if let Some(found) = self.found.get(dir) {
+            return found.clone();
+        }
+        let found = FILE_NAMES
+            .iter()
+            .map(|n| dir.join(n))
+            .find(|p| p.is_file())
+            .or_else(|| dir.parent().and_then(|up| self.find(up)));
+        self.found.insert(dir.to_path_buf(), found.clone());
+        found
+    }
+
+    fn load(&mut self, file: &Path) -> Result<Arc<Config>, String> {
+        if let Some(c) = self.loaded.get(file) {
+            return Ok(c.clone());
+        }
+        let cfg = self.finish(Config::load(file)?);
+        self.loaded.insert(file.to_path_buf(), cfg.clone());
+        Ok(cfg)
+    }
+
+    /// The config governing files directly in `dir`, relative to the working directory or
+    /// absolute.
+    pub fn inside(&mut self, dir: &Path) -> Result<Arc<Config>, String> {
+        let abs = normalize(&self.cwd.join(dir));
+        self.dir(&abs)
+    }
+
+    fn finish(&self, mut cfg: Config) -> Arc<Config> {
+        if let Some(n) = self.indent {
+            cfg.style.indent = n;
+        }
+        Arc::new(cfg)
+    }
 }
 
 #[cfg(test)]
@@ -342,12 +454,68 @@ mod tests {
     }
 
     #[test]
-    fn discovers_in_parent_dirs() {
+    fn resolver_finds_the_nearest_config_once_per_directory() {
         let root = std::env::temp_dir().join(format!("groovyfmt-cfg-{}", std::process::id()));
-        let nested = root.join("a/b");
-        std::fs::create_dir_all(&nested).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        std::fs::create_dir_all(root.join("sub/deep")).unwrap();
         std::fs::write(root.join(".groovyfmt.toml"), "indent = 2\n").unwrap();
-        assert_eq!(discover(&nested), Some(root.join(".groovyfmt.toml")));
+        std::fs::write(root.join("sub/groovyfmt.toml"), "indent = 3\n").unwrap();
+        let mut r = Resolver::new(None, None);
+        let top = r.of(&root.join("a/b/A.groovy")).unwrap();
+        assert_eq!(top.style.indent, 2, "found in a parent");
+        assert_eq!(top.file, Some(root.join(".groovyfmt.toml")));
+        assert!(
+            Arc::ptr_eq(&top, &r.of(&root.join("T.groovy")).unwrap()),
+            "shared"
+        );
+        let sub = r.of(&root.join("sub/deep/S.groovy")).unwrap();
+        assert_eq!(sub.style.indent, 3, "nested replaces, nearest wins");
+        assert_eq!(
+            r.of(&root.join("sub")).unwrap().style.indent,
+            2,
+            "a dir: its parent's"
+        );
+        assert_eq!(r.inside(&root.join("sub")).unwrap().style.indent, 3);
+        // memoized: removing the files changes nothing for directories already seen
         std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(r.of(&root.join("a/b/C.groovy")).unwrap().style.indent, 2);
+        assert_eq!(
+            r.of(&root.join("sub/deep/D.groovy")).unwrap().style.indent,
+            3
+        );
+
+        // excludes from the configs above a path, highest first
+        let root = root.with_extension("excl");
+        let _ = std::fs::remove_dir_all(&root);
+        for (dir, toml) in [
+            ("", "exclude = [\"vendor\", \"**/gen\"]\n"),
+            ("vendor/x", "indent = \n"),
+            ("sub", "exclude = [\"skip\"]\n"),
+        ] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join(".groovyfmt.toml"), toml).unwrap();
+        }
+        let mut r = Resolver::new(None, None);
+        let mut ex = |p: &str| r.excluded(&root.join(p));
+        assert_eq!(
+            ex("vendor/x/A.groovy"),
+            Ok(true),
+            "broken config never read"
+        );
+        assert_eq!(ex("gen/A.groovy"), Ok(true));
+        assert_eq!(ex("sub/gen/A.groovy"), Ok(false), "replaced inside sub");
+        assert_eq!(ex("sub/skip/A.groovy"), Ok(true));
+        assert_eq!(ex("sub/A.groovy"), Ok(false));
+        assert_eq!(ex("skip/A.groovy"), Ok(false), "sub's patterns stay in sub");
+        assert!(r.of(&root.join("vendor/x/A.groovy")).is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+
+        let mut fixed = Resolver::new(Some(Config::default()), Some(5));
+        assert_eq!(
+            fixed.of(&root.join("sub/X.groovy")).unwrap().style.indent,
+            5
+        );
+        assert_eq!(fixed.of(&root.join("sub/X.groovy")).unwrap().file, None);
     }
 }
