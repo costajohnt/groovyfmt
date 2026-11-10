@@ -20,9 +20,9 @@ toml = "1.2"
 # fix/multi-assignment, fix/annotation-values, fix/array-creation,
 # fix/lambda-expressions, fix/method-declaration-forms, fix/synchronized-statement,
 # fix/attribute-access-forms, fix/method-reference-quoted-name,
-# fix/explicit-type-arguments, fix/list-spread branches). Back to the crates.io
-# release once those land upstream.
-dekobon-tree-sitter-groovy = { git = "https://github.com/costajohnt/tree-sitter-groovy", rev = "f83eb50ed1c417e99bebb2364fd9b07a0d00c52e" }
+# fix/explicit-type-arguments, fix/list-spread, fix/reserved-keywords branches).
+# Back to the crates.io release once those land upstream.
+dekobon-tree-sitter-groovy = { git = "https://github.com/costajohnt/tree-sitter-groovy", rev = "8e89485fee20e4ac14f8d18e82dd2caab860b9e3" }
 
 [profile.release]
 lto = true

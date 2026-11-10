@@ -44,6 +44,28 @@ class Spec {
         }
     }
 
+    void adapt(Object t, boolean initializing) {
+        Neo4jSession session = (Neo4jSession) this.session
+        if (initializing) {
+            List itemIds = (List) items.inventoryItemId
+            while (itemIds) {
+                itemIds = null
+            }
+        }
+        def value = (String) t.name
+        return value
+    }
+
+    void fill(Map execMap, Object e) {
+        execMap.user = (e.user)
+        execMap.'date-started' = [time: e.started]
+        v = (Map) e.data
+        bar = 1
+        assertEquals 'v', e.value
+        // a comment after a command call
+        assert bar
+    }
+
     def <T> T withContext(Closure<T> block) {
         block()
     }
