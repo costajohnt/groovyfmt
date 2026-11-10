@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- `use_tabs` config option: indent with tabs instead of spaces. Indentation is still worked out in columns, with a tab `indent` columns wide, and each full tab width is written as a tab, so `continuation_indent` keeps its meaning (the default gives continued lines one extra tab; `continuation_indent = 8` with `indent = 4` gives two). On spring-boot, which indents with tabs, it cuts the first-run diff from 740 files to 86. Space-indented output is unchanged.
+- `--suggest-style`: format the files in memory under six indent styles (the defaults, `indent = 2`, `use_tabs = true`, `continuation_indent = 8`, and two combinations), print the config lines for the one that leaves the most files unchanged (a tie goes to the one changing fewer lines, then to the defaults, then to the simpler style), and show what each would change. Nothing is written. On ratpack it suggests `indent = 2`, on spring-boot `use_tabs = true`, on OpenBoxes `continuation_indent = 8`, and on geb it reports that the defaults fit.
+
 ### Changed
 
 - The grammar pin moves to a newer `groovyfmt-base` of the tree-sitter-groovy fork, which parses many more files. On the 23,766-file corpus, files skipped for a parse error go from 2,827 to 934; across 13 open source repositories outside the corpus, from 1,488 to 513. Newly accepted: annotated script and field declarations (`@Field String NAME = 'x'`, Spock's `@Shared log = []`), parenthesis-free calls with several arguments, quoted named-argument keys or a dotted receiver (`bind Foo, Bar`, `attributes 'Main-Class': m`, `script.writeFile file: f, text: t`), array creation (`new byte[10]`, `new String[] { 'a' }`), Java lambdas, nested annotations as annotation values, typed and def-less multiple assignment, `assert e, message`, `def static`, `def <T> T f()`, bodiless untyped methods, annotation element defaults, `synchronized` blocks, `?.@` and `*.@`, `[*a, *b]`, `System::'print'` and `Collections.<String>emptyList()`.
