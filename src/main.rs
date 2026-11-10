@@ -448,8 +448,20 @@ fn stdin(cfg: &Config, a: &Args) -> i32 {
 fn fmt(files: &[PathBuf], cfg: &Config, a: &Args) -> i32 {
     let t = Instant::now();
     let check = a.mode == Mode::Check;
+    // Each worker writes (or, for --check, drops) the new text itself, so no more than one
+    // output per thread is alive at once; only the small per-file results are kept, and
+    // they're reported below in input order.
     let results = par_map(files, |p| {
-        read(p).map(|src| src.map_or_else(Outcome::Skipped, |s| format(&s, &cfg.style)))
+        let src = match read(p)? {
+            Ok(src) => src,
+            Err(why) => return Ok(Err(why)),
+        };
+        Ok(match format(&src, &cfg.style) {
+            Outcome::Unchanged => Ok(None),
+            Outcome::Skipped(why) => Err(why),
+            Outcome::Formatted(_) if check => Ok(Some(Ok(()))),
+            Outcome::Formatted(out) => Ok(Some(write_atomic(p, &out))),
+        })
     });
     let (mut changed, mut skipped, mut failed) = (0usize, 0usize, false);
     for (path, r) in files.iter().zip(results) {
@@ -458,26 +470,24 @@ fn fmt(files: &[PathBuf], cfg: &Config, a: &Args) -> i32 {
                 eprintln!("groovyfmt: {e}");
                 failed = true;
             }
-            Ok(Outcome::Unchanged) => {}
-            Ok(Outcome::Skipped(why)) => {
+            Ok(Ok(None)) => {}
+            Ok(Err(why)) => {
                 skipped += 1;
                 if a.verbose {
                     eprintln!("skipped {}: {why}", shown(path));
                 }
             }
-            Ok(Outcome::Formatted(out)) => {
+            Ok(Ok(Some(written))) => {
                 changed += 1;
-                if !check {
-                    if let Err(e) = write_atomic(path, &out) {
-                        eprintln!("groovyfmt: {}: {e}", shown(path));
-                        failed = true;
-                    }
-                } else if a.github {
+                if let Err(e) = written {
+                    eprintln!("groovyfmt: {}: {e}", shown(path));
+                    failed = true;
+                } else if check && a.github {
                     say(&format!(
                         "::error file={}::File is not formatted. Run groovyfmt to fix.",
                         gh_escape(&shown(path), true)
                     ));
-                } else {
+                } else if check {
                     say(&shown(path));
                 }
             }
