@@ -152,3 +152,24 @@ No memory-safety or file-system escape was found: there is no `unsafe` in the cr
 3. Write path: M2, M3 and the two temp-file Lows.
 4. Lint and config correctness: M1, M5, the `else:` key Low.
 5. Release hygiene: M6, M7, M8, grammar rev tag, `.gitignore`.
+
+## Resolution
+
+Fixed in PRs #2 to #6 and released in 0.5.0, each with a regression test unless noted.
+
+| Finding | PR | Fix |
+|---|---|---|
+| H1 `##[` injection | #2 | `printable()` writes `##[` as `##\[` in every printed path, lint message, `die()` message and panic report; a CLI test asserts no output line contains `##[`. |
+| H2 indent re-walk | #2 | The indent pass moves one tree cursor forward through the file instead of asking for each line's node, parents and previous siblings from the root: 4,000 comment lines 0.01 s, 800,000 lines 5.7 s instead of 30 s; timing test added. |
+| H3 token guard untested | #3 | `format()` calls `format_with()`, so a test can pass a wrong re-indent and assert `Skipped("token mismatch after formatting")`; `tests/fixtures.rs` checks the corpus invariants on 29 fixtures, as written and with scrambled indentation. |
+| M1 UnusedImport and `"$Name"` | #4 | A brace-less GString interpolation counts every dotted part as a use; corpus UnusedImport reports 688 to 566. |
+| M2 owner and hard links | #4 | The temporary file gets the original's owner and group; a file with more than one link, or whose owner can't be kept, is written in place. The write is tied to the (device, inode) that was read, and a path naming a different file is refused with `file changed while formatting`. |
+| M3 named symlink replaced | #4 | A named link is resolved and its target formatted, the link stays; in write mode a named link whose target is outside the working directory is refused with exit 2. |
+| M4 outputs retained | #2 | Each worker writes its file, or for `--check` drops the text, as soon as it is formatted: 800 files x 0.25 MB peak 383 MB to 150 MB. |
+| M5 config from the working directory | #6 | Each file uses the nearest config above it; nested configs replace their parent's, and a parent's `exclude` also covers named files, `--stdin-filepath` and runs from inside the excluded directory. |
+| M6 minimum Rust version | #5 | `rust-version` and the README say 1.90; a CI job runs the tests on 1.90.0. |
+| M7 glibc arm64 binary | #5 | Linux arm64 is built as `aarch64-unknown-linux-musl`; CI checks both Linux binaries have no NEEDED entries and runs them in `alpine:3`. |
+| M8 untested releases | #5 | release.yml checks the tag against Cargo.toml, `main` and the CHANGELOG, then runs ci.yml, which builds and smoke-tests all four targets, before publishing. |
+| M9 surviving mutants | #3 | One test each for the size cap, `gh_escape` on the lint message and file properties, the `par_map` panic catch, `printable` in `die()` and the 0600 temp-file mode. The `modifier` mutant still survives: that branch is dead code with the pinned grammar and was left in place. |
+
+Still open. Of the Lows: the temp-file cleanup deleting a pre-existing file (#2), duplicate arguments (#2), `--locked` on the CI release build (#5) and `.claude/` in `.gitignore` (#5) are fixed. The worker result list is partly fixed: results now carry their index and are sorted back into order (#2), but a thread that dies outside `catch_unwind` still loses its results silently through `unwrap_or_default()`, and the shorter list would then pair later results with the wrong paths. Open: the `else:` / `catch:` / `finally:` map-key indent, temp names too long for long file names, the CLI parser quirks (`--check=false`, `--`, paths ignored with `--stdin`), skipped files not affecting the exit status (no `--strict`), tab indentation, DuplicateCaseStatement comparing raw text, the per-import scan of comment text, multi-line slashy strings in the grammar, config discovery walking to the filesystem root (now per file, still unbounded), the grammar rev `25b1f4b` having no tag on the fork, a new `Parser` per parse, and the README's GitHub Actions snippet depending on read access to this private repository. Beyond the Lows: peak memory is still dominated by each worker holding one file's two parse trees (about 700 MB per 5 MB file, M4), and the in-place write path checks the opened file's identity instead of passing `O_NOFOLLOW` (or `O_NONBLOCK`), so a path swapped for a FIFO between the check and the open can still make the open wait.

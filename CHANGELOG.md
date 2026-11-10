@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-11-10)
+
+Most of this release comes from a second full audit (`docs/audit-2026-11-09-full.md`). groovyfmt runs in CI on pull-request content, so these matter:
+
+### Security
+
+- File names and lint messages can no longer inject the older `##[command]` GitHub Actions workflow syntax, which the runner accepts anywhere in a line (`##[add-mask]`, `##[stop-commands]`, `##[error]`). Every printed path, message and panic report shows `##[` as `##\[`.
+- A symlink named on the command line stays a symlink: the file it points to is formatted, through any chain of links, and reports name the link as typed. Before, the link was replaced by a formatted regular file and its target left untouched. A link whose target matches `exclude` is skipped, and in write mode a named link, to a file or a directory, whose target is outside the working directory is an error (exit 2) and nothing is rewritten through it, so `groovyfmt *` in an untrusted checkout can't write through a committed link to files elsewhere; `--check` and `--lint` still read such a link. Arguments that are not themselves links, such as `../other-project`, are unaffected.
+- A file is only written if its path still names the file that was read. If it was replaced by another file or a symlink in between, the write fails with `file changed while formatting` (exit 2) and nothing is written; before, the rename replaced whatever was at the path. Edits made to the same file in between are not detected.
+- Formatting a run of indented comments was cubic in its length (4,000 lines took over two minutes) and long blocks were superlinear. The indent pass now moves one tree cursor forward through the file instead of looking up each line's node, parents and previous siblings from the root: 4,000 comment lines take 0.01 s, and an 800,000-line file 5.7 s instead of 30 s.
+- In-place formatting and `--check` no longer hold every changed file's new text in memory until the run ends. Each worker writes the file, or for `--check` only notes that it changed, as soon as it is formatted.
 
 ### Added
 
@@ -9,22 +19,16 @@
 
 ### Changed
 
-- Each file is now governed by the nearest `.groovyfmt.toml` / `groovyfmt.toml` above the file itself, not the one above the working directory. `groovyfmt --check ../proj` used to apply the working directory's config (or the defaults) to `proj` and report files formatted under `proj`'s own config as needing changes, and write mode re-indented them; a subproject with its own config was formatted by the root's config when run from the root. A nested config replaces its parent's entirely, nothing is merged. Its `exclude` and `[lint]` settings apply inside its directory, and the parent's `exclude` still decides whether that directory is searched (a config inside an excluded directory is never read). That parent exclusion also covers files named on the command line, `--stdin-filepath`, and runs started inside the excluded directory, which used to see only the nested config; `--config` overrides it. A file outside the working directory no longer picks up the working directory's config. `--config` still applies one file to everything and `--indent` still overrides the indent; `--rules` and `--stdin` without `--stdin-filepath` still use the working directory's config. `-v` prints one `config:` line per config in use. (M5)
+- Each file is now governed by the nearest `.groovyfmt.toml` / `groovyfmt.toml` above the file itself, not the one above the working directory. `groovyfmt --check ../proj` used to apply the working directory's config (or the defaults) to `proj` and report files formatted under `proj`'s own config as needing changes, and write mode re-indented them; a subproject with its own config was formatted by the root's config when run from the root. A nested config replaces its parent's entirely, nothing is merged. Its `exclude` and `[lint]` settings apply inside its directory, and the parent's `exclude` still decides whether that directory is searched (a config inside an excluded directory is never read). That parent exclusion also covers files named on the command line, `--stdin-filepath`, and runs started inside the excluded directory, which used to see only the nested config; `--config` overrides it. A file outside the working directory no longer picks up the working directory's config. `--config` still applies one file to everything and `--indent` still overrides the indent; `--rules` and `--stdin` without `--stdin-filepath` still use the working directory's config. A config file that fails to parse stops the run (exit 2) only when a file or directory it governs is reached. `-v` prints one `config:` line per config in use. (M5)
 - The Linux arm64 release binary is now a static musl build, like the x86_64 one, so it runs without glibc (Alpine, Amazon Linux 2, RHEL 8, Debian 11, Ubuntu 20.04). Its asset is now named `groovyfmt-<tag>-aarch64-unknown-linux-musl.tar.gz` instead of `...-aarch64-unknown-linux-gnu.tar.gz`.
 - The minimum supported Rust version is 1.90 (`rust-version` said 1.85, which can't build the tree-sitter dependencies). CI now runs the tests on 1.90.0.
 - A release tag now publishes only if it matches the Cargo.toml version, is on `main`, has a CHANGELOG heading, and fmt, clippy, the tests and a build and smoke test of every release binary pass on the tagged commit. All four release targets are also built and run on every pull request.
 
 ### Fixed
 
-From the second audit (`docs/audit-2026-11-09-full.md`):
-
-- File names and lint messages can no longer inject the older `##[command]` GitHub Actions workflow syntax, which the runner accepts anywhere in a line (`##[add-mask]`, `##[stop-commands]`, `##[error]`). Every printed path, message and panic report shows `##[` as `##\[`.
-- Formatting a run of indented comments was cubic in its length (4,000 lines took over two minutes) and long blocks were superlinear. The indent pass now moves one tree cursor forward through the file instead of looking up each line's node, parents and previous siblings from the root: 4,000 comment lines take 0.01 s, and an 800,000-line file 5.7 s instead of 30 s.
-- In-place formatting and `--check` no longer hold every changed file's new text in memory until the run ends. Each worker writes the file, or for `--check` only notes that it changed, as soon as it is formatted.
-- A file named more than once, directly or through overlapping arguments (`groovyfmt . src`, `A.groovy ./A.groovy`, `sub/../A.groovy`), is formatted and reported once. Each in-place write uses its own temporary file name, and a failed write no longer deletes a file that already had that name.
 - UnusedImport no longer reports a class used only through a brace-less GString interpolation such as `"$Name"` or `"$Name.CONST"`; removing the import as advised broke the code.
-- Formatting a file in place keeps its owner and group (root formatting a bind-mounted checkout used to leave every changed file owned by root) and keeps its hard links: a file with more than one link, or whose owner can't be kept, is overwritten in place instead of replaced by a renamed temporary file. A path that no longer names the file that was read (swapped for a symlink or another file) is now left alone with an error, where it used to be replaced.
-- A symlink named on the command line stays a symlink: the file it points to is formatted, through any chain of links, and reports name the link as typed. Before, the link was replaced by a formatted regular file and its target left untouched. A link whose target matches `exclude` is skipped, and in write mode a named link, to a file or a directory, whose target is outside the working directory is an error (exit 2) and nothing is rewritten through it, so `groovyfmt *` in an untrusted checkout can't write through a committed link to files elsewhere. Arguments that are not themselves links, such as `../other-project`, are unaffected.
+- Formatting a file in place keeps its owner and group (root formatting a bind-mounted checkout used to leave every changed file owned by root) and keeps its hard links: a file with more than one link, or whose owner can't be kept, is overwritten in place instead of replaced by a renamed temporary file.
+- A file named more than once, directly or through overlapping arguments (`groovyfmt . src`, `A.groovy ./A.groovy`, `sub/../A.groovy`), is formatted and reported once. Each in-place write uses its own temporary file name, and a failed write no longer deletes a file that already had that name.
 
 ## 0.4.0 (2026-11-09)
 
