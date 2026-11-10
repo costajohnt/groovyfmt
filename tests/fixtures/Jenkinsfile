@@ -1,0 +1,32 @@
+pipeline {
+    agent any
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+    }
+    environment {
+        APP_ENV = 'ci'
+    }
+    stages {
+        stage('Build') {
+            steps {
+                sh './gradlew build'
+            }
+        }
+        stage('Deploy') {
+            when {
+                branch 'main'
+            }
+            steps {
+                sh '''
+                    ./deploy.sh --env "$APP_ENV"
+                    echo done
+                '''
+            }
+        }
+    }
+    post {
+        always {
+            junit 'build/test-results/**/*.xml'
+        }
+    }
+}

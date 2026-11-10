@@ -1,0 +1,20 @@
+tasks.register('hello') {
+    group = 'demo'
+    doLast {
+        println "Hello from ${project.name}"
+    }
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+    }
+}
+
+ext {
+    versions = [
+        groovy: '4.0.15',
+        spock : '2.3-groovy-4.0',
+    ]
+}
