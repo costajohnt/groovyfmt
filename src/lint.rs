@@ -247,11 +247,14 @@ fn unnecessary_gstring(src: &str, n: Node, v: &mut Vec<Violation>) {
     }
 }
 
-/// UnnecessarySemicolon: a `;` that ends a line (or the file).
+/// UnnecessarySemicolon: a `;` that ends a line (or the file). Not one that is a loop's
+/// empty body (`while (it.next());`), which removing would change the program.
 fn unnecessary_semicolon(n: Node, rest: &[Node], v: &mut Vec<Violation>) {
-    if n.parent()
-        .is_some_and(|p| p.kind().contains("enum") || p.kind() == "for_statement")
-    {
+    if n.parent().is_some_and(|p| {
+        p.kind().contains("enum")
+            || p.kind() == "for_statement"
+            || (p.kind() == "while_statement" && p.child_by_field_name("body") == Some(n))
+    }) {
         return;
     }
     let row = n.start_position().row;
@@ -581,10 +584,8 @@ mod tests {
 
     #[test]
     fn empty_loop_body_semicolon_is_never_reported() {
-        // The grammar can't parse an empty loop body yet, so the file isn't linted at all.
-        // If it learns to, this fails until UnnecessarySemicolon exempts that `;`.
-        let r = lint("while (it.next());\nprintln 'x'\n");
-        assert!(r.map_or(true, |v| v.is_empty()));
+        // The `;` is the loop's whole body: removing it would make `println` the body.
+        assert_eq!(lint("while (it.next());\nprintln 'x'\n"), Ok(vec![]));
     }
 
     #[test]
