@@ -500,7 +500,9 @@ fn no_output_line_carries_a_legacy_workflow_command() {
         ),
     ];
     for (args, sub, code) in runs {
-        let o = run(&d.0.join(sub), args, Some("def x = {\n"));
+        // only --stdin reads it; a run that exits first would close the pipe on us
+        let input = args.contains(&"--stdin").then_some("def x = {\n");
+        let o = run(&d.0.join(sub), args, input);
         assert_eq!(o.status.code(), Some(*code), "{args:?}: {}", stderr(&o));
         let all = stdout(&o) + &stderr(&o);
         assert!(all.contains("##\\["), "{args:?}: {all}");
