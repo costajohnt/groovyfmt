@@ -1,6 +1,7 @@
 pub mod config;
 pub mod format;
 pub mod lint;
+pub mod syntax;
 
 use std::path::Path;
 use tree_sitter::{Node, Parser, Tree};
