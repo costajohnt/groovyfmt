@@ -260,7 +260,7 @@ Rules marked off found, on real code, almost only things written that way on pur
 
 #### Unused code
 
-A name counts as used wherever it appears outside comments: as a name, or as a word in any string (`"$x"`, `getProperty('x')`, `@MethodSource('x')`). That can miss an unused one whose name is used elsewhere for something else, but never reports a used one. A member reached through a computed name, `this."groupBy_${kind}"` or `"parse_$kind"()`, counts as used when its name starts with the literal part, and `getProperty(name)`, `invokeMethod(name, args)` or `this[name]` with a computed name count as a use of every private member.
+A name counts as used wherever it appears outside comments: as a name, or as a word in any string (`"$x"`, `getProperty('x')`, `@MethodSource('x')`). That can miss an unused one whose name is used elsewhere for something else, but never reports a used one. A member reached through a computed name, `this."groupBy_${kind}"` or `"parse_$kind"()`, counts as used when its name starts with the literal part, and `getProperty(name)`, `invokeMethod(name, args)` or `this[name]` with a computed name count as a use of every private member, as does any mention of `metaClass`. A declaration the grammar misreads, `final ClassNode name` without a value (read as a variable named `ClassNode`), is left alone.
 
 | Rule | Default | Flags |
 |---|---|---|
