@@ -809,7 +809,8 @@ mod tests {
                 assert_eq!(top, line.trim_start().repeat(n));
             }
         };
-        crate::scaling::assert_scales("comment runs", run, 1000, 4, 8);
+        // up to 10 MB, the largest file formatted
+        crate::scaling::assert_scales_up_to("comment runs", run, 1000, 1_000_000, 4, 8);
     }
 
     #[test]
