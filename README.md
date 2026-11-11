@@ -169,9 +169,9 @@ Named after their [CodeNarc](https://codenarc.org/) equivalents so existing conf
 
 | Rule | Default | Flags |
 |---|---|---|
-| UnusedImport | on | an import whose name (or alias) never appears in code or as a word in a comment |
+| UnusedImport | on | an import whose name (or alias) never appears in code or as a word in a comment; not an annotated import (`@Library`, `@Grab`), which is there for its annotation |
 | DuplicateImport | on | the same import twice |
-| UnnecessarySemicolon | on | a `;` at the end of a line, unless the next line starts with `{` (without the `;` that closure would become an argument of the statement before) |
+| UnnecessarySemicolon | on | a `;` at the end of a line, unless the next line starts with `{` (without the `;` that closure would become an argument of the statement before), `++` or `--` |
 | EmptyCatchBlock | on | an empty `catch`, unless the parameter is named `ignore` or `ignored` |
 | EmptyIfStatement | on | an `if` with an empty block |
 | EmptyElseBlock | on | an `else` with an empty block |

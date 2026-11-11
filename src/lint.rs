@@ -242,7 +242,10 @@ fn imports(src: &str, tree: &Tree, v: &mut Vec<Violation>) {
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
-        let fix = own_lines(src, d);
+        // `@Library('lib') import x` and `@Grab(...) import y` are there for the annotation:
+        // never unused, and never removed
+        let annotated = text(d, src).starts_with('@');
+        let fix = own_lines(src, d).filter(|_| !annotated);
         if !seen.insert(full.clone()) {
             v.push(Violation {
                 fix,
@@ -251,7 +254,7 @@ fn imports(src: &str, tree: &Tree, v: &mut Vec<Violation>) {
             continue;
         }
         let name = d.child_by_field_name("name").map_or("", |n| text(n, src));
-        if name.ends_with('*') || full.ends_with(".*") {
+        if name.ends_with('*') || full.ends_with(".*") || annotated {
             continue;
         }
         let symbol = d
@@ -321,8 +324,9 @@ fn unnecessary_gstring(src: &str, n: Node, v: &mut Vec<Violation>) {
 
 /// UnnecessarySemicolon: a `;` that ends a line (or the file). Not one that is a loop's
 /// empty body (`while (it.next());`), or one before a line starting with `{`
-/// (`foo();` then `{ -> x }.call()`): either way removing it would change the program,
-/// here by making the closure an argument of the statement before.
+/// (`foo();` then `{ -> x }.call()`) or `++` / `--` (`a[0];` then `++n`): either way
+/// removing it would change the program, here by making the closure an argument of the
+/// statement before, or the `++` a postfix increment of it.
 fn unnecessary_semicolon(n: Node, rest: &[Node], v: &mut Vec<Violation>) {
     if n.parent().is_some_and(|p| {
         p.kind().contains("enum")
@@ -336,7 +340,7 @@ fn unnecessary_semicolon(n: Node, rest: &[Node], v: &mut Vec<Violation>) {
     let next = rest
         .iter()
         .find(|x| x.child_count() == 0 && !x.kind().contains("comment"));
-    if next.is_none_or(|x| x.start_position().row > row && x.kind() != "{") {
+    if next.is_none_or(|x| x.start_position().row > row && !matches!(x.kind(), "{" | "++" | "--")) {
         v.push(Violation {
             fix: Some(n.byte_range()),
             ..at(
@@ -747,6 +751,26 @@ mod tests {
         assert_eq!(rules(src), vec![("UnnecessarySemicolon", 2)]);
         // a comment between doesn't matter
         assert_eq!(rules("f();\n// why\n{ -> g() }()\n"), vec![]);
+        // bigtop TestBlockRecovery: without the `;`, `x[0]` then `++n` reads as `x[0]++`
+        assert_eq!(
+            rules("def x = f()[0];\n++n;\nm()\ny();\n--n\n"),
+            vec![("UnnecessarySemicolon", 2)]
+        );
+    }
+
+    #[test]
+    fn annotated_imports_are_never_unused() {
+        // a Jenkins shared library or a Grape dependency is loaded by the annotation
+        let src =
+            "@Library('lib@master')\nimport org.foo.Zot\n@Grab('a:b:1') import c.D\nimport e.F\n";
+        let v = lint(src).expect("parses");
+        assert_eq!(
+            v.iter().map(|v| (v.rule, v.line)).collect::<Vec<_>>(),
+            vec![("UnusedImport", 4)]
+        );
+        let dup = lint("@Grab('a:b:1') import c.D\n@Grab('a:b:1') import c.D\nD.go()\n").unwrap();
+        assert_eq!(dup.len(), 1);
+        assert_eq!((dup[0].rule, dup[0].fix.clone()), ("DuplicateImport", None));
     }
 
     #[test]
