@@ -1389,7 +1389,11 @@ fn normalize_spacing_with_lines_diff_fix_and_json() {
 
     // a spacing-only change is a file to reformat in JSON
     d.write("J.groovy", "foo(a,b)\n");
-    let o = run(&d.0, &["--check", "--output-format", "json", "J.groovy"], None);
+    let o = run(
+        &d.0,
+        &["--check", "--output-format", "json", "J.groovy"],
+        None,
+    );
     assert_eq!(o.status.code(), Some(1));
     assert!(
         stdout(&o).contains(&json_file("J.groovy", "would_reformat")),

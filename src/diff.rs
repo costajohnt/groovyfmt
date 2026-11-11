@@ -168,7 +168,8 @@ pub fn format_lines(src: &str, style: &Style, ranges: &[(usize, usize)]) -> Outc
     let (before, after) = (crate::parse(src), crate::parse(&kept));
     if after.root_node().has_error()
         || crate::format::tokens(src, &before) != crate::format::tokens(&kept, &after)
-        || (style.normalize_spacing && crate::format::shape(&before) != crate::format::shape(&after))
+        || (style.normalize_spacing
+            && crate::format::shape(&before) != crate::format::shape(&after))
     {
         return Outcome::Skipped("token mismatch after formatting");
     }
@@ -281,7 +282,11 @@ mod tests {
                 panic!("{range:?}")
             };
             assert_eq!(out, want, "{range:?}");
-            assert_eq!(format_lines(&out, &style, &[range]), Outcome::Unchanged, "{range:?}");
+            assert_eq!(
+                format_lines(&out, &style, &[range]),
+                Outcome::Unchanged,
+                "{range:?}"
+            );
         }
     }
 }
