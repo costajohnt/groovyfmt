@@ -41,7 +41,7 @@ The comparison flatters groovyfmt somewhat. It skips the 9 spock files it can't 
 | [pre-commit](#pre-commit) | available since 0.9.1 |
 | [GitHub Action](#github-actions) | available since 0.9.1 |
 | [Gradle plugin](#gradle) | not published yet; works today from a checkout with `includeBuild` |
-| [npm](#npm) (`npx groovyfmt`) | not published yet |
+| [npm](#npm) (`npx groovyfmt`) | available since 0.9.1 |
 | [Homebrew](#homebrew) | available: `brew install costajohnt/tap/groovyfmt` |
 | [Docker image](#docker) | not published yet |
 
@@ -93,7 +93,7 @@ The Groovy grammar is vendored in the repository (`grammar/`), so this fetches o
 
 ### npm
 
-Not published yet. Once it is, `npx groovyfmt` runs it without installing, and `npm install --save-dev groovyfmt` adds it to a project. The package downloads only the binary for your platform (Linux or macOS, x64 or arm64, or Windows x64).
+`npx groovyfmt` runs it without installing, and `npm install --save-dev groovyfmt` adds it to a project. The package downloads only the binary for your platform (Linux or macOS, x64 or arm64, or Windows x64).
 
 ### Homebrew
 
