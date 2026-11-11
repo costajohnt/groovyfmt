@@ -103,7 +103,7 @@ With no paths it works on the current directory. Directories are searched for `*
 | `groovyfmt --rules` | list lint rules and whether each is on |
 | `groovyfmt --suggest-style` | suggest the indent settings that fit the code, writing nothing (see [Configuration](#configuration)) |
 
-Options: `--config <file>`, `--indent <n>`, `--stdin-filepath <path>` (see [Editors](#editors)), `--output-format text|github`, `--strict` (list skipped files and exit 1 if there are any, with `--check`, `--lint` or in place), `-v` (also list skipped files and timing), and `--` to treat every later argument as a path. Exit status is 0 when clean, 1 when files need formatting or lint found something (or, with `--strict`, files were skipped), and 2 on errors (bad arguments, bad config, unreadable files, or `--stdin` input that can't be formatted).
+Options: `--config <file>`, `--indent <n>`, `--stdin-filepath <path>` (see [Editors](#editors)), `--output-format text|github|json|sarif` (see [Machine-readable output](#machine-readable-output)), `--strict` (list skipped files and exit 1 if there are any, with `--check`, `--lint` or in place), `-v` (also list skipped files and timing), and `--` to treat every later argument as a path. Exit status is 0 when clean, 1 when files need formatting or lint found something (or, with `--strict`, files were skipped), and 2 on errors (bad arguments, bad config, unreadable files, or `--stdin` input that can't be formatted).
 
 ### Parse errors
 
@@ -117,6 +117,43 @@ could not parse 2 of 31 files
 ```
 
 Columns count characters. The message names the bracket left open when there is one, else quotes the text the grammar stopped at and says where it was (in an argument list, at the top level). It says groovyfmt could not parse the code, not that the code is wrong: the grammar is not the Groovy compiler, and about 0.5% of valid files don't parse (see [Coverage](#coverage)). Exit status is 0 when every file parses, 1 when one doesn't, 2 on errors; `--output-format github` turns each place into an annotation.
+
+### Machine-readable output
+
+`--output-format json` works with `--check`, `--lint`, `--syntax` and formatting in place. stdout then holds one JSON document and nothing else, one line per file; the summary line is left out and so are the `-v` / `--strict` lists of skipped files, which the document already has. stderr still gets errors and `-v`'s `config:` lines. Exit statuses are unchanged; exit 2 with an empty stdout is a usage or config error.
+
+```console
+$ groovyfmt --lint --output-format json
+{"version":1,"files":[
+{"path":"A.groovy","status":"unchanged","skip_reason":null,"diagnostics":[{"rule":"UnusedImport","severity":"warning","message":"The [a.b.Unused] import is never referenced","line":1,"column":1,"end_line":1,"end_column":18,"fixable":false}]},
+{"path":"Broken.groovy","status":"skipped","skip_reason":"parse error","diagnostics":[{"rule":"ParseError","severity":"warning","message":"expected `}` to close the `{` on line 1","line":1,"column":10,"end_line":1,"end_column":10,"fixable":false}]}
+],"summary":{"files":2,"unchanged":1,"would_reformat":0,"reformatted":0,"skipped":1,"errors":0,"diagnostics":2}}
+```
+
+The schema is versioned: `version` changes whenever a field is removed or changes meaning (new fields may be added within a version).
+
+| Field | Meaning |
+|---|---|
+| `version` | `1` |
+| `files[].path` | the file as the text output names it, relative to where groovyfmt runs when it was found by a walk from there (a name that isn't UTF-8 is shown with replacement characters) |
+| `files[].status` | `unchanged`, `would_reformat` (`--check`), `reformatted` (in place), `skipped` (not parsed, not UTF-8, over 10 MB, or not formattable) or `error` (unreadable, or the write failed). `--lint` and `--syntax` never change files, so a file they read is `unchanged` |
+| `files[].skip_reason` | for `skipped` and `error`, why (`parse error`, `not valid UTF-8`, an I/O error); else `null` |
+| `files[].diagnostics[]` | lint violations (`--lint`, enabled rules only) and, for a file that doesn't parse, the places groovyfmt could not parse (rule `ParseError`, in every mode, at most 10 per file) |
+| `rule`, `severity`, `message` | the rule name, `warning`, and the message text (the same as the text output, unescaped) |
+| `line`, `column`, `end_line`, `end_column` | 1-based; columns count characters; the end is just past the flagged code |
+| `fixable` | whether a fix exists for this violation |
+| `summary` | counts of files by status (`errors` counts `error`) and of diagnostics |
+
+Strings are standard JSON. Every control character is escaped, and so is a `[` after `##` (as `\u005b`), so file names and quoted source can't act as terminal escapes or GitHub Actions workflow commands when the document is printed in a log; a JSON parser reads back the original text.
+
+`--output-format sarif` (with `--lint` or `--syntax`) prints a SARIF 2.1.0 log of the same diagnostics, with every rule (and `ParseError`) described from the rule table, for GitHub code scanning:
+
+```yaml
+- run: groovyfmt --lint --output-format sarif > groovyfmt.sarif || true
+- uses: github/codeql-action/upload-sarif@v4
+  with:
+    sarif_file: groovyfmt.sarif
+```
 
 ### What formatting changes
 

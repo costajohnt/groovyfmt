@@ -1,6 +1,7 @@
 pub mod config;
 pub mod format;
 pub mod lint;
+pub mod report;
 pub mod syntax;
 
 use std::path::Path;

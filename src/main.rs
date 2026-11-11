@@ -1,6 +1,7 @@
 use groovyfmt::config::{self, Config, Resolver};
 use groovyfmt::format::{Outcome, Style, format};
 use groovyfmt::lint::{self, RULES};
+use groovyfmt::report::{self, Diagnostic, FileReport};
 use groovyfmt::syntax::{self, SyntaxError};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
@@ -40,7 +41,9 @@ Options:
       --config <FILE>      Use FILE for every file instead of the nearest config
       --indent <N>         Spaces per indent level, or the tab width with use_tabs
                            (overrides the config file)
-      --output-format <F>  text (default) or github (GitHub Actions annotations)
+      --output-format <F>  text (default), github (GitHub Actions annotations), json
+                           (--check, --lint, --syntax, in place: one JSON document on
+                           stdout, schema in the README) or sarif (--lint, --syntax)
       --rules              List lint rules and whether each is on, then exit
       --strict             List skipped files (unparseable, not UTF-8, too large) and
                            exit 1 if there are any, so CI can't pass on unchecked files
@@ -63,8 +66,16 @@ struct Args {
     stdin_filepath: Option<PathBuf>,
     indent: Option<usize>,
     github: bool,
+    /// `--output-format json` or `sarif`: one document on stdout instead of report lines
+    machine: Option<Machine>,
     verbose: bool,
     strict: bool,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Machine {
+    Json,
+    Sarif,
 }
 
 #[derive(Default, PartialEq)]
@@ -169,10 +180,12 @@ fn parse_args() -> Args {
                 );
             }
             "--output-format" => match value("--output-format").as_str() {
-                "text" => a.github = false,
-                "github" => a.github = true,
+                "text" => (a.github, a.machine) = (false, None),
+                "github" => (a.github, a.machine) = (true, None),
+                "json" => (a.github, a.machine) = (false, Some(Machine::Json)),
+                "sarif" => (a.github, a.machine) = (false, Some(Machine::Sarif)),
                 other => die(format!(
-                    "unknown --output-format `{other}` (text or github)"
+                    "unknown --output-format `{other}` (text, github, json or sarif)"
                 )),
             },
             f if f.starts_with('-') && f != "-" => {
@@ -190,6 +203,15 @@ fn parse_args() -> Args {
     }
     if a.mode == Mode::Stdin && !a.paths.is_empty() {
         die("--stdin reads stdin and takes no paths (name the file with --stdin-filepath)");
+    }
+    match (a.machine, &a.mode) {
+        (Some(Machine::Json), Mode::Write | Mode::Check | Mode::Lint | Mode::Syntax)
+        | (Some(Machine::Sarif), Mode::Lint | Mode::Syntax)
+        | (None, _) => {}
+        (Some(Machine::Json), _) => {
+            die("--output-format json works with --check, --lint, --syntax and formatting in place")
+        }
+        (Some(Machine::Sarif), _) => die("--output-format sarif works with --lint and --syntax"),
     }
     if a.indent.is_some() && a.mode == Mode::SuggestStyle {
         die("--indent can't be combined with --suggest-style, which tries the indents itself");
@@ -658,6 +680,89 @@ fn to_stderr(line: &str) {
     eprintln!("{line}");
 }
 
+/// The reason given for a file that doesn't parse.
+const PARSE_ERROR: &str = "parse error";
+
+fn parse_diagnostics((errs, _): Diag) -> Vec<Diagnostic> {
+    errs.into_iter()
+        .map(|e| Diagnostic {
+            rule: report::PARSE_RULE,
+            message: e.message,
+            line: e.line,
+            col: e.col,
+            end_line: e.end_line,
+            end_col: e.end_col,
+            fixable: false,
+        })
+        .collect()
+}
+
+fn lint_diagnostic(v: lint::Violation) -> Diagnostic {
+    Diagnostic {
+        rule: v.rule,
+        message: v.message,
+        line: v.line,
+        col: v.col,
+        end_line: v.end_line,
+        end_col: v.end_col,
+        fixable: false,
+    }
+}
+
+/// Where a run's results go. As text, each mode prints its own lines as it goes and the
+/// summary line here; with `--output-format json` or `sarif`, the files are collected and
+/// printed as one document on stdout instead, with no summary line (errors still go to
+/// stderr).
+struct Out {
+    machine: Option<Machine>,
+    files: Vec<FileReport>,
+}
+
+impl Out {
+    fn new(a: &Args) -> Out {
+        Out {
+            machine: a.machine,
+            files: Vec::new(),
+        }
+    }
+
+    fn text(&self) -> bool {
+        self.machine.is_none()
+    }
+
+    fn file(
+        &mut self,
+        path: &Path,
+        status: &'static str,
+        reason: Option<&str>,
+        diagnostics: Vec<Diagnostic>,
+    ) {
+        if !self.text() {
+            self.files.push(FileReport {
+                path: path.display().to_string(),
+                status,
+                reason: reason.map(String::from),
+                diagnostics,
+            });
+        }
+    }
+
+    /// `e` names the file first (`read` errors) or not (write errors); the record doesn't.
+    fn error(&mut self, path: &Path, e: &str) {
+        let e = e.strip_prefix(&format!("{}: ", shown(path))).unwrap_or(e);
+        self.file(path, "error", Some(e), Vec::new());
+    }
+
+    fn summary(self, line: &str) {
+        let doc = match self.machine {
+            None => return eprintln!("{line}"),
+            Some(Machine::Json) => report::json(&self.files),
+            Some(Machine::Sarif) => report::sarif(&self.files, env!("CARGO_PKG_VERSION")),
+        };
+        let _ = std::io::stdout().lock().write_all(doc.as_bytes());
+    }
+}
+
 fn main() {
     // a panic message can quote source text (a bad string slice prints the string), and
     // par_map turns the panic into an error but the hook still prints it first
@@ -757,7 +862,9 @@ fn stdin(res: &mut Resolver, a: &Args) -> i32 {
 fn fmt(files: &[PathBuf], links: &HashMap<PathBuf, PathBuf>, cfgs: &Configs, a: &Args) -> i32 {
     let t = Instant::now();
     let check = a.mode == Mode::Check;
-    let listed = a.verbose || a.strict;
+    let mut out = Out::new(a);
+    let listed = (a.verbose || a.strict) && out.text();
+    let want_diag = listed || !out.text();
     // Each worker writes (or, for --check, drops) the new text itself, so no more than one
     // output per thread is alive at once; only the small per-file results are kept, and
     // they're reported below in input order.
@@ -769,7 +876,7 @@ fn fmt(files: &[PathBuf], links: &HashMap<PathBuf, PathBuf>, cfgs: &Configs, a: 
         };
         Ok(match format(&src, &cfgs[p].style) {
             Outcome::Unchanged => Ok(None),
-            Outcome::Skipped(why) => Err((why, diag_if(listed, &src))),
+            Outcome::Skipped(why) => Err((why, diag_if(want_diag, &src))),
             Outcome::Formatted(_) if check => Ok(Some(Ok(()))),
             Outcome::Formatted(out) => Ok(Some(write_atomic(real, &out, id))),
         })
@@ -780,20 +887,30 @@ fn fmt(files: &[PathBuf], links: &HashMap<PathBuf, PathBuf>, cfgs: &Configs, a: 
             Err(e) => {
                 eprintln!("groovyfmt: {e}");
                 failed = true;
+                out.error(path, &e);
             }
-            Ok(Ok(None)) => {}
+            Ok(Ok(None)) => out.file(path, "unchanged", None, Vec::new()),
             Ok(Err((why, diag))) => {
                 skipped += 1;
                 if listed {
                     eprintln!("skipped {}: {why}", shown(path));
                     report_syntax(&shown(path), &diag, false, to_stderr);
                 }
+                out.file(path, "skipped", Some(why), parse_diagnostics(diag));
             }
             Ok(Ok(Some(written))) => {
                 changed += 1;
                 if let Err(e) = written {
                     eprintln!("groovyfmt: {}: {e}", shown(path));
                     failed = true;
+                    out.error(path, &e.to_string());
+                } else if !out.text() {
+                    let status = if check {
+                        "would_reformat"
+                    } else {
+                        "reformatted"
+                    };
+                    out.file(path, status, None, Vec::new());
                 } else if check && a.github {
                     say(&format!(
                         "::error file={}::File is not formatted. Run groovyfmt to fix.",
@@ -817,7 +934,7 @@ fn fmt(files: &[PathBuf], links: &HashMap<PathBuf, PathBuf>, cfgs: &Configs, a: 
     if a.verbose {
         summary += &format!(" in {:.2}s", t.elapsed().as_secs_f64());
     }
-    eprintln!("{summary}");
+    out.summary(&summary);
     if failed {
         2
     } else {
@@ -827,11 +944,13 @@ fn fmt(files: &[PathBuf], links: &HashMap<PathBuf, PathBuf>, cfgs: &Configs, a: 
 
 fn lint_files(files: &[PathBuf], cfgs: &Configs, a: &Args, stats_only: bool) -> i32 {
     let t = Instant::now();
-    let listed = a.verbose || a.strict;
+    let mut out = Out::new(a);
+    let listed = (a.verbose || a.strict) && out.text();
+    let want_diag = listed || !out.text();
     let results = par_map(files, |p| {
         read(p).map(|src| {
             let src = src.map_err(|why| (why, Diag::default()))?;
-            lint::lint_file(p, &src).map_err(|why| (why, diag_if(listed, &src)))
+            lint::lint_file(p, &src).map_err(|why| (why, diag_if(want_diag, &src)))
         })
     });
     let (mut skipped, mut total, mut failed) = (0usize, 0usize, false);
@@ -841,6 +960,7 @@ fn lint_files(files: &[PathBuf], cfgs: &Configs, a: &Args, stats_only: bool) -> 
             Err(e) => {
                 eprintln!("groovyfmt: {e}");
                 failed = true;
+                out.error(path, &e);
             }
             Ok(Err((why, diag))) => {
                 skipped += 1;
@@ -848,12 +968,28 @@ fn lint_files(files: &[PathBuf], cfgs: &Configs, a: &Args, stats_only: bool) -> 
                     eprintln!("skipped {}: {why}", shown(path));
                     report_syntax(&shown(path), &diag, false, to_stderr);
                 }
+                out.file(path, "skipped", Some(why), parse_diagnostics(diag));
             }
             Ok(Ok(vs)) => {
                 let cfg = &cfgs[path];
-                for v in vs.into_iter().filter(|v| cfg.rule_enabled(v.rule)) {
-                    total += 1;
+                let vs: Vec<_> = vs
+                    .into_iter()
+                    .filter(|v| cfg.rule_enabled(v.rule))
+                    .collect();
+                total += vs.len();
+                for v in &vs {
                     *by_rule.entry(v.rule).or_default() += 1;
+                }
+                if !out.text() {
+                    out.file(
+                        path,
+                        "unchanged",
+                        None,
+                        vs.into_iter().map(lint_diagnostic).collect(),
+                    );
+                    continue;
+                }
+                for v in vs {
                     if stats_only {
                         continue;
                     }
@@ -891,7 +1027,7 @@ fn lint_files(files: &[PathBuf], cfgs: &Configs, a: &Args, stats_only: bool) -> 
     if a.verbose || stats_only {
         summary += &format!(" in {:.2}s", t.elapsed().as_secs_f64());
     }
-    eprintln!("{summary}");
+    out.summary(&summary);
     if failed {
         2
     } else {
@@ -903,23 +1039,29 @@ fn lint_files(files: &[PathBuf], cfgs: &Configs, a: &Args, stats_only: bool) -> 
 fn syntax(files: &[PathBuf], a: &Args) -> i32 {
     let t = Instant::now();
     let results = par_map(files, |p| read(p).map(|src| src.map(|s| syntax::check(&s))));
+    let mut out = Out::new(a);
     let (mut bad, mut skipped, mut failed) = (0usize, 0usize, false);
     for (path, r) in files.iter().zip(results) {
         match r {
             Err(e) => {
                 eprintln!("groovyfmt: {e}");
                 failed = true;
+                out.error(path, &e);
             }
             Ok(Err(why)) => {
                 skipped += 1;
-                if a.verbose || a.strict {
+                if (a.verbose || a.strict) && out.text() {
                     eprintln!("skipped {}: {why}", shown(path));
                 }
+                out.file(path, "skipped", Some(why), Vec::new());
             }
-            Ok(Ok((_, 0))) => {}
+            Ok(Ok((_, 0))) => out.file(path, "unchanged", None, Vec::new()),
             Ok(Ok(diag)) => {
                 bad += 1;
-                report_syntax(&shown(path), &diag, a.github, say);
+                if out.text() {
+                    report_syntax(&shown(path), &diag, a.github, say);
+                }
+                out.file(path, "skipped", Some(PARSE_ERROR), parse_diagnostics(diag));
             }
         }
     }
@@ -930,7 +1072,7 @@ fn syntax(files: &[PathBuf], a: &Args) -> i32 {
     if a.verbose {
         summary += &format!(" in {:.2}s", t.elapsed().as_secs_f64());
     }
-    eprintln!("{summary}");
+    out.summary(&summary);
     if failed {
         2
     } else {

@@ -290,6 +290,208 @@ fn syntax_messages_escape_names_and_quoted_source() {
     );
 }
 
+const LINTED: &str = "import a.b.Unused\ndef a = 1;\n";
+
+/// A, Broken and Ugly: lint violations, a parse error, and a file to format.
+fn json_dir(name: &str) -> Dir {
+    let d = Dir::new(name);
+    d.write("A.groovy", LINTED);
+    d.write("Broken.groovy", "def x = {\n");
+    d.write("Ugly.groovy", UGLY);
+    d
+}
+
+const JSON_A: &str = r#"{"path":"A.groovy","status":"unchanged","skip_reason":null,"diagnostics":[{"rule":"UnusedImport","severity":"warning","message":"The [a.b.Unused] import is never referenced","line":1,"column":1,"end_line":1,"end_column":18,"fixable":false},{"rule":"UnnecessarySemicolon","severity":"warning","message":"Semicolons as line endings can be removed safely","line":2,"column":10,"end_line":2,"end_column":11,"fixable":false}]}"#;
+const JSON_BROKEN: &str = r#"{"path":"Broken.groovy","status":"skipped","skip_reason":"parse error","diagnostics":[{"rule":"ParseError","severity":"warning","message":"expected `}` to close the `{` on line 1","line":1,"column":10,"end_line":1,"end_column":10,"fixable":false}]}"#;
+
+fn json_file(path: &str, status: &str) -> String {
+    format!(r#"{{"path":"{path}","status":"{status}","skip_reason":null,"diagnostics":[]}}"#)
+}
+
+fn json_doc(files: &[&str], summary: &str) -> String {
+    format!(
+        "{{\"version\":1,\"files\":[\n{}\n],\"summary\":{{{summary}}}}}\n",
+        files.join(",\n")
+    )
+}
+
+#[test]
+fn json_output_is_one_document_on_stdout() {
+    let d = json_dir("json");
+    let o = run(&d.0, &["--lint", "--output-format", "json"], None);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(stderr(&o), "", "no summary line");
+    assert_eq!(
+        stdout(&o),
+        json_doc(
+            &[JSON_A, JSON_BROKEN, &json_file("Ugly.groovy", "unchanged")],
+            r#""files":3,"unchanged":2,"would_reformat":0,"reformatted":0,"skipped":1,"errors":0,"diagnostics":3"#
+        )
+    );
+
+    let o = run(&d.0, &["--check", "--output-format=json"], None);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(stderr(&o), "");
+    let unchanged_a = json_file("A.groovy", "unchanged");
+    assert_eq!(
+        stdout(&o),
+        json_doc(
+            &[
+                &unchanged_a,
+                JSON_BROKEN,
+                &json_file("Ugly.groovy", "would_reformat")
+            ],
+            r#""files":3,"unchanged":1,"would_reformat":1,"reformatted":0,"skipped":1,"errors":0,"diagnostics":1"#
+        )
+    );
+    assert_eq!(d.read("Ugly.groovy"), UGLY);
+
+    let o = run(&d.0, &["--syntax", "--output-format", "json"], None);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(
+        stdout(&o),
+        json_doc(
+            &[
+                &unchanged_a,
+                JSON_BROKEN,
+                &json_file("Ugly.groovy", "unchanged")
+            ],
+            r#""files":3,"unchanged":2,"would_reformat":0,"reformatted":0,"skipped":1,"errors":0,"diagnostics":1"#
+        )
+    );
+
+    let o = run(&d.0, &["--output-format", "json", "-v"], None);
+    assert_eq!(o.status.code(), Some(0));
+    assert_eq!(
+        stderr(&o),
+        "config: none found, using defaults\n",
+        "-v keeps its config lines on stderr"
+    );
+    assert_eq!(
+        stdout(&o),
+        json_doc(
+            &[
+                &unchanged_a,
+                JSON_BROKEN,
+                &json_file("Ugly.groovy", "reformatted")
+            ],
+            r#""files":3,"unchanged":1,"would_reformat":0,"reformatted":1,"skipped":1,"errors":0,"diagnostics":1"#
+        )
+    );
+    assert_eq!(d.read("Ugly.groovy"), PRETTY);
+
+    // no files: still a document
+    let e = Dir::new("jsonempty");
+    let o = run(&e.0, &["--check", "--output-format", "json"], None);
+    assert_eq!(o.status.code(), Some(0));
+    assert_eq!(
+        stdout(&o),
+        "{\"version\":1,\"files\":[\n],\"summary\":{\"files\":0,\"unchanged\":0,\"would_reformat\":0,\"reformatted\":0,\"skipped\":0,\"errors\":0,\"diagnostics\":0}}\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn json_records_unreadable_files_as_errors() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = Dir::new("jsonerr");
+    let p = d.write("Locked.groovy", PRETTY);
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // root reads anything; nothing to test then
+    if std::fs::read(&p).is_ok() {
+        return;
+    }
+    let o = run(&d.0, &["--lint", "--output-format", "json"], None);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(stderr(&o).contains("Locked.groovy"), "{}", stderr(&o));
+    assert!(
+        stdout(&o).contains(
+            r#"{"path":"Locked.groovy","status":"error","skip_reason":"Permission denied (os error 13)","diagnostics":[]}"#
+        ),
+        "{}",
+        stdout(&o)
+    );
+}
+
+#[test]
+fn sarif_output_for_lint_and_parse_errors() {
+    let d = json_dir("sarif");
+    let o = run(&d.0, &["--lint", "--output-format", "sarif"], None);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(stderr(&o), "");
+    let s = stdout(&o);
+    assert!(
+        s.starts_with(r#"{"$schema":"https://json.schemastore.org/sarif-2.1.0.json","version":"2.1.0","runs":[{"tool":{"driver":{"name":"groovyfmt","#),
+        "{s}"
+    );
+    assert!(s.contains(r#"{"id":"UnusedImport","shortDescription":{"text":"import whose name (or alias) never appears in code or as a word in a comment"},"defaultConfiguration":{"level":"warning","enabled":true}}"#), "{s}");
+    assert!(s.contains(r#""columnKind":"unicodeCodePoints""#), "{s}");
+    assert!(s.contains(r#"{"ruleId":"UnusedImport","ruleIndex":0,"level":"warning","message":{"text":"The [a.b.Unused] import is never referenced"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"A.groovy"},"region":{"startLine":1,"startColumn":1,"endLine":1,"endColumn":18}}}]}"#), "{s}");
+    // ParseError comes after every rule in the table
+    let parse = format!(
+        r#"{{"ruleId":"ParseError","ruleIndex":{},"level":"warning","message":{{"text":"expected `}}` to close the `{{` on line 1"}},"locations":[{{"physicalLocation":{{"artifactLocation":{{"uri":"Broken.groovy"}},"region":{{"startLine":1,"startColumn":10,"endLine":1,"endColumn":10}}}}}}]}}"#,
+        groovyfmt::lint::RULES.len()
+    );
+    assert!(s.contains(&parse), "{s}");
+    assert_eq!(s.matches("\"ruleId\"").count(), 3);
+
+    for (args, msg) in [
+        (
+            &["--check", "--output-format", "sarif"][..],
+            "sarif works with --lint and --syntax",
+        ),
+        (
+            &["--output-format", "sarif"],
+            "sarif works with --lint and --syntax",
+        ),
+        (
+            &["--stdin", "--output-format", "json"],
+            "json works with --check, --lint, --syntax",
+        ),
+        (&["--rules", "--output-format", "json"], "json works with"),
+    ] {
+        let o = run(&d.0, args, None);
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+        assert_eq!(stdout(&o), "", "{args:?}");
+        assert!(stderr(&o).contains(msg), "{args:?}: {}", stderr(&o));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn json_and_sarif_escape_hostile_names_and_messages() {
+    let d = Dir::new("jsonesc");
+    // quotes, a backslash, a control character, a legacy workflow command and non-ASCII,
+    // in the file name and in the source text a message quotes
+    d.write(
+        "q\"\\\x01##[e]é.groovy",
+        "def m = ['\"##[x]é\x1b': 1, '\"##[x]é\x1b': 2]\n",
+    );
+    let o = run(&d.0, &["--lint", "--output-format", "json"], None);
+    assert_eq!(o.status.code(), Some(1), "{}", stderr(&o));
+    let s = stdout(&o);
+    // `[` is `[`
+    let lb = "\\u005b";
+    let path = format!(r#"{{"path":"q\"\\\u0001##{lb}e]é.groovy","status":"unchanged","#);
+    assert!(s.contains(&path), "{s}");
+    let message =
+        format!("\"message\":\"Key `\\\"##{lb}x]é\\u001b` appears more than once in this map\"");
+    assert!(s.contains(&message), "{s}");
+    let o = run(&d.0, &["--lint", "--output-format", "sarif"], None);
+    let s = stdout(&o);
+    assert!(
+        s.contains(r#""uri":"q%22%5C%01%23%23%5Be%5D%C3%A9.groovy""#),
+        "{s}"
+    );
+    for out in [
+        stdout(&o),
+        stdout(&run(&d.0, &["--lint", "--output-format", "json"], None)),
+    ] {
+        assert!(!out.contains("##["), "{out}");
+        assert!(!out.chars().any(|c| c.is_control() && c != '\n'), "{out:?}");
+    }
+}
+
 #[test]
 fn option_parsing_edge_cases() {
     let d = Dir::new("args");
