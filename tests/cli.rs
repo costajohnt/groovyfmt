@@ -296,7 +296,7 @@ fn json_dir(name: &str) -> Dir {
     d
 }
 
-const JSON_A: &str = r#"{"path":"A.groovy","status":"unchanged","skip_reason":null,"diagnostics":[{"rule":"UnusedImport","severity":"warning","message":"The [a.b.Unused] import is never referenced","line":1,"column":1,"end_line":1,"end_column":18,"fixable":false},{"rule":"UnnecessarySemicolon","severity":"warning","message":"Semicolons as line endings can be removed safely","line":2,"column":10,"end_line":2,"end_column":11,"fixable":false}]}"#;
+const JSON_A: &str = r#"{"path":"A.groovy","status":"unchanged","skip_reason":null,"diagnostics":[{"rule":"UnusedImport","severity":"warning","message":"The [a.b.Unused] import is never referenced","line":1,"column":1,"end_line":1,"end_column":18,"fixable":true},{"rule":"UnnecessarySemicolon","severity":"warning","message":"Semicolons as line endings can be removed safely","line":2,"column":10,"end_line":2,"end_column":11,"fixable":true}]}"#;
 const JSON_BROKEN: &str = r#"{"path":"Broken.groovy","status":"skipped","skip_reason":"parse error","diagnostics":[{"rule":"ParseError","severity":"warning","message":"expected `}` to close the `{` on line 1","line":1,"column":10,"end_line":1,"end_column":10,"fixable":false}]}"#;
 
 fn json_file(path: &str, status: &str) -> String {
@@ -320,7 +320,7 @@ fn json_output_is_one_document_on_stdout() {
         stdout(&o),
         json_doc(
             &[JSON_A, JSON_BROKEN, &json_file("Ugly.groovy", "unchanged")],
-            r#""files":3,"unchanged":2,"would_reformat":0,"reformatted":0,"skipped":1,"errors":0,"diagnostics":3"#
+            r#""files":3,"unchanged":2,"would_reformat":0,"reformatted":0,"fixed":0,"skipped":1,"errors":0,"diagnostics":3"#
         )
     );
 
@@ -336,7 +336,7 @@ fn json_output_is_one_document_on_stdout() {
                 JSON_BROKEN,
                 &json_file("Ugly.groovy", "would_reformat")
             ],
-            r#""files":3,"unchanged":1,"would_reformat":1,"reformatted":0,"skipped":1,"errors":0,"diagnostics":1"#
+            r#""files":3,"unchanged":1,"would_reformat":1,"reformatted":0,"fixed":0,"skipped":1,"errors":0,"diagnostics":1"#
         )
     );
     assert_eq!(d.read("Ugly.groovy"), UGLY);
@@ -351,7 +351,7 @@ fn json_output_is_one_document_on_stdout() {
                 JSON_BROKEN,
                 &json_file("Ugly.groovy", "unchanged")
             ],
-            r#""files":3,"unchanged":2,"would_reformat":0,"reformatted":0,"skipped":1,"errors":0,"diagnostics":1"#
+            r#""files":3,"unchanged":2,"would_reformat":0,"reformatted":0,"fixed":0,"skipped":1,"errors":0,"diagnostics":1"#
         )
     );
 
@@ -370,7 +370,7 @@ fn json_output_is_one_document_on_stdout() {
                 JSON_BROKEN,
                 &json_file("Ugly.groovy", "reformatted")
             ],
-            r#""files":3,"unchanged":1,"would_reformat":0,"reformatted":1,"skipped":1,"errors":0,"diagnostics":1"#
+            r#""files":3,"unchanged":1,"would_reformat":0,"reformatted":1,"fixed":0,"skipped":1,"errors":0,"diagnostics":1"#
         )
     );
     assert_eq!(d.read("Ugly.groovy"), PRETTY);
@@ -381,7 +381,7 @@ fn json_output_is_one_document_on_stdout() {
     assert_eq!(o.status.code(), Some(0));
     assert_eq!(
         stdout(&o),
-        "{\"version\":1,\"files\":[\n],\"summary\":{\"files\":0,\"unchanged\":0,\"would_reformat\":0,\"reformatted\":0,\"skipped\":0,\"errors\":0,\"diagnostics\":0}}\n"
+        "{\"version\":1,\"files\":[\n],\"summary\":{\"files\":0,\"unchanged\":0,\"would_reformat\":0,\"reformatted\":0,\"fixed\":0,\"skipped\":0,\"errors\":0,\"diagnostics\":0}}\n"
     );
 }
 
@@ -480,6 +480,134 @@ fn json_and_sarif_escape_hostile_names_and_messages() {
         assert!(!out.contains("##["), "{out}");
         assert!(!out.chars().any(|c| c.is_control() && c != '\n'), "{out:?}");
     }
+}
+
+const FIXABLE: &str = "import a.Used\nimport a.Unused\nimport a.Used\nimport b.C; import b.D\nimport e.F // why\n\nUsed u = new Used();\nprintln u;\n";
+const FIXED: &str =
+    "import a.Used\nimport b.C; import b.D\nimport e.F // why\n\nUsed u = new Used()\nprintln u\n";
+
+#[test]
+fn lint_fix_removes_imports_and_semicolons_and_reports_the_rest() {
+    let d = Dir::new("fix");
+    d.write("A.groovy", FIXABLE);
+    let l = run(&d.0, &["--lint"], None);
+    assert_eq!(l.status.code(), Some(1));
+    assert_eq!(
+        stdout(&l),
+        "A.groovy:2:1: UnusedImport: The [a.Unused] import is never referenced (fixable)\n\
+         A.groovy:3:1: DuplicateImport: Duplicate import: import a.Used (fixable)\n\
+         A.groovy:4:1: UnusedImport: The [b.C] import is never referenced\n\
+         A.groovy:4:13: UnusedImport: The [b.D] import is never referenced\n\
+         A.groovy:5:1: UnusedImport: The [e.F] import is never referenced\n\
+         A.groovy:7:20: UnnecessarySemicolon: Semicolons as line endings can be removed safely (fixable)\n\
+         A.groovy:8:10: UnnecessarySemicolon: Semicolons as line endings can be removed safely (fixable)\n"
+    );
+    assert_eq!(d.read("A.groovy"), FIXABLE, "plain --lint never writes");
+
+    let f = run(&d.0, &["--lint", "--fix"], None);
+    assert_eq!(f.status.code(), Some(1), "violations remain");
+    assert_eq!(d.read("A.groovy"), FIXED);
+    assert_eq!(
+        stdout(&f),
+        "A.groovy:2:1: UnusedImport: The [b.C] import is never referenced\n\
+         A.groovy:2:13: UnusedImport: The [b.D] import is never referenced\n\
+         A.groovy:3:1: UnusedImport: The [e.F] import is never referenced\n"
+    );
+    assert_eq!(
+        stderr(&f),
+        "fixed 4 violations in 1 files (DuplicateImport 1, UnnecessarySemicolon 2, UnusedImport 1)\n\
+         3 violations in 1 files (UnusedImport 3)\n"
+    );
+    // a second run changes nothing
+    let again = run(&d.0, &["--lint", "--fix"], None);
+    assert_eq!(again.status.code(), Some(1));
+    assert_eq!(d.read("A.groovy"), FIXED);
+    assert!(
+        stderr(&again).starts_with("fixed 0 violations in 0 files\n"),
+        "{}",
+        stderr(&again)
+    );
+
+    // nothing left: exit 0; a disabled rule is neither fixed nor reported
+    d.write("B.groovy", "x = 1;\n");
+    d.write(".groovyfmt.toml", "[lint]\nUnusedImport = false\n");
+    let o = run(&d.0, &["--lint", "--fix", "B.groovy", "A.groovy"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(d.read("B.groovy"), "x = 1\n");
+    assert_eq!(d.read("A.groovy"), FIXED);
+
+    // a file that doesn't parse is never touched
+    d.write("Broken.groovy", "import a.B;\ndef x = {\n");
+    let o = run(&d.0, &["--lint", "--fix", "Broken.groovy"], None);
+    assert_eq!(o.status.code(), Some(0));
+    assert_eq!(d.read("Broken.groovy"), "import a.B;\ndef x = {\n");
+
+    for args in [
+        &["--fix"][..],
+        &["--check", "--fix"],
+        &["--syntax", "--fix"],
+    ] {
+        let o = run(&d.0, args, None);
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+        assert!(stderr(&o).contains("--fix needs --lint"), "{args:?}");
+    }
+}
+
+#[test]
+fn lint_fix_json_reports_fixed_files() {
+    let d = Dir::new("fixjson");
+    d.write("A.groovy", FIXABLE);
+    d.write("Clean.groovy", "x = 1\n");
+    let o = run(&d.0, &["--lint", "--fix", "--output-format", "json"], None);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(stderr(&o), "");
+    let s = stdout(&o);
+    assert!(
+        s.contains(r#"{"path":"A.groovy","status":"fixed","skip_reason":null,"diagnostics":[{"rule":"UnusedImport","severity":"warning","message":"The [b.C] import is never referenced","line":2,"column":1,"end_line":2,"end_column":11,"fixable":false},"#),
+        "{s}"
+    );
+    assert!(
+        s.contains(r#"{"path":"Clean.groovy","status":"unchanged","#),
+        "{s}"
+    );
+    assert!(s.ends_with(&(r#""summary":{"files":2,"unchanged":1,"would_reformat":0,"reformatted":0,"fixed":1,"skipped":0,"errors":0,"diagnostics":3}}"#.to_owned() + "\n")), "{s}");
+}
+
+#[cfg(unix)]
+#[test]
+fn lint_fix_writes_like_formatting_does() {
+    use std::os::unix::fs::MetadataExt;
+    // a link out of the working directory is refused; a link inside is fixed through
+    let d = Dir::new("fixlinks");
+    let out = Dir::new("fixlinksout");
+    let target = out.write("Real.groovy", "x = 1;\n");
+    std::os::unix::fs::symlink(&target, d.0.join("x.groovy")).unwrap();
+    d.write("real/In.groovy", "y = 2;\n");
+    std::os::unix::fs::symlink("real/In.groovy", d.0.join("in.groovy")).unwrap();
+    let o = run(&d.0, &["--lint", "--fix", "x.groovy", "in.groovy"], None);
+    assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains("x.groovy: symlink target is outside the working directory"),
+        "{}",
+        stderr(&o)
+    );
+    assert_eq!(out.read("Real.groovy"), "x = 1;\n");
+    assert_eq!(d.read("real/In.groovy"), "y = 2\n");
+    assert!(
+        std::fs::symlink_metadata(d.0.join("in.groovy"))
+            .unwrap()
+            .is_symlink()
+    );
+    // excluded files are left alone; hard links stay linked
+    d.write(".groovyfmt.toml", "exclude = [\"gen\"]\n");
+    d.write("gen/G.groovy", "z = 3;\n");
+    let h = d.write("H.groovy", "h = 4;\n");
+    std::fs::hard_link(&h, d.0.join("H2.groovy")).unwrap();
+    let o = run(&d.0, &["--lint", "--fix", "gen/G.groovy", "H.groovy"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(d.read("gen/G.groovy"), "z = 3;\n");
+    assert_eq!(d.read("H2.groovy"), "h = 4\n");
+    assert_eq!(std::fs::metadata(&h).unwrap().nlink(), 2);
 }
 
 #[test]
@@ -1437,7 +1565,7 @@ fn nested_config_excludes_and_lint_apply_only_inside_it() {
     assert_eq!(l.status.code(), Some(1), "{}", stderr(&l));
     assert_eq!(
         stdout(&l),
-        "I.groovy:1:1: UnusedImport: The [a.b.Unused] import is never referenced\n"
+        "I.groovy:1:1: UnusedImport: The [a.b.Unused] import is never referenced (fixable)\n"
     );
 }
 

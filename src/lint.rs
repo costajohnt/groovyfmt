@@ -104,6 +104,9 @@ pub struct Violation {
     pub end_col: usize,
     pub rule: &'static str,
     pub message: String,
+    /// The bytes `--fix` deletes to fix it, for the rules it fixes: the `;`, or the import's
+    /// whole lines when nothing else is on them.
+    pub fix: Option<std::ops::Range<usize>>,
 }
 
 pub fn lint(src: &str) -> Result<Vec<Violation>, &'static str> {
@@ -181,7 +184,20 @@ fn at(n: Node, rule: &'static str, message: String) -> Violation {
         end_col: e.column + 1,
         rule,
         message,
+        fix: None,
     }
+}
+
+/// The lines holding `n`, with the line break after them, when nothing but whitespace and
+/// a `;` shares them.
+fn own_lines(src: &str, n: Node) -> Option<std::ops::Range<usize>> {
+    let start = src[..n.start_byte()].rfind('\n').map_or(0, |i| i + 1);
+    let end = src[n.end_byte()..]
+        .find('\n')
+        .map_or(src.len(), |i| n.end_byte() + i + 1);
+    let after = src[n.end_byte()..end].trim();
+    (src[start..n.start_byte()].trim().is_empty() && (after.is_empty() || after == ";"))
+        .then_some(start..end)
 }
 
 /// UnusedImport + DuplicateImport.
@@ -226,12 +242,12 @@ fn imports(src: &str, tree: &Tree, v: &mut Vec<Violation>) {
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
+        let fix = own_lines(src, d);
         if !seen.insert(full.clone()) {
-            v.push(at(
-                d,
-                "DuplicateImport",
-                format!("Duplicate import: {full}"),
-            ));
+            v.push(Violation {
+                fix,
+                ..at(d, "DuplicateImport", format!("Duplicate import: {full}"))
+            });
             continue;
         }
         let name = d.child_by_field_name("name").map_or("", |n| text(n, src));
@@ -242,11 +258,14 @@ fn imports(src: &str, tree: &Tree, v: &mut Vec<Violation>) {
             .child_by_field_name("alias")
             .map_or_else(|| name.rsplit('.').next().unwrap_or(name), |a| text(a, src));
         if !symbol.is_empty() && !used.contains(symbol) {
-            v.push(at(
-                d,
-                "UnusedImport",
-                format!("The [{name}] import is never referenced"),
-            ));
+            v.push(Violation {
+                fix,
+                ..at(
+                    d,
+                    "UnusedImport",
+                    format!("The [{name}] import is never referenced"),
+                )
+            });
         }
     }
 }
@@ -318,11 +337,14 @@ fn unnecessary_semicolon(n: Node, rest: &[Node], v: &mut Vec<Violation>) {
         .iter()
         .find(|x| x.child_count() == 0 && !x.kind().contains("comment"));
     if next.is_none_or(|x| x.start_position().row > row && x.kind() != "{") {
-        v.push(at(
-            n,
-            "UnnecessarySemicolon",
-            "Semicolons as line endings can be removed safely".into(),
-        ));
+        v.push(Violation {
+            fix: Some(n.byte_range()),
+            ..at(
+                n,
+                "UnnecessarySemicolon",
+                "Semicolons as line endings can be removed safely".into(),
+            )
+        });
     }
 }
 

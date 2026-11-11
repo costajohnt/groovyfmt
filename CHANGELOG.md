@@ -11,9 +11,11 @@
 - `--` ends the options: every argument after it is a path, even one starting with `-`.
 - `--syntax` only parses, and reports each place groovyfmt could not parse as `path:line:col: could not parse: <message>` (up to 10 per file, then a count of the rest), exiting 1 if any file doesn't parse. The message names a bracket left open, or quotes the text the grammar stopped at and where it was. `-v` and `--strict` print the same lines under each file skipped for a parse error, and `--stdin` prints them after its error.
 - `--output-format json` for `--check`, `--lint`, `--syntax` and formatting in place: one JSON document on stdout with each file's status, skip reason and diagnostics (with end positions) and a summary, in a versioned schema documented in the README. `--output-format sarif` for `--lint` and `--syntax`: a SARIF 2.1.0 log for GitHub code scanning. File names and quoted source are escaped so they can't act as terminal escapes or workflow commands.
+- `--lint --fix` removes unused and duplicate import lines and unnecessary semicolons in place, then reports what remains (exit 1 if anything does). Each fix is checked as formatting is: the result must parse cleanly, keep every other token and the shape of the parse tree, and lint with no new violations, or the file is left untouched and listed as `not fixed`. Files that don't parse are never fixed; writes follow the same symlink, owner, hard-link and `exclude` rules as formatting.
 
 ### Changed
 
+- `--lint` text output ends each violation `--lint --fix` would fix with ` (fixable)` (`UnusedImport`, `DuplicateImport` and `UnnecessarySemicolon`; an import sharing its line with anything but a `;` isn't fixable). The `github` format is unchanged.
 - Each thread reuses one parser instead of creating one per parse (two to four per file): about 2% less CPU time on the 23,766-file corpus (`--stats`, 44.4 s user against 45.2 s, mean of 5 runs each).
 
 ### Fixed
