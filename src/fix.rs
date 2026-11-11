@@ -25,21 +25,24 @@ pub enum Fix {
 const MAX_ROUNDS: usize = 4;
 
 /// Fix the violations of `src`, the text of `path` (which decides the Jenkins, Gradle and
-/// Spock rules), that have a fix and that `wanted` (a rule enabled in the config) accepts.
-pub fn fix(path: &Path, src: &str, wanted: impl Fn(&Violation) -> bool) -> Fix {
-    let auto = |v: &Violation| v.fix.is_some() && wanted(v);
+/// Spock rules), that have a fix and that `wanted` (a rule enabled in the config, and not
+/// in the baseline) accepts; it is also given the text the violation is in.
+pub fn fix(path: &Path, src: &str, wanted: impl Fn(&Violation, &str) -> bool) -> Fix {
     let mut text = src.to_string();
     let mut fixed = Vec::new();
     for _ in 0..MAX_ROUNDS {
         let Ok(vs) = lint_file(path, &text) else {
             return Fix::Refused("parse error");
         };
-        let (todo, keep): (Vec<_>, Vec<_>) = vs.into_iter().partition(|v| auto(v));
+        let (todo, keep): (Vec<_>, Vec<_>) = vs
+            .into_iter()
+            .partition(|v| v.fix.is_some() && wanted(v, &text));
         if todo.is_empty() {
             break;
         }
         let removed = ranges(&todo);
         let out = delete(&text, &removed);
+        let auto = |v: &Violation| v.fix.is_some() && wanted(v, &out);
         if let Err(why) = check(path, &text, &out, &removed, keep, &auto) {
             return Fix::Refused(why);
         }
@@ -177,7 +180,7 @@ mod tests {
     use crate::lint::lint;
 
     fn fixed(src: &str) -> Fix {
-        fix(Path::new("A.groovy"), src, |_| true)
+        fix(Path::new("A.groovy"), src, |_, _| true)
     }
 
     fn text(src: &str) -> String {
@@ -231,6 +234,15 @@ mod tests {
             "package a\nimport a.C\nimport java.util.Date\nclass C { B b; Date d }\n"
         );
         assert_eq!(fixed(&text(src)), Fix::Nothing, "idempotent");
+    }
+
+    #[test]
+    fn suppressed_violations_are_not_fixed() {
+        let src = "// groovyfmt-ignore UnusedImport\nimport a.B\nx = 1; // groovyfmt-ignore\n@SuppressWarnings('UnnecessarySemicolon')\ndef f() { g(); \n}\nimport c.D\n";
+        assert_eq!(
+            text(src),
+            "// groovyfmt-ignore UnusedImport\nimport a.B\nx = 1; // groovyfmt-ignore\n@SuppressWarnings('UnnecessarySemicolon')\ndef f() { g(); \n}\n"
+        );
     }
 
     #[test]
@@ -293,13 +305,13 @@ mod tests {
     #[test]
     fn only_wanted_rules_are_fixed() {
         let src = "import a.B;\nx = 1;\n";
-        let semis = |v: &Violation| v.rule == "UnnecessarySemicolon";
+        let semis = |v: &Violation, _: &str| v.rule == "UnnecessarySemicolon";
         let Fix::Fixed(t, f) = fix(Path::new("A.groovy"), src, semis) else {
             panic!()
         };
         assert_eq!((t.as_str(), f.len()), ("import a.B\nx = 1\n", 2));
         // the import line goes with its `;` even when UnnecessarySemicolon is off
-        let imports = |v: &Violation| v.rule == "UnusedImport";
+        let imports = |v: &Violation, _: &str| v.rule == "UnusedImport";
         let Fix::Fixed(t, f) = fix(Path::new("A.groovy"), src, imports) else {
             panic!()
         };

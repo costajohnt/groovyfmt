@@ -11,6 +11,7 @@
 //! indent_after_labels = false # indent Spock when:/then: blocks under their label
 //! normalize_spacing = false   # also fix the spaces between tokens within a line
 //! exclude = ["generated/**"]  # globs relative to this file's directory
+//! baseline = ".groovyfmt-baseline.json" # lint reports only what this file doesn't hold
 //!
 //! [lint]                      # rule name = on/off; omitted rules use their default
 //! UnnecessaryGString = true
@@ -36,6 +37,8 @@ pub struct Config {
     pub root: PathBuf,
     /// The file this was loaded from, as given to `load`; `None` for the defaults.
     pub file: Option<PathBuf>,
+    /// The lint baseline, relative to `root` until `load` makes it absolute.
+    pub baseline: Option<PathBuf>,
 }
 
 impl Config {
@@ -102,9 +105,15 @@ impl Config {
                 ("exclude", _) => {
                     return Err("`exclude` must be a list of glob strings".into());
                 }
+                ("baseline", toml::Value::String(f)) if !f.is_empty() => {
+                    cfg.baseline = Some(PathBuf::from(f))
+                }
+                ("baseline", _) => {
+                    return Err("`baseline` must be the path of a baseline file".into());
+                }
                 (other, _) => {
                     return Err(format!(
-                        "unknown key `{other}` (expected `indent`, `continuation_indent`, `use_tabs`, `indent_after_labels`, `normalize_spacing`, `exclude` or `[lint]`)"
+                        "unknown key `{other}` (expected `indent`, `continuation_indent`, `use_tabs`, `indent_after_labels`, `normalize_spacing`, `exclude`, `baseline` or `[lint]`)"
                     ));
                 }
             }
@@ -118,6 +127,7 @@ impl Config {
         let abs = normalize(&std::env::current_dir().unwrap_or_default().join(path));
         cfg.root = abs.parent().map(Path::to_path_buf).unwrap_or_default();
         cfg.file = Some(path.to_path_buf());
+        cfg.baseline = cfg.baseline.map(|b| cfg.root.join(b));
         Ok(cfg)
     }
 

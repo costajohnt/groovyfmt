@@ -248,7 +248,9 @@ pub(super) fn check(
             scope_of.get(&d.id()).is_some_and(Option::is_some)
         } else {
             has_modifier(*d, "private")
-        }) && annotations(src, *d).is_empty()
+        }) && annotations(src, *d)
+            .iter()
+            .all(|a| matches!(*a, "SuppressWarnings" | "Deprecated"))
     });
     if decls.is_empty() {
         return;
