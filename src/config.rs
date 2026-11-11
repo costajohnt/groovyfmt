@@ -430,21 +430,23 @@ mod tests {
 
     #[test]
     fn stacked_double_stars_stay_polynomial() {
-        // exponential backtracking took minutes on this; a config from a fork PR could hang CI
-        let pat: Vec<&str> = std::iter::repeat_n(["**", "a"], 22)
-            .flatten()
-            .chain(["zz"])
-            .collect();
-        let path = vec!["a"; 44];
-        let t = std::time::Instant::now();
-        assert!(!glob(&pat, &path));
-        let cfg = Config {
-            exclude: vec![pat.join("/")],
-            root: PathBuf::from("/p"),
-            ..Config::default()
+        // exponential backtracking took minutes on 22 stars; a config from a fork PR could
+        // hang CI. Twice the stars may cost at most 8 times as much (it is quadratic: 4x).
+        let run = |stars: usize| {
+            let pat: Vec<&str> = std::iter::repeat_n(["**", "a"], stars)
+                .flatten()
+                .chain(["zz"])
+                .collect();
+            let path = vec!["a"; 2 * stars];
+            assert!(!glob(&pat, &path));
+            let cfg = Config {
+                exclude: vec![pat.join("/")],
+                root: PathBuf::from("/p"),
+                ..Config::default()
+            };
+            assert!(!cfg.excluded(&Path::new("/p").join(path.join("/"))));
         };
-        assert!(!cfg.excluded(&Path::new("/p").join(path.join("/"))));
-        assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
+        crate::scaling::assert_scales("stacked **", run, 11, 2, 8);
         assert!(
             segment("*b", "*xb"),
             "a literal * in a name doesn't stop a star"

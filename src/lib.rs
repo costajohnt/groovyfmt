@@ -98,6 +98,78 @@ pub fn is_skipped_dir(path: &Path) -> bool {
     name.starts_with('.') || matches!(name, "build" | "out" | "target" | "node_modules")
 }
 
+/// For the tests that guard against quadratic (or worse) blow-ups: how cost grows with input
+/// size, measured so that a loaded machine doesn't fail them. A fixed limit in seconds did:
+/// on a shared box at load 15 the linear tests took 3 to 4 times longer, in parallel with the
+/// rest of the suite.
+#[cfg(test)]
+pub(crate) mod scaling {
+    use std::time::{Duration, Instant};
+
+    /// The CPU time this thread has used, where the OS reports it without a dependency
+    /// (Linux: `/proc/thread-self/stat`), so other tests and processes don't count.
+    fn thread_cpu() -> Option<Duration> {
+        let s = std::fs::read_to_string("/proc/thread-self/stat").ok()?;
+        // after the parenthesized command name comes field 3; utime and stime are 14 and 15
+        let fields: Vec<&str> = s.get(s.rfind(')')? + 2..)?.split(' ').collect();
+        let ticks = fields.get(11)?.parse::<u64>().ok()? + fields.get(12)?.parse::<u64>().ok()?;
+        // USER_HZ is 100 on every Linux target
+        Some(Duration::from_millis(ticks * 10))
+    }
+
+    /// How long `f(n)` takes: this thread's CPU time where available, else wall time.
+    fn cost(f: &impl Fn(usize), n: usize) -> Duration {
+        let (cpu, wall) = (thread_cpu(), Instant::now());
+        f(n);
+        match (cpu, thread_cpu()) {
+            (Some(a), Some(b)) => b.saturating_sub(a),
+            _ => wall.elapsed(),
+        }
+    }
+
+    /// Assert that `f` on `k` times the input `n` costs at most `bound` times what it costs
+    /// on `n`: under 8x for 4x the input passes anything linear (or n log n) and fails
+    /// anything quadratic (16x). Below 50 ms a cost counts as 50 ms, the clock's resolution
+    /// with room to spare, and a failure is measured again once, so a burst of noise in
+    /// either run can't fail it.
+    pub fn assert_scales(what: &str, f: impl Fn(usize), n: usize, k: usize, bound: u32) {
+        const FLOOR: Duration = Duration::from_millis(50);
+        let mut seen = (Duration::ZERO, Duration::ZERO);
+        for _ in 0..2 {
+            let small = cost(&f, n).max(FLOOR);
+            let big = cost(&f, n * k);
+            if big <= small * bound {
+                return;
+            }
+            seen = (small, big);
+        }
+        panic!(
+            "{what}: {k}x the input took {:?} against {:?}, over {bound}x",
+            seen.1, seen.0
+        );
+    }
+
+    fn linear(n: usize) {
+        std::hint::black_box((0..n as u64 * 100_000).fold(0u64, |a, b| a ^ b));
+    }
+
+    fn quadratic(n: usize) {
+        let n = n as u64 * 100;
+        std::hint::black_box((0..n * n).fold(0u64, |a, b| a ^ b));
+    }
+
+    #[test]
+    fn linear_work_passes() {
+        assert_scales("linear", linear, 40, 4, 8);
+    }
+
+    #[test]
+    #[should_panic(expected = "over 8x")]
+    fn quadratic_work_fails() {
+        assert_scales("quadratic", quadratic, 20, 4, 8);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// Every node kind and field name matched as a string in format.rs and lint.rs. A grammar
@@ -200,6 +272,36 @@ mod tests {
             "list_literal",
             "do_while_statement",
             "synchronized_statement",
+            // lint/basic.rs, lint/imports.rs, lint/unused.rs
+            "switch_default",
+            "static_initializer",
+            "instance_initializer",
+            "cast_expression",
+            "ternary_expression",
+            "elvis_expression",
+            "assert_statement",
+            "throw_statement",
+            "return_statement",
+            "break_statement",
+            "continue_statement",
+            "unary_expression",
+            "field_access",
+            "subscript_expression",
+            "field_declaration",
+            "variable_declarator",
+            "formal_parameters",
+            "formal_parameter",
+            "object_creation_expression",
+            "list_literal",
+            "constructor_declaration",
+            "lambda_expression",
+            "spread_arguments",
+            "spread_map_entry",
+            "interface_declaration",
+            "enum_declaration",
+            "trait_declaration",
+            "record_declaration",
+            "annotation_type_declaration",
         ];
         for k in named {
             assert_ne!(lang.id_for_node_kind(k, true), 0, "missing node kind {k}");
@@ -232,6 +334,11 @@ mod tests {
             "switch",
             "synchronized",
             "<<",
+            "&&",
+            "!=",
+            "%",
+            "private",
+            "static",
         ] {
             assert_ne!(lang.id_for_node_kind(k, false), 0, "missing token {k}");
         }
@@ -256,6 +363,12 @@ mod tests {
             "closure",
             "statement",
             "base",
+            "type",
+            "return_type",
+            "parameters",
+            "object",
+            "field",
+            "operand",
         ];
         for f in fields {
             assert!(lang.field_id_for_name(f).is_some(), "missing field {f}");
