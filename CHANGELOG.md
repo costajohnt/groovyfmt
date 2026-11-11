@@ -17,6 +17,7 @@
 - `--changed-since <rev>`: limit a run to the files that differ from a git revision, plus untracked files, under the working directory.
 - `--explain <Rule>`: a rule's description, why it matters, flagged code and a fixed version, whether `--lint --fix` fixes it, whether it is on for the current directory, and the config lines to turn it off or on. `--rules` is unchanged.
 - README: "Using groovyfmt with coding agents", with a Claude Code PostToolUse hook that formats and lints each Groovy file Claude edits and reports problems back to it, and an `AGENTS.md` / `CLAUDE.md` snippet.
+- A Gradle plugin (`gradle-plugin/`, id `io.github.costajohnt.groovyfmt`) with `groovyfmtCheck` and `groovyfmtLint`, which `check` runs, and `groovyfmtFormat`. It downloads the release binary into `~/.gradle/groovyfmt/`, checks its `.sha256` before unpacking it, and reuses it; `binary` runs a local one instead. Gradle 7.6+ on Java 11+, configuration cache compatible. Not published yet: use it with `includeBuild` from a checkout (README, Gradle). The release workflow's `publish-gradle-plugin` job stays off until the repository variable `PUBLISH_GRADLE_PLUGIN` is set (`docs/releasing.md`).
 
 ### Changed
 
