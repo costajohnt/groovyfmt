@@ -7,6 +7,10 @@
 - `--strict`: with `--check`, `--lint` or when formatting in place, list the files that were skipped (they don't parse, aren't UTF-8, are over 10 MB or nest too deeply) and exit 1 if there are any. Without it a skipped file never affects the exit status, so CI can pass on files nothing checked.
 - `--` ends the options: every argument after it is a path, even one starting with `-`.
 
+### Changed
+
+- Each thread reuses one parser instead of creating one per parse (two to four per file): about 2% less CPU time on the 23,766-file corpus (`--stats`, 44.4 s user against 45.2 s, mean of 5 runs each).
+
 ### Fixed
 
 - A line starting with a map key or named argument called `else`, `catch` or `finally` (`[` then `else: 1,`) keeps its indent instead of moving to the level of the line holding the `[` or `(`. Across the corpus and the 34 trial repositories no file has that shape; one GPars file changes because the grammar reads its `else` (after `if (follower) follower value`) as a name, and that `else` block now lines up with its `if` instead of sitting one level left of it.
