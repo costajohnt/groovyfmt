@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- pre-commit hooks in the repository (`repo: https://github.com/costajohnt/groovyfmt`): `groovyfmt`, `groovyfmt-check` and `groovyfmt-lint` run the binary on `PATH`, and `groovyfmt-source`, `groovyfmt-check-source` and `groovyfmt-lint-source` build it from source with cargo.
+- A GitHub Action (`uses: costajohnt/groovyfmt@<ref>`): installs the release binary for the runner (Linux or macOS, x64 or arm64) after checking its `.sha256`, puts it on `PATH`, and runs it with `args` (default `--check --output-format github`).
+- Packaging for npm (`npm/`, the `groovyfmt` package with one `@groovyfmt/<os>-<arch>` package per platform), Homebrew (`packaging/homebrew/`, a formula rendered from a release's checksums) and a Docker image (`Dockerfile`, `scratch` plus the static binary). None of these is published yet: the release workflow's `publish-npm` and `publish-image` jobs stay off until the repository variables `PUBLISH_NPM` and `PUBLISH_IMAGE` are set (`docs/releasing.md`). CI builds and runs each against the latest release.
+
 ## 0.8.0 (2026-11-10)
 
 ### Changed
