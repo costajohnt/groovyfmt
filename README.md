@@ -299,6 +299,7 @@ Of the 117 corpus files still skipped, 80 aren't Groovy source: 70 Grails, Gradl
 ## Development
 
 ```sh
+scripts/ci-local.sh [corpus-dir]         # everything CI checks on Linux; run it before merging
 cargo test                               # unit and end-to-end CLI tests
 cargo clippy --all-targets -- -D warnings
 groovyfmt --stats <dir>                  # corpus report, including an idempotence check
