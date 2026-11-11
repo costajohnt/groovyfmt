@@ -2,13 +2,19 @@ pub mod config;
 pub mod diff;
 pub mod fix;
 pub mod format;
+pub mod json;
 pub mod lint;
+pub mod lsp;
 pub mod report;
 pub mod syntax;
 
 use std::path::Path;
 use tree_sitter::{Node, Parser, Tree};
 use tree_sitter_language::LanguageFn;
+
+/// Files larger than this are skipped: generated or vendored code, and a guard against
+/// a crafted input exhausting memory. `--lsp` leaves documents this large alone too.
+pub const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 
 unsafe extern "C" {
     fn tree_sitter_groovy() -> *const ();
