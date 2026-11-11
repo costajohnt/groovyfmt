@@ -194,7 +194,7 @@ Strings are standard JSON. Every control character is escaped, and so is a `[` a
 
 ### What formatting changes
 
-Whitespace only:
+Whitespace only (with `max_line_length`, also line breaks: see Line wrapping):
 
 - every line is re-indented from the parse tree (blocks, closures, argument lists, list and map literals, continued expressions, Spock `when:` / `then:` blocks)
 - trailing whitespace is removed, runs of blank lines collapse to one, and the file ends with one newline
@@ -222,6 +222,33 @@ Alignment is kept. A run of two or more spaces, or a tab, stays when the token a
 Besides the token check, spacing output must parse to the same tree shape as the input; if it doesn't, the file is formatted without spacing changes instead.
 
 Limits, so a hostile file can't make it slow: a line longer than 1,000 bytes keeps its spacing (it is still re-indented), and alignment is looked up only in the first 2,000 characters of a line. Lines whose alignment depends on each other are settled in repeated passes over the file, each linear in its size; two or three are typical, and a file that hasn't settled after 64 is skipped (`-v` lists it as `spacing did not settle`) rather than written half-respaced.
+
+### Line wrapping
+
+With `max_line_length = <n>` in the config (40 to 400; there is no default, and without the key nothing is wrapped), groovyfmt breaks lines longer than `n` columns where that is safe. A tab counts as `indent` columns, and width is counted in characters, not bytes. Wrapping only ever adds line breaks: it never joins lines, never breaks inside a token, and never touches a line inside a string or comment.
+
+In Groovy a line break can end a statement, so a break goes only where Groovy's own grammar (the Parrot parser's `GroovyLexer.g4` and `GroovyParser.g4`) reads the code the same with or without it:
+
+- inside `(…)` and `[…]`, where Groovy's lexer drops newlines before the parser sees them: an argument list, list literal or map literal with two or more items breaks one item per line, after the opening bracket and each comma, with the closing bracket on a line of its own. A trailing closure stays on the line of the `)` (`) {`)
+- before each `.`, `?.` or `*.` of a chain of three or more calls, except the first call's (`Foo.builder()`, then `.name(x)` and `.build()` on lines of their own), which the grammar allows anywhere (`pathElement : NL* DOT …`). In a chain already written over several lines, the dots on a line that is still too long break the same way
+- after `||`, `&&`, `==`, `!=`, `+` and `-` at the lowest-precedence level of a binary expression, after a ternary's `?` and `:`, and after `?:`. The operator always ends the line: the grammar takes a newline after `+` and `-` but not before them, and `a` then `-b` on the next line would be two statements
+- after `=` in an assignment or declaration, when nothing else on the line can break
+
+For each line over the limit, the outermost construct that lies wholly on that line breaks one of these ways; the file is re-indented (and respaced, with `normalize_spacing`), the lines are measured again, and pieces still too long break further. Continuation lines get `continuation_indent`. An operator or `=` breaks only when every resulting piece fits, so `a.b().c().d() == x` breaks the chain and `x == [a, b, c]` the list instead, and a single binary operator doesn't leave a piece shorter than 8 columns (`f(x) ==` then `1`).
+
+Never broken, because Groovy or the grammar might read the result differently, or because the result would read worse than the long line:
+
+- anything in a parenthesis-free command call (`implementation group: 'a', name: 'b'`, `input 'x', options: [a, b]`), whose arguments tree-sitter-groovy finds by looking at line ends, and a statement that starts on the line where the one before it ends without a `;`, which is how the grammar reads some command calls (`println a + b` as `println` and `a + b`)
+- anything inside a closure or block written on one line (`list.each { foo(a, b) }`): its statements end at line breaks
+- between `return`, `throw`, `assert`, `new`, `as`, `in`, `instanceof` or `!` and what follows, between a name and its `(`, between `)` and a trailing closure, and anywhere the line before the break could end a statement by itself. Outside `(…)` and `[…]` a wrapped line never starts with `{`, `++`, `--`, `+`, `-`, `*` or `/` (a `*.` of a chain aside), and starts with `(`, `[` or a string only right after a line ending in a binary operator, `?`, `:` or `=`, which the grammar says must continue. Inside brackets Groovy's lexer drops the line break, so an argument such as `-1` or `'text'` may start a line
+- annotations, `import` and `package` lines, `case` labels, Spock `where:` blocks, GString interpolations, and argument lists or literals holding a comment
+- `<`, `>`, `as`, `instanceof`, `in`, ranges, shifts and the other operators: only the ones above are break points. Nothing breaks right after a `>` either: tree-sitter-groovy reads `f(a, List<T>` followed by a line break as comparisons
+- a part of a larger construct on the line that can't break itself: an operator expression inside another operator's operand (`(a != null && b) ? x : y`), in parentheses (`(a ?: b).c()`) or in a subscript (`a[i + 1]`), an operator expression or chain that is a call's only argument (`f(a + b)`, also through a cast) or a lambda's body, anything in a one-line ternary's condition or first branch (`c ? f(a, b) : d`), the only argument written `key: value`, the condition of an `assert` with a message or of an `if` or `while` whose body follows on the same line (braces or not), and whatever is inside something that may not break
+- an argument list or literal followed on its line by more text than it holds (`f(_, _) >> { long closure parameters ->`): breaking it gains little
+- a line holding two statements (`a(x, y); b(z)`) or an `if`, `else`, `while` or `for` body without braces (`if (c) x = f(a, b)`), and a line of a list written over several lines that holds two or more of its items (laid out by hand)
+- a line whose overflow is only a trailing comment, or that holds a string too long to fit on a continuation line anyway
+
+A line that is still too long after every safe break stays as it is. Each pass parses the result again and must find the same tree shape, and the final text must have the same tokens and tree shape as the input, or the file is formatted without wrapping instead. Formatting the output again changes nothing, for any combination of the other settings. Wrapping goes at most 16 constructs deep on one line, and isn't tried on a file nested more than 1,000 levels deep; such files are formatted without wrapping. Lines between `// groovyfmt: off` and `// groovyfmt: on` are never wrapped. With `--lines`, only lines in the ranges are wrapped, and a wrapped line's pieces take its place, so the lines after it move down. `-v` lists each file formatted without wrapping and why (`not wrapped <file>: <reason>`). `--suggest-style` ignores `max_line_length`: it measures indent styles only.
 
 ### Lint rules
 
@@ -420,6 +447,7 @@ continuation_indent = 8     # arguments, literals, continued lines (default: sam
 use_tabs = false            # true: indent with tabs, one per indent level
 indent_after_labels = false # true: indent Spock when:/then: blocks under their label
 normalize_spacing = false   # true: also fix the spaces between tokens within a line
+max_line_length = 120       # wrap longer lines where that is safe, 40 to 400 (default: no wrapping)
 exclude = ["generated/**", "**/*.gsh"] # skip these files and directories
 baseline = ".groovyfmt-baseline.json"   # lint reports only what isn't in it (see Baseline)
 

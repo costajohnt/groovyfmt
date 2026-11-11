@@ -1445,6 +1445,98 @@ fn normalize_spacing_with_lines_diff_fix_and_json() {
 }
 
 #[test]
+fn max_line_length_from_config_with_lines_diff_and_suggest_style() {
+    let d = Dir::new("wrap");
+    let src = "class A {\ndef f() {\nfoo(alpha, beta, gamma, delta, epsilon)\nbar(alpha, beta, gamma, delta, epsilon)\n}\n}\n";
+    let plain = "class A {\n    def f() {\n        foo(alpha, beta, gamma, delta, epsilon)\n        bar(alpha, beta, gamma, delta, epsilon)\n    }\n}\n";
+    assert_eq!(
+        stdout(&run(&d.0, &["--stdin"], Some(src))),
+        plain,
+        "off by default"
+    );
+    d.write(".groovyfmt.toml", "max_line_length = 40\n");
+    let wrapped = "class A {\n    def f() {\n        foo(\n            alpha,\n            beta,\n            gamma,\n            delta,\n            epsilon\n        )\n        bar(\n            alpha,\n            beta,\n            gamma,\n            delta,\n            epsilon\n        )\n    }\n}\n";
+    assert_eq!(stdout(&run(&d.0, &["--stdin"], Some(src))), wrapped);
+
+    // --check --diff: the patch applies to give the formatted file
+    d.write("D.groovy", src);
+    let o = run(&d.0, &["--check", "--diff", "D.groovy"], None);
+    assert_eq!(o.status.code(), Some(1));
+    d.write("D.patch", &stdout(&o));
+    if have_git() {
+        let applied = Command::new("git")
+            .args(["apply", "D.patch"])
+            .current_dir(&d.0)
+            .output()
+            .unwrap();
+        assert!(applied.status.success(), "{:?}", applied);
+        assert_eq!(d.read("D.groovy"), wrapped);
+    } else {
+        d.write("D.groovy", wrapped);
+    }
+    let o = run(&d.0, &["--check", "D.groovy"], None);
+    assert_eq!(o.status.code(), Some(0), "idempotent");
+
+    // --lines: only the line in the range is re-indented and wrapped; the lines outside it
+    // stay byte for byte
+    d.write("L.groovy", src);
+    let o = run(&d.0, &["--lines", "4-4", "L.groovy"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(
+        d.read("L.groovy"),
+        "class A {\ndef f() {\nfoo(alpha, beta, gamma, delta, epsilon)\n        bar(\n            alpha,\n            beta,\n            gamma,\n            delta,\n            epsilon\n        )\n}\n}\n"
+    );
+
+    // --suggest-style measures indent styles only: a file indented the default way but with
+    // lines over the limit is unchanged under the defaults
+    d.write("S.groovy", plain);
+    let o = run(&d.0, &["--suggest-style", "S.groovy"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert!(
+        stdout(&o).contains("1 of 1 files unchanged"),
+        "{}{}",
+        stdout(&o),
+        stderr(&o)
+    );
+
+    // -v names a file formatted without wrapping, and why: nesting too deep to wrap
+    let deep = format!("x = {}y{}\n", "f(a, ".repeat(600), ")".repeat(600));
+    d.write("N.groovy", &deep);
+    let o = run(&d.0, &["-v", "--check", "N.groovy"], None);
+    assert!(
+        stderr(&o).contains("not wrapped N.groovy: nesting too deep to wrap"),
+        "{}",
+        stderr(&o)
+    );
+    let o = run(&d.0, &["--check", "N.groovy"], None);
+    assert!(!stderr(&o).contains("not wrapped"), "only with -v");
+    let o = run(
+        &d.0,
+        &["-v", "--stdin", "--stdin-filepath", "N.groovy"],
+        Some(&deep),
+    );
+    assert!(
+        stderr(&o).contains("not wrapped N.groovy: nesting too deep to wrap"),
+        "{}",
+        stderr(&o)
+    );
+    // a file that wraps, or has nothing to wrap, gets no such line
+    let o = run(&d.0, &["-v", "--check", "D.groovy"], None);
+    assert!(!stderr(&o).contains("not wrapped"), "{}", stderr(&o));
+
+    for bad in ["39", "401", "\"80\""] {
+        d.write(".groovyfmt.toml", &format!("max_line_length = {bad}\n"));
+        let o = run(&d.0, &["--stdin"], Some(src));
+        assert_eq!(o.status.code(), Some(2));
+        assert!(
+            stderr(&o).contains("`max_line_length` must be an integer from 40 to 400"),
+            "{}",
+            stderr(&o)
+        );
+    }
+}
+
+#[test]
 fn errors_exit_2_with_specific_messages() {
     // each case in its own directory, so one failure mode can't mask another
     let cases: &[(&str, Option<&str>, &[&str], &str)] = &[

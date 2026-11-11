@@ -31,6 +31,9 @@ pub struct Style {
     pub use_tabs: bool,
     /// Also normalize the spaces between tokens within a line (see `spacing`).
     pub normalize_spacing: bool,
+    /// Wrap lines longer than this many columns where that is safe (see `wrap`); `None`
+    /// never adds a line break.
+    pub max_line_length: Option<usize>,
 }
 
 impl Default for Style {
@@ -41,6 +44,7 @@ impl Default for Style {
             indent_after_labels: false,
             use_tabs: false,
             normalize_spacing: false,
+            max_line_length: None,
         }
     }
 }
@@ -72,21 +76,25 @@ impl Style {
 /// (see `diff::off_lines`), which formats the rest as `--lines` does.
 pub fn format(src: &str, style: &Style) -> Outcome {
     if crate::diff::off_lines(src).is_empty() {
-        format_whole(src, style)
+        format_with(src, style, None, reindent)
     } else {
         crate::diff::format_lines(src, style, &[(1, usize::MAX)])
     }
 }
 
-/// `format`, ignoring `groovyfmt: off` comments.
-pub(crate) fn format_whole(src: &str, style: &Style) -> Outcome {
-    format_with(src, style, reindent)
+/// `format`, ignoring `groovyfmt: off` comments, and wrapping (with `max_line_length`) only
+/// the source lines in `rows` (1-based, inclusive), for `--lines`.
+pub(crate) fn format_rows(src: &str, style: &Style, rows: &[(usize, usize)]) -> Outcome {
+    format_with(src, style, Some(rows), reindent)
 }
+
+type Reindent<'a> = &'a dyn Fn(&str, &Tree, &Style) -> Result<String, &'static str>;
 
 /// `format` with the re-indenter as a parameter, so a test can hand the guard a wrong output.
 fn format_with(
     src: &str,
     style: &Style,
+    rows: Option<&[(usize, usize)]>,
     reindent: impl Fn(&str, &Tree, &Style) -> Result<String, &'static str>,
 ) -> Outcome {
     // nothing but whitespace: the file becomes empty, as with rustfmt and prettier
@@ -101,17 +109,37 @@ fn format_with(
     if tree.root_node().has_error() {
         return Outcome::Skipped("parse error");
     }
-    let out = match reindent(src, &tree, style) {
-        Ok(out) => out,
-        Err(why) => return Outcome::Skipped(why),
+    let (out, used) = match unwrapped(src, &tree, style, &reindent) {
+        Ok(v) => v,
+        Err(skip) => return skip,
+    };
+    let out = match style.max_line_length {
+        Some(limit) => wrapped(src, &tree, out, &used, limit, rows, &reindent),
+        None => out,
     };
     if out == src {
-        return Outcome::Unchanged;
+        Outcome::Unchanged
+    } else {
+        Outcome::Formatted(out)
+    }
+}
+
+/// The re-indented (and respaced) text, checked, and the style it was made with: spacing
+/// that changes how the code parses is dropped.
+fn unwrapped(
+    src: &str,
+    tree: &Tree,
+    style: &Style,
+    reindent: Reindent,
+) -> Result<(String, Style), Outcome> {
+    let out = reindent(src, tree, style).map_err(Outcome::Skipped)?;
+    if out == src {
+        return Ok((out, *style));
     }
     let out_tree = crate::parse(&out);
     if out_tree.root_node().has_error()
-        || tokens(src, &tree) != tokens(&out, &out_tree)
-        || (style.normalize_spacing && shape(&tree) != shape(&out_tree))
+        || tokens(src, tree) != tokens(&out, &out_tree)
+        || (style.normalize_spacing && shape(tree) != shape(&out_tree))
     {
         if style.normalize_spacing {
             // spacing changed how the code parses: format the file without it
@@ -119,11 +147,41 @@ fn format_with(
                 normalize_spacing: false,
                 ..*style
             };
-            return format_with(src, &plain, reindent);
+            return unwrapped(src, tree, &plain, reindent);
         }
-        return Outcome::Skipped("token mismatch after formatting");
+        return Err(Outcome::Skipped("token mismatch after formatting"));
     }
-    Outcome::Formatted(out)
+    Ok((out, *style))
+}
+
+/// `out` with its long lines wrapped, if the result keeps every token and the shape of the
+/// parse tree; otherwise `out` as it is (`wrap::last_report` says why).
+fn wrapped(
+    src: &str,
+    tree: &Tree,
+    out: String,
+    style: &Style,
+    limit: usize,
+    rows: Option<&[(usize, usize)]>,
+    reindent: Reindent,
+) -> String {
+    let fmt = |text: &str, t: &Tree| reindent(text, t, style);
+    let w = match crate::wrap::wrap(src, tree, &out, style, limit, rows, &fmt) {
+        Ok(w) => w,
+        Err(_) => return out,
+    };
+    if w == out {
+        return out;
+    }
+    let wt = crate::parse(&w);
+    if wt.root_node().has_error()
+        || tokens(src, tree) != tokens(&w, &wt)
+        || shape(tree) != shape(&wt)
+    {
+        crate::wrap::set_fallback("wrapped text failed the token or tree check");
+        return out;
+    }
+    w
 }
 
 /// Every node's kind and number of children, in document order: equal for two trees of
@@ -568,7 +626,7 @@ mod tests {
         let style = Style::default();
         // the real re-indenter is accepted, so the cases below fail only on the guard
         assert!(matches!(
-            format_with(src, &style, reindent),
+            format_with(src, &style, None, reindent),
             Outcome::Formatted(_)
         ));
         let wrong = [
@@ -578,7 +636,7 @@ mod tests {
         ];
         for out in wrong {
             assert_eq!(
-                format_with(src, &style, |_, _, _| Ok(out.to_string())),
+                format_with(src, &style, None, |_, _, _| Ok(out.to_string())),
                 Outcome::Skipped("token mismatch after formatting"),
                 "{out:?}"
             );
@@ -592,7 +650,7 @@ mod tests {
         let src = "foo\n(1)\n";
         let joined = || Ok("foo (1)\n".to_string());
         assert_eq!(
-            format_with(src, &Style::default(), |_, _, _| joined()),
+            format_with(src, &Style::default(), None, |_, _, _| joined()),
             Outcome::Formatted("foo (1)\n".into()),
             "the token check alone lets it through"
         );
@@ -607,7 +665,43 @@ mod tests {
                 reindent(s, t, style)
             }
         };
-        assert_eq!(format_with(src, &spaced, wrong), Outcome::Unchanged);
+        assert_eq!(format_with(src, &spaced, None, wrong), Outcome::Unchanged);
+    }
+
+    #[test]
+    fn a_wrap_that_changes_the_tree_falls_back_to_no_wrapping() {
+        let style = Style {
+            max_line_length: Some(40),
+            ..Style::default()
+        };
+        let src = "def f() {\n    foo(alpha, beta, gamma, delta, epsilon)\n}\n";
+        let Outcome::Formatted(good) = format_with(src, &style, None, reindent) else {
+            panic!("not wrapped")
+        };
+        assert!(good.contains("    foo(\n        alpha,\n"), "{good}");
+        assert_eq!(crate::wrap::last_report().fallback, None);
+        // once a line is broken, this re-indenter also splits `foo(` into `foo` and `(`:
+        // the same tokens, but two statements
+        let wrong = |s: &str, t: &Tree, st: &Style| {
+            reindent(s, t, st).map(|o| o.replace("foo(\n", "foo\n(\n"))
+        };
+        assert_eq!(format_with(src, &style, None, wrong), Outcome::Unchanged);
+        assert_eq!(
+            crate::wrap::last_report().fallback,
+            Some("wrapping changed the parse")
+        );
+        // the real re-indenter through the same function: wrapped
+        let tree = crate::parse(src);
+        let out = wrapped(
+            src,
+            &tree,
+            src.to_string(),
+            &style,
+            40,
+            None,
+            &|s, t, st| reindent(s, t, st),
+        );
+        assert_eq!(out, good);
     }
 
     #[test]

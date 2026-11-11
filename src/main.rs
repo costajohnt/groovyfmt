@@ -1150,7 +1150,12 @@ fn stdin(res: &mut Resolver, a: &Args) -> i32 {
     let cfg = one_config(res, a);
     let src = String::from_utf8(src)
         .unwrap_or_else(|_| die("reading stdin: stream did not contain valid UTF-8"));
-    let out = match format_some(&src, &cfg.style, &a.lines) {
+    let formatted = format_some(&src, &cfg.style, &a.lines);
+    if let Some(why) = groovyfmt::wrap::take_fallback().filter(|_| a.verbose) {
+        let name = path.map_or_else(|| "<stdin>".to_string(), shown);
+        eprintln!("not wrapped {name}: {why}");
+    }
+    let out = match formatted {
         Outcome::Unchanged => src,
         Outcome::Formatted(out) => out,
         Outcome::Skipped(why) => {
@@ -1184,19 +1189,29 @@ fn fmt(files: &[PathBuf], links: &HashMap<PathBuf, PathBuf>, cfgs: &Configs, a: 
         let real = links.get(p).map_or(p, PathBuf::as_path);
         let (src, id) = match read_as(real, p)? {
             Ok(read) => read,
-            Err(why) => return Ok(Err((why, Diag::default()))),
+            Err(why) => return Ok((Err((why, Diag::default())), None)),
         };
-        Ok(match format_some(&src, &cfgs[p].style, &a.lines) {
+        let formatted = format_some(&src, &cfgs[p].style, &a.lines);
+        let fallback = groovyfmt::wrap::take_fallback();
+        let r = match formatted {
             Outcome::Unchanged => Ok(None),
             Outcome::Skipped(why) => Err((why, diag_if(want_diag, &src))),
             Outcome::Formatted(out) if check => {
                 Ok(Some((Ok(()), a.diff.then(|| patch_for(p, &src, &out)))))
             }
             Outcome::Formatted(out) => Ok(Some((write_atomic(real, &out, id), None))),
-        })
+        };
+        Ok((r, fallback))
     });
     let (mut changed, mut skipped, mut failed) = (0usize, 0usize, false);
     for (path, r) in files.iter().zip(results) {
+        // `max_line_length` was set but the file was formatted without wrapping: worth knowing
+        let r = r.map(|(r, fallback)| {
+            if let Some(why) = fallback.filter(|_| listed) {
+                eprintln!("not wrapped {}: {why}", shown(path));
+            }
+            r
+        });
         match r {
             Err(e) => {
                 eprintln!("groovyfmt: {e}");
@@ -1740,10 +1755,12 @@ fn suggest_style(files: &[PathBuf], cfgs: &Configs) -> i32 {
         // ponytail: one full format per candidate, about 6x a --check run; parsing the
         // input once for all candidates would save roughly 40% if this ever matters
         Ok(CANDIDATES.map(|(indent, continuation, use_tabs)| {
+            // indent styles only: wrapping would make every candidate change long lines
             let style = Style {
                 indent,
                 continuation,
                 use_tabs,
+                max_line_length: None,
                 ..cfgs[p].style
             };
             match format(&src, &style) {

@@ -611,6 +611,54 @@ fn normalize_spacing_from_the_config() {
 }
 
 #[test]
+fn max_line_length_from_the_config() {
+    let d = Dir::new("wrap");
+    d.write(".groovyfmt.toml", "max_line_length = 40\n");
+    let text = "class A {\ndef f() {\nfoo(alpha, beta, gamma, delta, epsilon)\nx = 1\nbar(alpha, beta, gamma, delta, epsilon)\n}\n}\n";
+    let path = d.0.join("A.groovy");
+    let p = path.to_str().unwrap();
+    let mut srv = Server::start(&d.0);
+    srv.initialize("[]");
+    srv.open(&uri(&path), text);
+    let opts = "\"options\":{\"tabSize\":4,\"insertSpaces\":true}";
+    let edits = srv.result(
+        "textDocument/formatting",
+        &format!(
+            "{{\"textDocument\":{{\"uri\":{}}},{opts}}}",
+            js(&uri(&path))
+        ),
+    );
+    let (code, want) = cli(&d.0, &["--stdin", "--stdin-filepath", p], text);
+    assert_eq!(code, Some(0));
+    assert_eq!(apply(text, edits.arr(), false), want);
+    assert_eq!(
+        want.lines().count(),
+        text.lines().count() + 12,
+        "two lines became seven each: {want}"
+    );
+    // range formatting, as --lines: the line in the range is wrapped, its pieces taking its
+    // place, and every other line stays byte for byte
+    let edits = srv.result(
+        "textDocument/rangeFormatting",
+        &format!("{{\"textDocument\":{{\"uri\":{}}},\"range\":{{\"start\":{{\"line\":4,\"character\":0}},\"end\":{{\"line\":4,\"character\":3}}}},{opts}}}", js(&uri(&path))),
+    );
+    let (_, want) = cli(
+        &d.0,
+        &["--stdin", "--stdin-filepath", p, "--lines", "5-5"],
+        text,
+    );
+    let got = apply(text, edits.arr(), false);
+    assert_eq!(got, want);
+    assert_eq!(
+        got,
+        "class A {\ndef f() {\nfoo(alpha, beta, gamma, delta, epsilon)\nx = 1\n        bar(\n            alpha,\n            beta,\n            gamma,\n            delta,\n            epsilon\n        )\n}\n}\n"
+    );
+    assert_eq!(srv.result("shutdown", "null"), Value::Null);
+    srv.notify("exit", "null");
+    assert_eq!(srv.finish().0, Some(0));
+}
+
+#[test]
 fn requests_before_initialize_and_twice_initialized() {
     let d = Dir::new("lifecycle");
     let mut srv = Server::start(&d.0);

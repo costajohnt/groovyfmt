@@ -1,6 +1,6 @@
 //! Unified diffs for `--diff`, and `--lines`: formatting only some lines of a file.
 
-use crate::format::{Outcome, Style, format_whole};
+use crate::format::{Outcome, Style, format_rows};
 
 /// One aligned line: in the old text only, the new only, or both (unchanged).
 #[derive(Clone, Copy, PartialEq)]
@@ -154,9 +154,11 @@ pub fn unified(path: &str, old: &str, new: &str) -> String {
 /// `format`, changing only the lines in `ranges` (1-based, inclusive): the whole file is
 /// formatted, since indentation comes from the whole tree, then every line outside the
 /// ranges is put back as it was. The result goes through the same token check as `format`.
+/// With `max_line_length`, only lines in the ranges are wrapped, and a wrapped line's pieces
+/// all take its place.
 pub fn format_lines(src: &str, style: &Style, ranges: &[(usize, usize)]) -> Outcome {
     let ranges = &without(ranges, &off_lines(src));
-    let out = match format_whole(src, style) {
+    let out = match format_rows(src, style, ranges) {
         Outcome::Formatted(out) => out,
         other => return other,
     };
@@ -169,7 +171,7 @@ pub fn format_lines(src: &str, style: &Style, ranges: &[(usize, usize)]) -> Outc
     let (before, after) = (crate::parse(src), crate::parse(&kept));
     if after.root_node().has_error()
         || crate::format::tokens(src, &before) != crate::format::tokens(&kept, &after)
-        || (style.normalize_spacing
+        || ((style.normalize_spacing || style.max_line_length.is_some())
             && crate::format::shape(&before) != crate::format::shape(&after))
     {
         return Outcome::Skipped("token mismatch after formatting");
@@ -242,28 +244,51 @@ fn same_but_spaces(a: &str, b: &str) -> bool {
 
 /// `out` (the formatted `src`) for the lines in `ranges`, `src` for the others. Formatting
 /// keeps every non-blank line, in order, changing only its spaces and tabs (the leading and
-/// trailing ones, and with `normalize_spacing` those between tokens),
-/// and drops some blank lines, so each source line pairs with the formatted line holding the
-/// same text, or with none. `None` if they don't pair up that way.
+/// trailing ones, and with `normalize_spacing` those between tokens), except that wrapping
+/// splits a line in a range into several, and drops some blank lines, so each source line
+/// pairs with the formatted line, or run of lines, holding the same text, or with none.
+/// `None` if they don't pair up that way.
 ///
-/// A blank line formatting drops is kept, emptied, so no line is added or removed: line
-/// numbers after a range stay put, and running again with the same ranges changes nothing.
+/// A blank line formatting drops is kept, emptied, so no line is removed: line numbers after
+/// a range stay put unless a line in it was wrapped, and running again with the same ranges
+/// changes nothing.
 fn keep_outside(src: &str, out: &str, ranges: &[(usize, usize)]) -> Option<String> {
-    let mut formatted = out.split_inclusive('\n').peekable();
+    let formatted: Vec<&str> = out.split_inclusive('\n').collect();
+    let text = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    let mut j = 0;
     let mut s = String::with_capacity(src.len());
     for (i, line) in src.split_inclusive('\n').enumerate() {
         let eol = &line[line.trim_end_matches(['\r', '\n']).len()..];
-        let paired = formatted
-            .next_if(|f| same_but_spaces(f, line))
-            .or_else(|| line.trim().is_empty().then_some(eol))?;
         let n = i + 1;
-        s.push_str(if ranges.iter().any(|&(a, b)| a <= n && n <= b) {
-            paired
+        let inside = ranges.iter().any(|&(a, b)| a <= n && n <= b);
+        let from = j;
+        if formatted.get(j).is_some_and(|f| same_but_spaces(f, line)) {
+            j += 1;
+        } else if line.trim().is_empty() {
+            s.push_str(if inside { eol } else { line });
+            continue;
+        } else if inside {
+            // a wrapped line: the formatted lines whose text runs together into this one's
+            let want = text(line);
+            let mut got = String::new();
+            while got.len() < want.len() {
+                let more = text(formatted.get(j)?);
+                got.push_str(&more);
+                if more.is_empty() || !want.starts_with(&got) {
+                    return None;
+                }
+                j += 1;
+            }
         } else {
-            line
-        });
+            return None;
+        }
+        if inside {
+            s.extend(formatted[from..j].iter().copied());
+        } else {
+            s.push_str(line);
+        }
     }
-    formatted.next().is_none().then_some(s)
+    (j == formatted.len()).then_some(s)
 }
 
 #[cfg(test)]
@@ -362,6 +387,56 @@ mod tests {
         assert_eq!(out, "class A {\ndef f() {\n\n\n\n        println 1\n}\n}");
         assert_eq!(format_lines(&out, &style, &ranges), Outcome::Unchanged);
         assert_eq!(format_lines(src, &style, &[(1, 1)]), Outcome::Unchanged);
+    }
+
+    #[test]
+    fn only_the_given_lines_are_wrapped() {
+        let style = Style {
+            max_line_length: Some(40),
+            ..Style::default()
+        };
+        let long = "foo(alpha, beta, gamma, delta, epsilon)";
+        let src = format!("def f() {{\n{long}\n  {long}\n    {long}\n}}\n");
+        let wrapped = "    foo(\n        alpha,\n        beta,\n        gamma,\n        delta,\n        epsilon\n    )\n";
+        // the second line of the body: its pieces take its place, the rest is as it was
+        let Outcome::Formatted(out) = format_lines(&src, &style, &[(3, 3)]) else {
+            panic!()
+        };
+        assert_eq!(
+            out,
+            format!("def f() {{\n{long}\n{wrapped}    {long}\n}}\n")
+        );
+        // the whole file: as formatting it
+        let Outcome::Formatted(all) = format_lines(&src, &style, &[(1, 100)]) else {
+            panic!()
+        };
+        assert_eq!(all, format!("def f() {{\n{0}{0}{0}}}\n", wrapped));
+        assert_eq!(
+            crate::format::format(&src, &style),
+            Outcome::Formatted(all.clone())
+        );
+        assert_eq!(format_lines(&all, &style, &[(1, 100)]), Outcome::Unchanged);
+        // a line in the range that needs no wrapping, beside one that does
+        let Outcome::Formatted(out) = format_lines(&src, &style, &[(1, 2)]) else {
+            panic!()
+        };
+        assert_eq!(
+            out,
+            format!("def f() {{\n{wrapped}  {long}\n    {long}\n}}\n")
+        );
+        // with spacing too
+        let spaced = Style {
+            normalize_spacing: true,
+            ..style
+        };
+        let src = "x  = 1\nyy = foo(alpha,beta,gamma,delta,epsilon,zeta)\nz=2\n";
+        let Outcome::Formatted(out) = format_lines(src, &spaced, &[(2, 2)]) else {
+            panic!()
+        };
+        assert_eq!(
+            out,
+            "x  = 1\nyy = foo(\n    alpha,\n    beta,\n    gamma,\n    delta,\n    epsilon,\n    zeta\n)\nz=2\n"
+        );
     }
 
     #[test]
