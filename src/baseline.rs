@@ -424,25 +424,29 @@ mod tests {
 
     #[test]
     fn a_huge_baseline_matches_in_linear_time() {
-        // 100,000 entries over 2,000 files: a scan of every entry per file would be 2e8 steps
-        let entries: Vec<_> = (0..100_000)
-            .map(|i| {
-                (
-                    format!("f{}.groovy", i % 2000),
-                    "R".to_string(),
-                    format!("{i:016x}"),
-                    0,
-                )
-            })
-            .collect();
-        let b = Baseline::parse(&write(entries, &Baseline::default(), &BTreeSet::new())).unwrap();
-        let t = std::time::Instant::now();
-        let mut stale = 0;
-        for i in 0..2000 {
-            stale += b.filter(&format!("f{i}.groovy"), "", Vec::new()).2;
-        }
-        assert_eq!(stale, 100_000);
-        assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
+        // n entries over n / 50 files, each file then matched: a scan of every entry per
+        // file (the first version) grows with the square of n
+        let run = |n: usize| {
+            let files = n / 50;
+            let entries: Vec<_> = (0..n)
+                .map(|i| {
+                    (
+                        format!("f{}.groovy", i % files),
+                        "R".to_string(),
+                        format!("{i:016x}"),
+                        0,
+                    )
+                })
+                .collect();
+            let doc = write(entries, &Baseline::default(), &BTreeSet::new());
+            let b = Baseline::parse(&doc).unwrap();
+            let mut stale = 0;
+            for i in 0..files {
+                stale += b.filter(&format!("f{i}.groovy"), "", Vec::new()).2;
+            }
+            assert_eq!(stale, n);
+        };
+        crate::scaling::assert_scales("baseline matching", run, 25_000, 4, 8);
         // and the entry count is bounded
         let too_many = format!(
             "{{\"version\":1,\"entries\":[{}]}}",
