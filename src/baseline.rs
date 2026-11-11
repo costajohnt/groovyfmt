@@ -47,11 +47,13 @@ fn fnv1a(s: &str) -> u64 {
     })
 }
 
-/// The fingerprint of a line: its text with every whitespace run made one space and the
-/// ends trimmed (so re-indenting, CR LF and trailing spaces don't change it), hashed.
+/// The fingerprint of a line: its text with every whitespace run made one space, the ends
+/// trimmed and a final `;` dropped (so re-indenting, CR LF, trailing spaces and `--fix`
+/// removing the `;` don't change it), hashed.
 pub fn fingerprint(line: &str) -> String {
     let collapsed: Vec<&str> = line.split_whitespace().collect();
-    format!("{:016x}", fnv1a(&collapsed.join(" ")))
+    let text = collapsed.join(" ");
+    format!("{:016x}", fnv1a(text.trim_end_matches(';').trim_end()))
 }
 
 /// A file's violations as (rule, fingerprint, index).
@@ -290,6 +292,13 @@ mod tests {
             kept(&b, "import a.B\nimport c.D\nx = 1;\n"),
             (vec![("UnusedImport", 2)], 2, 0)
         );
+    }
+
+    #[test]
+    fn a_fixed_semicolon_leaves_the_line_matched() {
+        // `--fix` of the `;` changes the line other reports on it are fingerprinted by
+        assert_eq!(fingerprint("def x = 1;"), fingerprint("  def x = 1 "));
+        assert_ne!(fingerprint("def x = 1"), fingerprint("def x = 2"));
     }
 
     #[test]
