@@ -40,6 +40,7 @@ The comparison flatters groovyfmt somewhat. It skips the 9 spock files it can't 
 | [Build from source](#build-from-source) | available |
 | [pre-commit](#pre-commit) | available from `main`, and in releases after 0.8.0 |
 | [GitHub Action](#github-actions) | available from `main`, and in releases after 0.8.0; while the repository is private, only with a token that can read it |
+| [Gradle plugin](#gradle) | not published yet; works today from a checkout with `includeBuild` |
 | [npm](#npm) (`npx groovyfmt`) | not published yet; comes once the repository is public |
 | [Homebrew](#homebrew) | not published yet; comes once the repository is public |
 | [Docker image](#docker) | not published yet; comes once the repository is public |
@@ -229,6 +230,42 @@ This snippet has the same token limit: outside this repository, set `GH_TOKEN` t
 Add `--strict` to `--check` or `--lint` to fail the job when a file was skipped (it doesn't parse, isn't UTF-8 or is over 10 MB), which otherwise passes unchecked.
 
 ### Gradle
+
+The Gradle plugin (`gradle-plugin/`) adds three tasks: `groovyfmtCheck` and `groovyfmtLint`, which `check` runs, and `groovyfmtFormat`, which formats in place. It downloads the release binary for the machine (Linux or macOS, x86_64 or arm64) into `~/.gradle/groovyfmt/<version>/<target>/`, checks it against its `.sha256` before unpacking it, and reuses it after that. It needs Gradle 7.6 or later on Java 11 or later, and works with the configuration cache.
+
+It is not on the Gradle Plugin Portal yet. Until it is, build it from a checkout of this repository with `includeBuild`:
+
+```groovy
+// settings.gradle
+pluginManagement {
+    includeBuild '../groovyfmt/gradle-plugin'  // path to your checkout
+}
+```
+
+```groovy
+// build.gradle
+plugins {
+    id 'base'  // or any plugin that adds check, such as java
+    id 'io.github.costajohnt.groovyfmt'
+}
+
+groovyfmt {
+    // version = '0.8.0'                          // default: the plugin's own version
+    // binary = file('/usr/local/bin/groovyfmt')  // run this binary and download nothing
+    // args = ['--strict']                        // added to every run
+    // paths = ['src', 'build.gradle']            // default: the project directory
+}
+```
+
+Once it is published, drop `includeBuild` and write `id 'io.github.costajohnt.groovyfmt' version '<version>'`.
+
+A task fails with groovyfmt's own output when files need formatting or lint finds something, and with a separate message when groovyfmt itself fails (exit code 2: bad arguments, a bad config, an unreadable file). The tasks are never up to date: groovyfmt finds its own files and configs, so Gradle can't tell when they changed.
+
+Apply the plugin to the root project only. groovyfmt searches the whole directory tree, subprojects included (it skips `build` directories), so one run covers a multi-project build; applying it to subprojects too would check their files twice.
+
+While the repository is private, the download needs a token that can read it: the environment variable `GROOVYFMT_GITHUB_TOKEN` or `GITHUB_TOKEN`, or the Gradle property `groovyfmt.githubToken` in a `gradle.properties` file. The token is sent only to `api.github.com`, in a header. Don't pass it as `-P` on the command line: Gradle 7.6 keeps every command-line `-P` value, in plain text, in its configuration cache. With `--offline` the plugin uses the cached binary and fails if there is none. There is no Windows release binary; on Windows, set `binary`.
+
+Without the plugin, with `groovyfmt` on `PATH`:
 
 ```groovy
 tasks.register('groovyfmtCheck', Exec) {

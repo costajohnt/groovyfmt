@@ -10,6 +10,7 @@
 - `--strict`: with `--check`, `--lint` or when formatting in place, list the files that were skipped (they don't parse, aren't UTF-8, are over 10 MB or nest too deeply) and exit 1 if there are any. Without it a skipped file never affects the exit status, so CI can pass on files nothing checked.
 - `--` ends the options: every argument after it is a path, even one starting with `-`.
 - `--syntax` only parses, and reports each place groovyfmt could not parse as `path:line:col: could not parse: <message>` (up to 10 per file, then a count of the rest), exiting 1 if any file doesn't parse. The message names a bracket left open, or quotes the text the grammar stopped at and where it was. `-v` and `--strict` print the same lines under each file skipped for a parse error, and `--stdin` prints them after its error.
+- A Gradle plugin (`gradle-plugin/`, id `io.github.costajohnt.groovyfmt`) with `groovyfmtCheck` and `groovyfmtLint`, which `check` runs, and `groovyfmtFormat`. It downloads the release binary into `~/.gradle/groovyfmt/`, checks its `.sha256` before unpacking it, and reuses it; `binary` runs a local one instead. Gradle 7.6+ on Java 11+, configuration cache compatible. Not published yet: use it with `includeBuild` from a checkout (README, Gradle). The release workflow's `publish-gradle-plugin` job stays off until the repository variable `PUBLISH_GRADLE_PLUGIN` is set (`docs/releasing.md`).
 
 ### Changed
 
