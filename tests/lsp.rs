@@ -673,12 +673,22 @@ fn invalid_json_gets_a_parse_error_and_the_session_goes_on() {
         "textDocument/formatting",
         &format!("{{\"textDocument\":{{\"uri\":{}}},\"options\":{{\"tabSize\":4,\"insertSpaces\":true}}}}", js(&uri(&path))),
     );
-    assert_eq!(edits, Value::Arr(vec![]), "forgotten until opened again");
-    assert_eq!(
-        srv.open(&uri(&path), MESSY).len(),
-        5,
-        "with the empty catch"
+    assert_eq!(edits, Value::Arr(vec![]), "forgotten until sent again");
+    // the next full change brings it back
+    srv.notify(
+        "textDocument/didChange",
+        &format!(
+            "{{\"textDocument\":{{\"uri\":{},\"version\":3}},\"contentChanges\":[{{\"text\":{}}}]}}",
+            js(&uri(&path)),
+            js(MESSY)
+        ),
     );
+    assert_eq!(srv.diagnostics(&uri(&path)).len(), 5, "with the empty catch");
+    let edits = srv.result(
+        "textDocument/formatting",
+        &format!("{{\"textDocument\":{{\"uri\":{}}},\"options\":{{\"tabSize\":4,\"insertSpaces\":true}}}}", js(&uri(&path))),
+    );
+    assert_eq!(edits.arr().len(), 1);
     assert_eq!(srv.result("shutdown", "null"), Value::Null);
     srv.notify("exit", "null");
     let (code, err) = srv.finish();

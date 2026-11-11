@@ -430,7 +430,7 @@ impl Server {
             };
             let first = lines.line_of(s);
             // a selection ending at the start of a line doesn't take that line
-            let at_line_start = e > s && lines.nl.contains(&e);
+            let at_line_start = e > s && lines.nl.binary_search(&e).is_ok();
             let last = (lines.line_of(e) - usize::from(at_line_start)).max(first);
             diff::format_lines(&doc.text, &cfg.style, &[(first, last)])
         } else {
@@ -608,11 +608,9 @@ impl Server {
                 }
             }
             "textDocument/didChange" => {
-                if !self.docs.contains_key(&uri) {
-                    return;
-                }
-                // full sync: the last change is the whole text; a ranged change (which this
-                // server never asked for) can't be applied, so the document is dropped
+                // full sync: the last change is the whole text, which also brings back a
+                // document `forget_all` dropped; a ranged change (which this server never
+                // asked for) can't be applied, so the document is dropped
                 match params.get("contentChanges").arr().last() {
                     Some(c) if c.get("range").is_null() && c.get("text").str().is_some() => {
                         let text = c.get("text").str().unwrap_or("").to_string();
