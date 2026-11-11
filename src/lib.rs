@@ -82,6 +82,17 @@ pub fn first_error(tree: &Tree) -> Option<Node<'_>> {
     }
 }
 
+/// A path as groovyfmt prints it (reports, JSON, SARIF, patch headers, errors): on Windows
+/// with `/` between components, so output and patches are the same on every platform. A
+/// name that isn't valid Unicode shows U+FFFD in place of the bad part.
+pub fn display_path(p: &Path) -> String {
+    let s = p.display().to_string();
+    // `\` can't be part of a file name on Windows, so this changes only separators
+    #[cfg(windows)]
+    let s = s.replace('\\', "/");
+    s
+}
+
 /// Groovy sources, Gradle build scripts, and Jenkinsfiles.
 pub fn is_groovy_file(path: &Path) -> bool {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");

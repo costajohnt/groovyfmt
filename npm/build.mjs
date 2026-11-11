@@ -3,13 +3,15 @@
 //
 //   node npm/build.mjs <version> <archives-dir>
 //
-// <archives-dir> holds groovyfmt-v<version>-<target>.tar.gz and its .sha256 for
-// every target below (gh release download v<version> --pattern 'groovyfmt-*').
-// Each archive is checked against its .sha256 before use. Node stdlib and tar.
+// <archives-dir> holds groovyfmt-v<version>-<target>.tar.gz (.zip for Windows)
+// and its .sha256 for every target below (gh release download v<version>
+// --pattern 'groovyfmt-*'). Each archive is checked against its .sha256 before
+// use. Node stdlib and tar.
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { inflateRawSync } from 'node:zlib';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -18,6 +20,34 @@ const targets = {
   'darwin-x64': 'x86_64-apple-darwin',
   'linux-arm64': 'aarch64-unknown-linux-musl',
   'linux-x64': 'x86_64-unknown-linux-musl',
+  'win32-x64': 'x86_64-pc-windows-gnu',
+};
+
+// The contents of the file `name` in a zip archive, or an error. Only that entry is read
+// and nothing in the archive becomes a path on disk.
+// Sizes come from the central directory, so data descriptors are fine.
+// ponytail: no zip64; the release zip is a few MB. A zip64 archive fails here, loudly.
+const unzipOne = (zip, name) => {
+  const eocd = zip.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  if (eocd < 0) throw new Error('not a zip archive');
+  const count = zip.readUInt16LE(eocd + 10);
+  let p = zip.readUInt32LE(eocd + 16);
+  for (let i = 0; i < count; i++) {
+    if (zip.readUInt32LE(p) !== 0x02014b50) throw new Error('corrupt zip central directory');
+    const method = zip.readUInt16LE(p + 10);
+    const size = zip.readUInt32LE(p + 20);
+    const [nameLen, extraLen, commentLen] = [28, 30, 32].map((o) => zip.readUInt16LE(p + o));
+    const local = zip.readUInt32LE(p + 42);
+    if (zip.toString('utf8', p + 46, p + 46 + nameLen) === name) {
+      const start = local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28);
+      const data = zip.subarray(start, start + size);
+      if (method === 0) return Buffer.from(data);
+      if (method === 8) return inflateRawSync(data);
+      throw new Error(`unsupported zip compression method ${method}`);
+    }
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  throw new Error(`no ${name} in the archive`);
 };
 
 const [rawVersion, archivesArg] = process.argv.slice(2);
@@ -55,13 +85,21 @@ const work = mkdtempSync(join(tmpdir(), 'groovyfmt-npm-'));
 try {
   for (const [platform, target] of Object.entries(targets)) {
     const stem = `groovyfmt-v${version}-${target}`;
-    const archive = join(archives, `${stem}.tar.gz`);
+    const windows = platform.startsWith('win32');
+    const exe = windows ? 'groovyfmt.exe' : 'groovyfmt';
+    const archive = join(archives, `${stem}.${windows ? 'zip' : 'tar.gz'}`);
+    const bytes = readFileSync(archive);
     const expected = readFileSync(`${archive}.sha256`, 'utf8').split(/\s/)[0];
-    const actual = createHash('sha256').update(readFileSync(archive)).digest('hex');
+    const actual = createHash('sha256').update(bytes).digest('hex');
     if (expected !== actual) {
       throw new Error(`checksum mismatch for ${archive}: expected ${expected}, got ${actual}`);
     }
-    execFileSync('tar', ['-xzf', archive, '-C', work, `${stem}/groovyfmt`]);
+    if (windows) {
+      mkdirSync(join(work, stem), { recursive: true });
+      writeFileSync(join(work, stem, exe), unzipOne(bytes, `${stem}/${exe}`));
+    } else {
+      execFileSync('tar', ['-xzf', archive, '-C', work, `${stem}/${exe}`]);
+    }
 
     const [os, cpu] = platform.split('-');
     const dir = join(dist, platform);
@@ -74,8 +112,8 @@ try {
       files: ['bin'],
     });
     mkdirSync(join(dir, 'bin'));
-    cpSync(join(work, stem, 'groovyfmt'), join(dir, 'bin', 'groovyfmt'));
-    chmodSync(join(dir, 'bin', 'groovyfmt'), 0o755);
+    cpSync(join(work, stem, exe), join(dir, 'bin', exe));
+    chmodSync(join(dir, 'bin', exe), 0o755);
   }
 
   const main = join(dist, 'groovyfmt');

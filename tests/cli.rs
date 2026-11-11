@@ -800,8 +800,42 @@ fn lines_limits_formatting_to_ranges() {
     assert_eq!(d.read("B.groovy"), src);
 }
 
+/// Whether the tests can run git: always on unix (a missing git fails the test), and on
+/// Windows when Git for Windows is installed (under Wine it isn't).
+fn have_git() -> bool {
+    let ok = cfg!(unix) || Command::new("git").arg("--version").output().is_ok();
+    if !ok {
+        eprintln!("git can't be run here: the parts of this test that need it are skipped");
+    }
+    ok
+}
+
+#[test]
+fn changed_since_without_git_fails_clearly() {
+    let d = Dir::new("nogit");
+    d.write("A.groovy", UGLY);
+    let empty = d.0.join("empty");
+    std::fs::create_dir(&empty).unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_groovyfmt"))
+        .args(["--check", "--changed-since", "HEAD"])
+        .current_dir(&d.0)
+        .env("PATH", &empty)
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2));
+    assert!(
+        stderr(&o).starts_with("groovyfmt: --changed-since: running git: "),
+        "{}",
+        stderr(&o)
+    );
+    assert_eq!(stdout(&o), "");
+}
+
 #[test]
 fn changed_since_limits_the_run_to_files_git_sees_as_changed() {
+    if !have_git() {
+        return;
+    }
     let d = Dir::new("changed");
     let git = |args: &[&str]| {
         let o = Command::new("git")
@@ -1369,13 +1403,15 @@ fn normalize_spacing_with_lines_diff_fix_and_json() {
     d.write("D.patch", &stdout(&o));
     let formatted = stdout(&run(&d.0, &["--stdin"], Some(src)));
     assert!(formatted.contains("foo(a, b)"), "{formatted}");
-    let applied = Command::new("git")
-        .args(["apply", "D.patch"])
-        .current_dir(&d.0)
-        .output()
-        .unwrap();
-    assert!(applied.status.success(), "{:?}", applied);
-    assert_eq!(d.read("D.groovy"), formatted);
+    if have_git() {
+        let applied = Command::new("git")
+            .args(["apply", "D.patch"])
+            .current_dir(&d.0)
+            .output()
+            .unwrap();
+        assert!(applied.status.success(), "{:?}", applied);
+        assert_eq!(d.read("D.groovy"), formatted);
+    }
 
     // --lint --fix, then formatting: the fix's checks pass on a file that also gets spacing
     // changes, and formatting it twice changes nothing the second time
@@ -1492,7 +1528,6 @@ fn lint_github_escapes_percent_in_messages() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn github_output_escapes_the_file_property() {
     let d = Dir::new("ghfile");
@@ -1532,7 +1567,6 @@ fn files_over_10_mb_are_skipped_unread() {
     assert_eq!(std::fs::metadata(&p).unwrap().len(), 10 * 1024 * 1024 + 1);
 }
 
-#[cfg(unix)]
 #[test]
 fn fatal_errors_escape_control_characters_in_paths() {
     let d = Dir::new("diectl");
@@ -1544,6 +1578,8 @@ fn fatal_errors_escape_control_characters_in_paths() {
     );
 }
 
+// a `:` can't be part of a file name on Windows: see windows_names_windows_refuses_are_errors
+#[cfg(unix)]
 #[test]
 fn file_name_cannot_start_a_report_line_with_colons() {
     let d = Dir::new("colons");
@@ -1996,4 +2032,404 @@ fn broken_nested_config_governing_a_file_is_fatal_once() {
     // --config replaces discovery, so the broken file isn't read
     let o = run(&d.0, &["--check", "--config", ".groovyfmt.toml"], None);
     assert_eq!(o.status.code(), Some(1), "{}", stderr(&o));
+}
+
+#[test]
+fn stdout_is_never_newline_translated() {
+    // Windows must not turn `\n` into `\r\n` on a pipe: --stdin and --diff byte for byte
+    let d = Dir::new("newlines");
+    let crlf = "class W {\r\ndef f() {}\r\n}\r\n";
+    let o = run(&d.0, &["--stdin"], Some(crlf));
+    assert_eq!(stdout(&o), "class W {\r\n    def f() {}\r\n}\r\n");
+    let o = run(&d.0, &["--stdin"], Some(UGLY));
+    assert_eq!(stdout(&o), PRETTY);
+    d.write("W.groovy", crlf);
+    let o = run(&d.0, &["--check", "--diff"], None);
+    assert_eq!(
+        stdout(&o),
+        "--- a/W.groovy\n+++ b/W.groovy\n@@ -1,3 +1,3 @@\n class W {\r\n-def f() {}\r\n+    def f() {}\r\n }\r\n"
+    );
+}
+
+#[test]
+fn long_paths_work() {
+    // over Windows' old 260-character limit on its own
+    let d = Dir::new("long");
+    let parts: Vec<String> = (0..20)
+        .map(|i| format!("a-directory-with-a-long-name-{i:02}"))
+        .collect();
+    let rel = format!("{}/A.groovy", parts.join("/"));
+    assert!(rel.len() > 600);
+    d.write(&rel, UGLY);
+    let o = run(&d.0, &["--check"], None);
+    assert_eq!(o.status.code(), Some(1), "{}", stderr(&o));
+    assert_eq!(stdout(&o), format!("{rel}\n"));
+    let w = run(&d.0, &[&rel], None);
+    assert_eq!(w.status.code(), Some(0), "{}", stderr(&w));
+    assert_eq!(d.read(&rel), PRETTY);
+}
+
+// The Windows side of the unix-only tests above: what groovyfmt does there instead, as
+// README's Windows section describes it.
+
+/// The names in `dir`.
+#[cfg(windows)]
+fn listing(dir: &Path) -> Vec<std::ffi::OsString> {
+    let mut v: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name())
+        .collect();
+    v.sort();
+    v
+}
+
+/// write_and_walk_failures_exit_2 and json_records_unreadable_files_as_errors: no mode
+/// bits, but read-only files and files other programs hold open.
+#[cfg(windows)]
+#[test]
+fn windows_read_only_and_held_files_are_errors_and_stay_whole() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let d = Dir::new("winheld");
+    let ro = d.write("ReadOnly.groovy", UGLY);
+    d.write("Ok.groovy", UGLY);
+    let writable = std::fs::metadata(&ro).unwrap().permissions();
+    let mut perms = writable.clone();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&ro, perms).unwrap();
+    let w = run(&d.0, &[], None);
+    std::fs::set_permissions(&ro, writable).unwrap();
+    assert_eq!(w.status.code(), Some(2), "{}", stderr(&w));
+    assert!(
+        stderr(&w).contains("groovyfmt: ReadOnly.groovy: file is read-only\n"),
+        "{}",
+        stderr(&w)
+    );
+    assert_eq!(d.read("ReadOnly.groovy"), UGLY);
+    assert_eq!(d.read("Ok.groovy"), PRETTY, "other files still formatted");
+
+    // open elsewhere with no sharing at all: it can't be read, so it is an error
+    let h = d.write("Held.groovy", UGLY);
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&h)
+        .unwrap();
+    let o = run(
+        &d.0,
+        &["--lint", "--output-format", "json", "Held.groovy"],
+        None,
+    );
+    assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
+    assert!(
+        stdout(&o).contains(r#"{"path":"Held.groovy","status":"error","skip_reason":""#)
+            && stdout(&o).contains("(os error 32)"),
+        "{}",
+        stdout(&o)
+    );
+    drop(held);
+    // open for reading only: groovyfmt reads it, but can't replace it
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1) // FILE_SHARE_READ
+        .open(&h)
+        .unwrap();
+    let w = run(&d.0, &["Held.groovy"], None);
+    drop(held);
+    assert_eq!(w.status.code(), Some(2), "{}", stderr(&w));
+    assert!(
+        stderr(&w).starts_with("groovyfmt: Held.groovy: "),
+        "{}",
+        stderr(&w)
+    );
+    assert_eq!(d.read("Held.groovy"), UGLY, "whole, never half written");
+    assert!(
+        listing(&d.0)
+            .iter()
+            .all(|n| !n.to_string_lossy().contains(".groovyfmt-")),
+        "no temp files left behind"
+    );
+    let w = run(&d.0, &["Held.groovy"], None);
+    assert_eq!(w.status.code(), Some(0), "{}", stderr(&w));
+    assert_eq!(d.read("Held.groovy"), PRETTY);
+}
+
+/// hard_links_stay_linked: std can't count a file's links on Windows, so the rename splits
+/// them and the other name keeps the old text.
+#[cfg(windows)]
+#[test]
+fn windows_hard_links_are_split_by_the_rewrite() {
+    let d = Dir::new("winhard");
+    let h = d.write("H.groovy", UGLY);
+    std::fs::hard_link(&h, d.0.join("H2.groovy")).unwrap();
+    let w = run(&d.0, &["H.groovy"], None);
+    assert_eq!(w.status.code(), Some(0), "{}", stderr(&w));
+    assert_eq!(d.read("H.groovy"), PRETTY);
+    assert_eq!(d.read("H2.groovy"), UGLY);
+    let f = d.write("F.groovy", "f = 1;\n");
+    std::fs::hard_link(&f, d.0.join("F2.groovy")).unwrap();
+    let o = run(&d.0, &["--lint", "--fix", "F.groovy"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(d.read("F.groovy"), "f = 1\n");
+    assert_eq!(d.read("F2.groovy"), "f = 1;\n");
+}
+
+/// A symlink that Windows APIs report as one. Making one needs the privilege (or Developer
+/// Mode) on Windows; under Wine the call succeeds but the link isn't seen as one, so the
+/// symlink tests can't say anything there and stop.
+#[cfg(windows)]
+fn win_symlink(target: &Path, link: &Path, dir: bool) -> bool {
+    let made = if dir {
+        std::os::windows::fs::symlink_dir(target, link)
+    } else {
+        std::os::windows::fs::symlink_file(target, link)
+    };
+    let seen = std::fs::symlink_metadata(link).is_ok_and(|m| m.is_symlink());
+    if !seen {
+        eprintln!("no symlink this system reports as one ({made:?}): nothing to test");
+    }
+    seen
+}
+
+/// The symlink tests: a named link (to a file or a directory) whose target is outside the
+/// working directory is not written through, one inside is, and the walk follows none.
+#[cfg(windows)]
+#[test]
+fn windows_symlink_arguments_never_rewrite_outside_the_working_directory() {
+    let d = Dir::new("winlink");
+    let out = Dir::new("winlinkout");
+    let target = out.write("Real.groovy", UGLY);
+    out.write("V.groovy", UGLY);
+    if !win_symlink(&target, &d.0.join("x.groovy"), false) {
+        return;
+    }
+    d.write("real/In.groovy", UGLY);
+    assert!(win_symlink(
+        Path::new(r"real\In.groovy"),
+        &d.0.join("in.groovy"),
+        false
+    ));
+    assert!(win_symlink(&out.0, &d.0.join("vendor"), true));
+    assert!(win_symlink(Path::new("."), &d.0.join("loop"), true));
+    d.write("A.groovy", UGLY);
+    let w = run(&d.0, &["x.groovy", "vendor", "in.groovy", "A.groovy"], None);
+    assert_eq!(w.status.code(), Some(2), "{}", stderr(&w));
+    for arg in ["x.groovy", "vendor"] {
+        assert!(
+            stderr(&w).contains(&format!(
+                "groovyfmt: {arg}: symlink target is outside the working directory, not formatted\n"
+            )),
+            "{}",
+            stderr(&w)
+        );
+    }
+    assert_eq!(out.read("Real.groovy"), UGLY);
+    assert_eq!(out.read("V.groovy"), UGLY);
+    assert_eq!(
+        d.read("real/In.groovy"),
+        PRETTY,
+        "a link inside is followed"
+    );
+    assert!(
+        std::fs::symlink_metadata(d.0.join("in.groovy"))
+            .unwrap()
+            .is_symlink()
+    );
+    assert_eq!(d.read("A.groovy"), PRETTY);
+    d.write("B.groovy", UGLY);
+    let c = run(&d.0, &["--check"], None);
+    assert_eq!(
+        stdout(&c),
+        "B.groovy\n",
+        "links inside the walk are not followed"
+    );
+}
+
+/// file_name_cannot_start_a_report_line_with_colons and the file names Windows itself
+/// refuses or rewrites: device names, `:`, trailing dots.
+#[cfg(windows)]
+#[test]
+fn windows_names_windows_refuses_are_errors() {
+    let d = Dir::new("winnames");
+    d.write("A.groovy", UGLY);
+    let before = listing(&d.0);
+    let o = run(&d.0, &["--lint", "::warning title=x::y.groovy"], None);
+    assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
+    let all = stdout(&o) + &stderr(&o);
+    assert!(all.lines().all(|l| !l.starts_with("::")), "{all}");
+    // device names are never formatted, created, or read until a console answers
+    for n in ["CON", "NUL", "AUX", "COM1", "con.groovy", r"sub\NUL"] {
+        for args in [&["--check", n][..], &[n], &["--lint", n]] {
+            let o = run(&d.0, args, None);
+            assert!(matches!(o.status.code(), Some(0 | 2)), "{args:?}: {o:?}");
+            assert_eq!(stdout(&o), "", "{args:?}");
+        }
+    }
+    // Windows drops a trailing dot: `A.groovy.` is A.groovy
+    let o = run(&d.0, &["A.groovy."], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(d.read("A.groovy"), PRETTY);
+    assert_eq!(listing(&d.0), before, "nothing created");
+}
+
+/// Paths typed the Windows way still print with `/`, and a `/` glob from a config written
+/// on Linux excludes them.
+#[cfg(windows)]
+#[test]
+fn windows_backslash_and_drive_letter_paths_print_with_slashes() {
+    let d = Dir::new("winpaths");
+    d.write("src/A.groovy", UGLY);
+    d.write("gen/G.groovy", UGLY);
+    d.write(".groovyfmt.toml", "exclude = [\"gen/**\"]\n");
+    let o = run(
+        &d.0,
+        &[
+            "--check",
+            r"src\A.groovy",
+            r"gen\G.groovy",
+            "src/A.groovy",
+            r".\src\A.groovy",
+        ],
+        None,
+    );
+    assert_eq!(o.status.code(), Some(1), "{}", stderr(&o));
+    assert_eq!(stdout(&o), "src/A.groovy\n", "once, and gen excluded");
+    let walked = run(&d.0, &["--check", "."], None);
+    assert_eq!(stdout(&walked), "src/A.groovy\n");
+    // absolute, with a lowercase drive letter
+    let abs = d.0.join(r"src\A.groovy").to_str().unwrap().to_string();
+    let abs = abs[..1].to_ascii_lowercase() + &abs[1..];
+    let gen_abs = d.0.join(r"gen\G.groovy").to_str().unwrap().to_string();
+    let gen_abs = gen_abs[..1].to_ascii_lowercase() + &gen_abs[1..];
+    let o = run(&d.0, &["--check", &abs, &gen_abs], None);
+    assert_eq!(stdout(&o), format!("{}\n", abs.replace('\\', "/")));
+    let o = run(&d.0, &["--check", "--diff", r"src\A.groovy"], None);
+    assert!(
+        stdout(&o).starts_with("--- a/src/A.groovy\n+++ b/src/A.groovy\n"),
+        "{}",
+        stdout(&o)
+    );
+    let o = run(
+        &d.0,
+        &["--check", "--output-format", "json", r"src\A.groovy"],
+        None,
+    );
+    assert!(
+        stdout(&o).contains(r#"{"path":"src/A.groovy","status":"would_reformat""#),
+        "{}",
+        stdout(&o)
+    );
+    let o = run(
+        &d.0,
+        &["--check", "--output-format", "github", r"src\A.groovy"],
+        None,
+    );
+    assert!(
+        stdout(&o).starts_with("::error file=src/A.groovy::"),
+        "{}",
+        stdout(&o)
+    );
+    let o = run(
+        &d.0.join("src"),
+        &["--check", "-v", r"..\src\A.groovy"],
+        None,
+    );
+    let err = stderr(&o);
+    assert!(err.contains("config: ") && !err.contains('\\'), "{err}");
+    assert_eq!(stdout(&o), "../src/A.groovy\n");
+}
+
+/// syntax_messages_escape_names_and_quoted_source and
+/// json_and_sarif_escape_hostile_names_and_messages: a Windows file name can't hold a
+/// control character, `"` or `\`, but `##[`, `%`, `#` and non-ASCII, and quoted source
+/// anything.
+#[cfg(windows)]
+#[test]
+fn windows_reports_escape_names_and_quoted_source() {
+    let d = Dir::new("winesc");
+    d.write("x##[error] é.groovy", "f(a b '##[e]\x07')\n");
+    let o = run(&d.0, &["--syntax"], None);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(
+        stdout(&o),
+        "x##\\[error] é.groovy:1:7: could not parse: unexpected `'##\\[e]\\u{7}'` in an argument list\n"
+    );
+    let g = run(&d.0, &["--syntax", "--output-format", "github"], None);
+    assert!(
+        stdout(&g).starts_with("::warning file=x##\\[error] é.groovy")
+            && stdout(&g)
+                .lines()
+                .all(|l| !l.contains("##[") && !l.contains('\x07')),
+        "{}",
+        stdout(&g)
+    );
+
+    let d = Dir::new("winjsonesc");
+    d.write(
+        "q##[e]é%#.groovy",
+        "def m = ['\"##[x]é\x1b': 1, '\"##[x]é\x1b': 2]\n",
+    );
+    let o = run(&d.0, &["--lint", "--output-format", "json"], None);
+    assert_eq!(o.status.code(), Some(1), "{}", stderr(&o));
+    let s = stdout(&o);
+    let lb = "\\u005b";
+    assert!(
+        s.contains(&format!(
+            r#"{{"path":"q##{lb}e]é%#.groovy","status":"unchanged","#
+        )),
+        "{s}"
+    );
+    let message =
+        format!("\"message\":\"Key `\\\"##{lb}x]é\\u001b` appears more than once in this map\"");
+    assert!(s.contains(&message), "{s}");
+    let sarif = stdout(&run(&d.0, &["--lint", "--output-format", "sarif"], None));
+    assert!(
+        sarif.contains(r#""uri":"q%23%23%5Be%5D%C3%A9%25%23.groovy""#),
+        "{sarif}"
+    );
+    for out in [s, sarif] {
+        assert!(!out.contains("##["), "{out}");
+        assert!(!out.chars().any(|c| c.is_control() && c != '\n'), "{out:?}");
+    }
+}
+
+/// diffs_never_print_control_characters_or_workflow_commands, without the file names
+/// Windows refuses.
+#[cfg(windows)]
+#[test]
+fn windows_diffs_withhold_unsafe_content_and_keep_crlf() {
+    let d = Dir::new("windiff");
+    d.write("a/A.groovy", "class A {\ndef s = '##[error]x'\n}\n");
+    d.write("b/B.groovy", "class B {\ndef s = '\x1b[31m'\n}\n");
+    d.write(
+        "c/C.groovy",
+        "class C {\n  def f() {\n    def s = '''\n::warning::x\n'''\n  g()\n  }\n}\n",
+    );
+    d.write("d/x##[e].groovy", UGLY);
+    d.write("e/Ok.groovy", UGLY);
+    let o = run(&d.0, &["--check", "--diff"], None);
+    assert_eq!(o.status.code(), Some(1));
+    let out = stdout(&o);
+    for name in [
+        "a/A.groovy",
+        "b/B.groovy",
+        "c/C.groovy",
+        "d/x##\\[e].groovy",
+    ] {
+        assert!(
+            out.contains(&format!("# groovyfmt: {name}: diff not shown, as the file name or a changed line holds a control character or a CI workflow command\n")),
+            "{name}: {out}"
+        );
+    }
+    assert!(
+        out.contains("--- a/e/Ok.groovy\n+++ b/e/Ok.groovy\n"),
+        "{out}"
+    );
+    assert!(!out.contains("##["), "{out}");
+    d.write("g/W.groovy", "class W {\r\ndef f() {}\r\n}\r\n");
+    let o = run(&d.0, &["--check", "--diff", r"g\W.groovy"], None);
+    assert_eq!(
+        stdout(&o),
+        "--- a/g/W.groovy\n+++ b/g/W.groovy\n@@ -1,3 +1,3 @@\n class W {\r\n-def f() {}\r\n+    def f() {}\r\n }\r\n"
+    );
 }

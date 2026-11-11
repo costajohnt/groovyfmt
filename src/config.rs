@@ -113,8 +113,9 @@ impl Config {
     }
 
     pub fn load(path: &Path) -> Result<Config, String> {
-        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let mut cfg = Config::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let name = crate::display_path(path);
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{name}: {e}"))?;
+        let mut cfg = Config::parse(&text).map_err(|e| format!("{name}: {e}"))?;
         let abs = normalize(&std::env::current_dir().unwrap_or_default().join(path));
         cfg.root = abs.parent().map(Path::to_path_buf).unwrap_or_default();
         cfg.file = Some(path.to_path_buf());
@@ -321,6 +322,11 @@ impl Resolver {
 mod tests {
     use super::*;
 
+    /// An absolute path as `load` makes one: `/p` on unix, `C:\p` on drive C: on Windows.
+    fn abs(p: &str) -> PathBuf {
+        normalize(&std::env::current_dir().unwrap().join(p))
+    }
+
     #[test]
     fn defaults_and_overrides() {
         let c =
@@ -440,7 +446,7 @@ mod tests {
         assert!(!glob(&pat, &path));
         let cfg = Config {
             exclude: vec![pat.join("/")],
-            root: PathBuf::from("/p"),
+            root: abs("/p"),
             ..Config::default()
         };
         assert!(!cfg.excluded(&Path::new("/p").join(path.join("/"))));
@@ -459,7 +465,7 @@ mod tests {
                 "**/*.gradle".into(),
                 "./one/A.groovy".into(),
             ],
-            root: PathBuf::from("/p"),
+            root: abs("/p"),
             ..Config::default()
         };
         assert!(cfg.excluded(Path::new("/p/gen")));
@@ -474,10 +480,48 @@ mod tests {
         assert!(!cfg.excluded(Path::new("/p")), "the root itself");
         assert!(!cfg.excluded(Path::new("/q/gen/A.groovy")), "outside root");
         let none = Config {
-            root: PathBuf::from("/p"),
+            root: abs("/p"),
             ..Config::default()
         };
         assert!(!none.excluded(Path::new("/p/gen")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_paths_match_slash_globs_and_discovery_stops_at_roots() {
+        // a config written on Linux works unchanged
+        let cfg = Config {
+            exclude: vec!["gen/**".into(), "src/*/Skip.groovy".into()],
+            root: PathBuf::from(r"C:\p"),
+            ..Config::default()
+        };
+        assert!(cfg.excluded(Path::new(r"C:\p\gen\x\A.groovy")));
+        assert!(
+            cfg.excluded(Path::new(r"c:\p\gen\A.groovy")),
+            "drive letter case"
+        );
+        assert!(
+            cfg.excluded(Path::new("C:/p/src/a/Skip.groovy")),
+            "forward slashes"
+        );
+        assert!(cfg.excluded(Path::new(r"C:\p/src\a/Skip.groovy")), "mixed");
+        assert!(!cfg.excluded(Path::new(r"C:\p\src\Skip.groovy")));
+        assert!(
+            !cfg.excluded(Path::new(r"D:\p\gen\A.groovy")),
+            "another drive"
+        );
+        // the walk up for a config ends at a drive root or a UNC share, like `/`
+        let mut r = Resolver::new(None, None);
+        assert_eq!(r.dir(Path::new(r"C:\")).unwrap().file, None);
+        for deep in [
+            r"C:\a\b\c",
+            r"\\server\share\a\b",
+            r"\\?\C:\a\b",
+            r"\\?\UNC\server\share\a",
+        ] {
+            let n = Path::new(deep).ancestors().count();
+            assert!(n <= 4, "{deep}: {n}");
+        }
     }
 
     #[test]

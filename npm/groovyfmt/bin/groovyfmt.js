@@ -7,11 +7,11 @@ const { spawnSync } = require('node:child_process');
 const pkg = `@groovyfmt/${process.platform}-${process.arch}`;
 let bin;
 try {
-  bin = require.resolve(`${pkg}/bin/groovyfmt`);
+  bin = require.resolve(`${pkg}/bin/groovyfmt${process.platform === 'win32' ? '.exe' : ''}`);
 } catch {
   console.error(
     `groovyfmt: ${pkg} is not installed. Prebuilt binaries exist for linux-x64, linux-arm64, ` +
-      `darwin-x64 and darwin-arm64; if this is one of them, reinstall without --omit=optional ` +
+      `darwin-x64, darwin-arm64 and win32-x64; if this is one of them, reinstall without --omit=optional ` +
       `or --no-optional. Otherwise see https://github.com/costajohnt/groovyfmt#install`,
   );
   process.exit(2);

@@ -34,8 +34,12 @@ impl Drop for Dir {
 }
 
 fn uri(p: &Path) -> String {
+    let path = p.to_str().unwrap();
+    // Windows: the canonical `\\?\C:\x` is `file:///C:/x`
+    #[cfg(windows)]
+    let path = &format!("/{}", path.trim_start_matches(r"\\?\").replace('\\', "/"));
     let mut s = String::from("file://");
-    for b in p.to_str().unwrap().bytes() {
+    for b in path.bytes() {
         if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) {
             s.push(b as char);
         } else {

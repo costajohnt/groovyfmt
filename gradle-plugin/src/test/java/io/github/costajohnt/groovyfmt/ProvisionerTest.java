@@ -12,6 +12,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.zip.GZIPOutputStream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 import org.gradle.api.GradleException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -26,12 +28,16 @@ class ProvisionerTest {
         assertEquals("aarch64-unknown-linux-musl", Provisioner.target("Linux", "aarch64"));
         assertEquals("x86_64-apple-darwin", Provisioner.target("Mac OS X", "x86_64"));
         assertEquals("aarch64-apple-darwin", Provisioner.target("Mac OS X", "aarch64"));
+        assertEquals("x86_64-pc-windows-gnu", Provisioner.target("Windows 11", "amd64"));
+        assertEquals("x86_64-pc-windows-gnu", Provisioner.target("Windows Server 2022", "x86_64"));
+        assertEquals("groovyfmt.exe", Provisioner.exeName("x86_64-pc-windows-gnu"));
+        assertEquals("groovyfmt", Provisioner.exeName("x86_64-unknown-linux-musl"));
     }
 
     @Test
-    void rejectsWindowsAndUnknownPlatforms() {
-        assertTrue(assertThrows(GradleException.class, () -> Provisioner.target("Windows 11", "amd64"))
-                .getMessage().contains("no Windows release"));
+    void rejectsUnknownPlatforms() {
+        assertTrue(assertThrows(GradleException.class, () -> Provisioner.target("Windows 11", "aarch64"))
+                .getMessage().contains("Windows 11/aarch64"));
         assertTrue(assertThrows(GradleException.class, () -> Provisioner.target("FreeBSD", "amd64"))
                 .getMessage().contains("FreeBSD/amd64"));
         assertTrue(assertThrows(GradleException.class, () -> Provisioner.target("Linux", "ppc64le"))
@@ -109,6 +115,32 @@ class ProvisionerTest {
         assertEquals("https://api.github.com/repos/o/r/releases/assets/11", Provisioner.assetApiUrl(json, "a.tar.gz"));
         assertEquals("https://api.github.com/repos/o/r/releases/assets/12", Provisioner.assetApiUrl(json, "a.tar.gz.sha256"));
         assertThrows(GradleException.class, () -> Provisioner.assetApiUrl(json, "b.tar.gz"));
+    }
+
+    @Test
+    void extractsOnlyTheBinaryFromAZip() throws Exception {
+        Path zip = tmp.resolve("r.zip");
+        Files.write(zip, zip("groovyfmt-v1.0.0-t/README.md", "readme", "../groovyfmt-v1.0.0-t/groovyfmt.exe", "evil",
+                "groovyfmt-v1.0.0-t/groovyfmt.exe", "binary"));
+        Path out = tmp.resolve("out.exe");
+        Provisioner.extractZip(zip, "groovyfmt-v1.0.0-t/groovyfmt.exe", out);
+        assertEquals("binary", Files.readString(out));
+        assertFalse(Files.exists(tmp.resolve("groovyfmt-v1.0.0-t")), "nothing else written");
+        assertTrue(assertThrows(GradleException.class, () -> Provisioner.extractZip(zip, "groovyfmt-v1.0.0-t/other.exe", tmp.resolve("o")))
+                .getMessage().contains("has no groovyfmt-v1.0.0-t/other.exe"));
+    }
+
+    /** A .zip of (name, content) pairs. */
+    static byte[] zip(String... entries) throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (ZipOutputStream out = new ZipOutputStream(bytes)) {
+            for (int i = 0; i < entries.length; i += 2) {
+                out.putNextEntry(new ZipEntry(entries[i]));
+                out.write(entries[i + 1].getBytes(StandardCharsets.UTF_8));
+                out.closeEntry();
+            }
+        }
+        return bytes.toByteArray();
     }
 
     static String sha256(byte[] data) throws Exception {
