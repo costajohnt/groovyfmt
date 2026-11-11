@@ -9,6 +9,7 @@
 - Packaging for npm (`npm/`, the `groovyfmt` package with one `@groovyfmt/<os>-<arch>` package per platform), Homebrew (`packaging/homebrew/`, a formula rendered from a release's checksums) and a Docker image (`Dockerfile`, `scratch` plus the static binary). None of these is published yet: the release workflow's `publish-npm` and `publish-image` jobs stay off until the repository variables `PUBLISH_NPM` and `PUBLISH_IMAGE` are set (`docs/releasing.md`). CI builds and runs each against the latest release.
 - `--strict`: with `--check`, `--lint` or when formatting in place, list the files that were skipped (they don't parse, aren't UTF-8, are over 10 MB or nest too deeply) and exit 1 if there are any. Without it a skipped file never affects the exit status, so CI can pass on files nothing checked.
 - `--` ends the options: every argument after it is a path, even one starting with `-`.
+- `--syntax` only parses, and reports each place groovyfmt could not parse as `path:line:col: could not parse: <message>` (up to 10 per file, then a count of the rest), exiting 1 if any file doesn't parse. The message names a bracket left open, or quotes the text the grammar stopped at and where it was. `-v` and `--strict` print the same lines under each file skipped for a parse error, and `--stdin` prints them after its error.
 
 ### Changed
 

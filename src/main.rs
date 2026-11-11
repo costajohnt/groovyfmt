@@ -1,6 +1,7 @@
 use groovyfmt::config::{self, Config, Resolver};
 use groovyfmt::format::{Outcome, Style, format};
 use groovyfmt::lint::{self, RULES};
+use groovyfmt::syntax::{self, SyntaxError};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -24,6 +25,8 @@ Modes:
       (default)            Format files in place
       --check              List files that would be reformatted; exit 1 if any
       --lint               Report lint violations; exit 1 if any
+      --syntax             Only parse: report each place groovyfmt could not parse;
+                           exit 1 if any file has one
       --stdin              Format stdin to stdout (for editors)
       --stdin-filepath <PATH>
                            With --stdin: find the config as if formatting PATH (which
@@ -41,7 +44,8 @@ Options:
       --rules              List lint rules and whether each is on, then exit
       --strict             List skipped files (unparseable, not UTF-8, too large) and
                            exit 1 if there are any, so CI can't pass on unchecked files
-  -v, --verbose            Also report skipped files and timing
+  -v, --verbose            Also report skipped files, where each one failed to parse,
+                           and timing
   -h, --help               Print help
   -V, --version            Print version
       --                   Treat every later argument as a PATH
@@ -69,6 +73,7 @@ enum Mode {
     Write,
     Check,
     Lint,
+    Syntax,
     Stdin,
     Rules,
     SuggestStyle,
@@ -106,7 +111,9 @@ fn parse_args() -> Args {
         a.mode = match (std::mem::take(&mut a.mode), m) {
             (Mode::Write, m) => m,
             (Mode::Lint, Mode::Stats) | (Mode::Stats, Mode::Lint) => Mode::LintStats,
-            _ => die("--check, --lint, --stdin, --rules and --suggest-style can't be combined"),
+            _ => die(
+                "--check, --lint, --syntax, --stdin, --rules and --suggest-style can't be combined",
+            ),
         };
     };
     let mut only_paths = false;
@@ -141,6 +148,7 @@ fn parse_args() -> Args {
             }
             "--check" => set_mode(&mut a, Mode::Check),
             "--lint" => set_mode(&mut a, Mode::Lint),
+            "--syntax" => set_mode(&mut a, Mode::Syntax),
             "--stdin" => set_mode(&mut a, Mode::Stdin),
             "--rules" => set_mode(&mut a, Mode::Rules),
             "--suggest-style" => set_mode(&mut a, Mode::SuggestStyle),
@@ -604,6 +612,52 @@ fn gh_escape(s: &str, property: bool) -> String {
     }
 }
 
+/// Where a file failed to parse: the first places, and how many there are in all.
+type Diag = (Vec<SyntaxError>, usize);
+
+/// `diag` for a skipped file whose reasons are listed (`-v`, `--strict`), else nothing.
+fn diag_if(listed: bool, src: &str) -> Diag {
+    if listed {
+        syntax::check(src)
+    } else {
+        Diag::default()
+    }
+}
+
+/// One line per place a file failed to parse, and a count of any not shown. To stdout for
+/// `--syntax`, else to stderr below the file's `skipped` line.
+fn report_syntax(name: &str, (shown_errs, total): &Diag, github: bool, out: fn(&str)) {
+    for e in shown_errs {
+        let message = printable(&e.message);
+        out(&if github {
+            format!(
+                "::warning file={},line={},col={},title=could not parse::{}",
+                gh_escape(name, true),
+                e.line,
+                e.col,
+                gh_escape(&message, false)
+            )
+        } else {
+            format!("{name}:{}:{}: could not parse: {message}", e.line, e.col)
+        });
+    }
+    let more = total - shown_errs.len();
+    if more > 0 {
+        out(&if github {
+            format!(
+                "::warning file={},title=could not parse::{more} more places not shown",
+                gh_escape(name, true)
+            )
+        } else {
+            format!("{name}: {more} more places groovyfmt could not parse")
+        });
+    }
+}
+
+fn to_stderr(line: &str) {
+    eprintln!("{line}");
+}
+
 fn main() {
     // a panic message can quote source text (a bad string slice prints the string), and
     // par_map turns the panic into an error but the hook still prints it first
@@ -623,6 +677,7 @@ fn main() {
             }
             match a.mode {
                 Mode::Lint => lint_files(&files, &cfgs, &a, false),
+                Mode::Syntax => syntax(&files, &a),
                 Mode::LintStats => lint_files(&files, &cfgs, &a, true),
                 Mode::Stats => stats(&files, &cfgs),
                 Mode::SuggestStyle => suggest_style(&files, &cfgs),
@@ -689,9 +744,11 @@ fn stdin(res: &mut Resolver, a: &Args) -> i32 {
                     gh_escape(&name, true),
                     gh_escape(why, false)
                 );
-                std::process::exit(2);
+            } else {
+                eprintln!("groovyfmt: {name}: not formatted: {why}");
             }
-            die(format!("{name}: not formatted: {why}"))
+            report_syntax(&name, &syntax::check(&src), a.github, to_stderr);
+            std::process::exit(2);
         }
     };
     std::io::stdout().write_all(out.as_bytes()).map_or(2, |_| 0)
@@ -700,6 +757,7 @@ fn stdin(res: &mut Resolver, a: &Args) -> i32 {
 fn fmt(files: &[PathBuf], links: &HashMap<PathBuf, PathBuf>, cfgs: &Configs, a: &Args) -> i32 {
     let t = Instant::now();
     let check = a.mode == Mode::Check;
+    let listed = a.verbose || a.strict;
     // Each worker writes (or, for --check, drops) the new text itself, so no more than one
     // output per thread is alive at once; only the small per-file results are kept, and
     // they're reported below in input order.
@@ -707,11 +765,11 @@ fn fmt(files: &[PathBuf], links: &HashMap<PathBuf, PathBuf>, cfgs: &Configs, a: 
         let real = links.get(p).map_or(p, PathBuf::as_path);
         let (src, id) = match read_as(real, p)? {
             Ok(read) => read,
-            Err(why) => return Ok(Err(why)),
+            Err(why) => return Ok(Err((why, Diag::default()))),
         };
         Ok(match format(&src, &cfgs[p].style) {
             Outcome::Unchanged => Ok(None),
-            Outcome::Skipped(why) => Err(why),
+            Outcome::Skipped(why) => Err((why, diag_if(listed, &src))),
             Outcome::Formatted(_) if check => Ok(Some(Ok(()))),
             Outcome::Formatted(out) => Ok(Some(write_atomic(real, &out, id))),
         })
@@ -724,10 +782,11 @@ fn fmt(files: &[PathBuf], links: &HashMap<PathBuf, PathBuf>, cfgs: &Configs, a: 
                 failed = true;
             }
             Ok(Ok(None)) => {}
-            Ok(Err(why)) => {
+            Ok(Err((why, diag))) => {
                 skipped += 1;
-                if a.verbose || a.strict {
+                if listed {
                     eprintln!("skipped {}: {why}", shown(path));
+                    report_syntax(&shown(path), &diag, false, to_stderr);
                 }
             }
             Ok(Ok(Some(written))) => {
@@ -768,8 +827,12 @@ fn fmt(files: &[PathBuf], links: &HashMap<PathBuf, PathBuf>, cfgs: &Configs, a: 
 
 fn lint_files(files: &[PathBuf], cfgs: &Configs, a: &Args, stats_only: bool) -> i32 {
     let t = Instant::now();
+    let listed = a.verbose || a.strict;
     let results = par_map(files, |p| {
-        read(p).map(|src| src.and_then(|s| lint::lint(&s)))
+        read(p).map(|src| {
+            let src = src.map_err(|why| (why, Diag::default()))?;
+            lint::lint(&src).map_err(|why| (why, diag_if(listed, &src)))
+        })
     });
     let (mut skipped, mut total, mut failed) = (0usize, 0usize, false);
     let mut by_rule: BTreeMap<&str, usize> = BTreeMap::new();
@@ -779,10 +842,11 @@ fn lint_files(files: &[PathBuf], cfgs: &Configs, a: &Args, stats_only: bool) -> 
                 eprintln!("groovyfmt: {e}");
                 failed = true;
             }
-            Ok(Err(why)) => {
+            Ok(Err((why, diag))) => {
                 skipped += 1;
-                if a.verbose || a.strict {
+                if listed {
                     eprintln!("skipped {}: {why}", shown(path));
+                    report_syntax(&shown(path), &diag, false, to_stderr);
                 }
             }
             Ok(Ok(vs)) => {
@@ -832,6 +896,45 @@ fn lint_files(files: &[PathBuf], cfgs: &Configs, a: &Args, stats_only: bool) -> 
         2
     } else {
         i32::from(total > 0 || (a.strict && skipped > 0))
+    }
+}
+
+/// `--syntax`: parse only, and report every file that doesn't parse cleanly.
+fn syntax(files: &[PathBuf], a: &Args) -> i32 {
+    let t = Instant::now();
+    let results = par_map(files, |p| read(p).map(|src| src.map(|s| syntax::check(&s))));
+    let (mut bad, mut skipped, mut failed) = (0usize, 0usize, false);
+    for (path, r) in files.iter().zip(results) {
+        match r {
+            Err(e) => {
+                eprintln!("groovyfmt: {e}");
+                failed = true;
+            }
+            Ok(Err(why)) => {
+                skipped += 1;
+                if a.verbose || a.strict {
+                    eprintln!("skipped {}: {why}", shown(path));
+                }
+            }
+            Ok(Ok((_, 0))) => {}
+            Ok(Ok(diag)) => {
+                bad += 1;
+                report_syntax(&shown(path), &diag, a.github, say);
+            }
+        }
+    }
+    let mut summary = format!("could not parse {bad} of {} files", files.len());
+    if skipped > 0 {
+        summary += &format!(", {skipped} skipped (-v shows why)");
+    }
+    if a.verbose {
+        summary += &format!(" in {:.2}s", t.elapsed().as_secs_f64());
+    }
+    eprintln!("{summary}");
+    if failed {
+        2
+    } else {
+        i32::from(bad > 0 || (a.strict && skipped > 0))
     }
 }
 

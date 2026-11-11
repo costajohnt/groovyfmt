@@ -95,11 +95,25 @@ With no paths it works on the current directory. Directories are searched for `*
 | `groovyfmt` | format files in place |
 | `groovyfmt --check` | list files that would be reformatted, exit 1 if any |
 | `groovyfmt --lint` | report lint violations, exit 1 if any |
+| `groovyfmt --syntax` | only parse, and report each place groovyfmt could not parse, exit 1 if any |
 | `groovyfmt --stdin` | format stdin to stdout, for editors |
 | `groovyfmt --rules` | list lint rules and whether each is on |
 | `groovyfmt --suggest-style` | suggest the indent settings that fit the code, writing nothing (see [Configuration](#configuration)) |
 
 Options: `--config <file>`, `--indent <n>`, `--stdin-filepath <path>` (see [Editors](#editors)), `--output-format text|github`, `--strict` (list skipped files and exit 1 if there are any, with `--check`, `--lint` or in place), `-v` (also list skipped files and timing), and `--` to treat every later argument as a path. Exit status is 0 when clean, 1 when files need formatting or lint found something (or, with `--strict`, files were skipped), and 2 on errors (bad arguments, bad config, unreadable files, or `--stdin` input that can't be formatted).
+
+### Parse errors
+
+A file groovyfmt can't parse is never formatted or linted. `--syntax` lists where parsing failed, one line per place, up to 10 per file and then a count of the rest; `-v` and `--strict` show the same lines under each skipped file, and `--stdin` prints them after its error:
+
+```console
+$ groovyfmt --syntax
+Jenkinsfile:4:14: could not parse: `{` is never closed in a closure
+src/Build.groovy:12:21: could not parse: expected `)` to close the `(` on line 12
+could not parse 2 of 31 files
+```
+
+Columns count characters. The message names the bracket left open when there is one, else quotes the text the grammar stopped at and says where it was (in an argument list, at the top level). It says groovyfmt could not parse the code, not that the code is wrong: the grammar is not the Groovy compiler, and about 0.5% of valid files don't parse (see [Coverage](#coverage)). Exit status is 0 when every file parses, 1 when one doesn't, 2 on errors; `--output-format github` turns each place into an annotation.
 
 ### What formatting changes
 

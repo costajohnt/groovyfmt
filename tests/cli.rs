@@ -164,6 +164,127 @@ fn strict_fails_on_skipped_files_and_lists_them() {
     );
 }
 
+const BROKEN_AT: &str =
+    "Broken.groovy:1:10: could not parse: expected `}` to close the `{` on line 1\n";
+
+#[test]
+fn syntax_mode_reports_where_parsing_failed() {
+    let d = Dir::new("syntax");
+    d.write("Ok.groovy", PRETTY);
+    let o = run(&d.0, &["--syntax"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(
+        (stdout(&o), stderr(&o)),
+        ("".into(), "could not parse 0 of 1 files\n".into())
+    );
+
+    d.write("Broken.groovy", "def x = {\n");
+    let o = run(&d.0, &["--syntax"], None);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(stdout(&o), BROKEN_AT);
+    assert_eq!(stderr(&o), "could not parse 1 of 2 files\n");
+    let g = run(&d.0, &["--syntax", "--output-format", "github"], None);
+    assert_eq!(g.status.code(), Some(1));
+    assert_eq!(
+        stdout(&g),
+        "::warning file=Broken.groovy,line=1,col=10,title=could not parse::expected `}` to close the `{` on line 1\n"
+    );
+    assert_eq!(d.read("Broken.groovy"), "def x = {\n", "never writes");
+
+    // at most ten places per file, then a count of the rest
+    let many: String = (0..12).map(|i| format!("def f{i}() {{ x = }}\n")).collect();
+    d.write("many/M.groovy", &many);
+    let o = run(&d.0, &["--syntax", "many"], None);
+    assert_eq!(o.status.code(), Some(1));
+    let lines: Vec<String> = stdout(&o).lines().map(String::from).collect();
+    assert_eq!(lines.len(), 11, "{lines:?}");
+    assert_eq!(
+        lines[0],
+        "many/M.groovy:1:14: could not parse: unexpected `=` in a block"
+    );
+    assert_eq!(
+        lines[10],
+        "many/M.groovy: 2 more places groovyfmt could not parse"
+    );
+
+    for (args, msg) in [
+        (&["--syntax", "--check"][..], "can't be combined"),
+        (
+            &["--syntax", "nope.groovy"],
+            "nope.groovy: no such file or directory",
+        ),
+    ] {
+        let o = run(&d.0, args, None);
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+        assert!(stderr(&o).contains(msg), "{args:?}: {}", stderr(&o));
+    }
+}
+
+#[test]
+fn skipped_files_show_where_parsing_failed() {
+    let d = Dir::new("syntaxskip");
+    d.write("Broken.groovy", "def x = {\n");
+    for mode in [&["--check"][..], &["--lint"], &[]] {
+        for flag in ["-v", "--strict"] {
+            let args: Vec<&str> = mode.iter().copied().chain([flag]).collect();
+            let o = run(&d.0, &args, None);
+            assert!(
+                stderr(&o).contains(&format!("skipped Broken.groovy: parse error\n{BROKEN_AT}")),
+                "{args:?}: {}",
+                stderr(&o)
+            );
+        }
+        let plain = run(&d.0, mode, None);
+        assert!(!stderr(&plain).contains("could not parse"), "{mode:?}");
+    }
+    let o = run(&d.0, &["--stdin"], Some("def x = {\n"));
+    assert_eq!(o.status.code(), Some(2));
+    assert_eq!(stdout(&o), "");
+    assert_eq!(
+        stderr(&o),
+        "groovyfmt: <stdin>: not formatted: parse error\n<stdin>:1:10: could not parse: expected `}` to close the `{` on line 1\n"
+    );
+    let args = [
+        "--stdin",
+        "--stdin-filepath",
+        "a:b.groovy",
+        "--output-format",
+        "github",
+    ];
+    let o = run(&d.0, &args, Some("def x = {\n"));
+    assert_eq!(o.status.code(), Some(2));
+    assert_eq!(
+        stderr(&o),
+        "::error file=a%3Ab.groovy::Not formatted: parse error\n::warning file=a%3Ab.groovy,line=1,col=10,title=could not parse::expected `}` to close the `{` on line 1\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn syntax_messages_escape_names_and_quoted_source() {
+    let d = Dir::new("syntaxesc");
+    d.write("x##[error]\x1b[31m.groovy", "f(a b '##[e]\x07')\n");
+    let o = run(&d.0, &["--syntax"], None);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(
+        stdout(&o),
+        "x##\\[error]\\u{1b}[31m.groovy:1:5: could not parse: unexpected `b '##\\[e]\\u{7}'` in an argument list\n"
+    );
+    let g = run(&d.0, &["--syntax", "--output-format", "github"], None);
+    assert!(
+        stdout(&g)
+            .lines()
+            .all(|l| !l.contains("##[") && !l.contains('\x1b')),
+        "{}",
+        stdout(&g)
+    );
+    assert!(
+        stdout(&g).starts_with("::warning file=x##\\[error]"),
+        "{}",
+        stdout(&g)
+    );
+}
+
 #[test]
 fn option_parsing_edge_cases() {
     let d = Dir::new("args");
