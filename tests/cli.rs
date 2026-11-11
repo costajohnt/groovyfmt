@@ -427,7 +427,12 @@ fn sarif_output_for_lint_and_parse_errors() {
     assert!(s.contains(r#"{"id":"UnusedImport","shortDescription":{"text":"import whose name (or alias) never appears in code or as a word in a comment"},"defaultConfiguration":{"level":"warning","enabled":true}}"#), "{s}");
     assert!(s.contains(r#""columnKind":"unicodeCodePoints""#), "{s}");
     assert!(s.contains(r#"{"ruleId":"UnusedImport","ruleIndex":0,"level":"warning","message":{"text":"The [a.b.Unused] import is never referenced"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"A.groovy"},"region":{"startLine":1,"startColumn":1,"endLine":1,"endColumn":18}}}]}"#), "{s}");
-    assert!(s.contains(r#"{"ruleId":"ParseError","ruleIndex":16,"level":"warning","message":{"text":"expected `}` to close the `{` on line 1"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"Broken.groovy"},"region":{"startLine":1,"startColumn":10,"endLine":1,"endColumn":10}}}]}"#), "{s}");
+    // ParseError comes after every rule in the table
+    let parse = format!(
+        r#"{{"ruleId":"ParseError","ruleIndex":{},"level":"warning","message":{{"text":"expected `}}` to close the `{{` on line 1"}},"locations":[{{"physicalLocation":{{"artifactLocation":{{"uri":"Broken.groovy"}},"region":{{"startLine":1,"startColumn":10,"endLine":1,"endColumn":10}}}}}}]}}"#,
+        groovyfmt::lint::RULES.len()
+    );
+    assert!(s.contains(&parse), "{s}");
     assert_eq!(s.matches("\"ruleId\"").count(), 3);
 
     for (args, msg) in [
