@@ -68,7 +68,18 @@ impl Style {
     }
 }
 
+/// Format `src`. Lines between `// groovyfmt: off` and `// groovyfmt: on` stay as they are
+/// (see `diff::off_lines`), which formats the rest as `--lines` does.
 pub fn format(src: &str, style: &Style) -> Outcome {
+    if crate::diff::off_lines(src).is_empty() {
+        format_whole(src, style)
+    } else {
+        crate::diff::format_lines(src, style, &[(1, usize::MAX)])
+    }
+}
+
+/// `format`, ignoring `groovyfmt: off` comments.
+pub(crate) fn format_whole(src: &str, style: &Style) -> Outcome {
     format_with(src, style, reindent)
 }
 

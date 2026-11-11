@@ -165,6 +165,16 @@ pub const RULES: &[Rule] = &[
         good: "def stage = 'build'",
         fixable: false,
     },
+    // Suppressions (src/lint/suppress.rs)
+    Rule {
+        name: "UnusedSuppression",
+        default: false,
+        description: "a groovyfmt-ignore comment that suppresses nothing, or a codenarc-disable comment or @SuppressWarnings naming a groovyfmt rule it doesn't suppress (off by default: a suppression can be kept for code that comes and goes)",
+        why: "A suppression that matches nothing hides the next real report on that line, and a misspelled rule name in it suppresses nothing at all.",
+        bad: "// groovyfmt-ignore UnusedImport\nprintln 'hello'",
+        good: "import a.Unused // groovyfmt-ignore UnusedImport -- loaded for its side effect\nprintln 'hello'",
+        fixable: false,
+    },
     // Imports (src/lint/imports.rs)
     Rule {
         name: "UnnecessaryGroovyImport",
@@ -556,6 +566,7 @@ mod gradle;
 mod imports;
 mod jenkins;
 mod spock;
+mod suppress;
 mod unused;
 
 #[derive(Debug, PartialEq)]
@@ -596,7 +607,7 @@ pub fn lint_file(path: &Path, src: &str) -> Result<Vec<Violation>, &'static str>
     });
     // the nodes each of basic, unused and imports looks at, in preorder
     let table = kinds(&tree.language());
-    let mut by_module: [Vec<Node>; 5] = Default::default();
+    let mut by_module: [Vec<Node>; 6] = Default::default();
     for (i, &n) in nodes.iter().enumerate() {
         let (kind, m) = table
             .get(usize::from(n.kind_id()))
@@ -653,10 +664,12 @@ pub fn lint_file(path: &Path, src: &str) -> Result<Vec<Violation>, &'static str>
         import_nodes,
         name_leaves,
         dynamic,
+        directives,
     ] = by_module;
     basic::check(src, &basic_nodes, &mut v);
     unused::check(src, &unused_nodes, &name_leaves, &dynamic, &mut v);
     imports::check(path, src, &import_nodes, &mut v);
+    suppress::apply(src, &directives, &mut v);
     // tree-sitter columns count bytes; report characters, as editors and GitHub do
     let lines: Vec<&str> = src.split('\n').collect();
     let chars = |line: usize, col: usize| {
@@ -674,7 +687,7 @@ pub fn lint_file(path: &Path, src: &str) -> Result<Vec<Violation>, &'static str>
 }
 
 /// By node kind id: the kind's name, and a bit for each list in [basic, unused, imports,
-/// unused's name leaves, unused's dynamic member access] whose kinds include it. Looking the
+/// unused's name leaves, unused's dynamic member access, suppressions] whose kinds include it. Looking the
 /// name up here costs one call into tree-sitter per node instead of two, and each module
 /// sees only its own nodes: a pass over every node per module cost 25% of `--lint`.
 fn kinds(lang: &tree_sitter::Language) -> &'static [(&'static str, u8)] {
@@ -686,6 +699,7 @@ fn kinds(lang: &tree_sitter::Language) -> &'static [(&'static str, u8)] {
             imports::KINDS,
             unused::LEAVES,
             unused::DYNAMIC,
+            suppress::KINDS,
         ];
         (0..lang.node_kind_count())
             .map(|id| {
@@ -1249,6 +1263,7 @@ mod tests {
         let more = "package p\nimport p.Q\nimport java.util.Date\nclass K {\n private int pf\n private void m() { }\n static { }\n { }\n boolean equals(Object o) { true }\n boolean equals(String s) { true }\n int hashcode() { 1 }\n String toString() { null }\n}\ndef g() {\n def u = 1\n return 1\n f()\n}\ntry { f() } finally { return 1; throw new E(); assert x }\nswitch (x) { }\ndef s = [1, 1] as Set\ndef t = true ? 1 : 2\nassert true\nif (1 == 2) { f() }\nif (x != null || x.a) { f() }\nif (x % 2 == 1) { f() }\nl.removeAll(l)\nthrow RuntimeException()\nvoid h() { try { f() } catch (e) { new BadException(e) } }\nDate d = new Q()\n";
         for (name, src) in [
             ("A.groovy", more),
+            ("B.groovy", "// groovyfmt-ignore DeadCode\nprintln 1\n"),
             ("Jenkinsfile", jenkins),
             ("build.gradle", gradle),
             ("S.groovy", spock),
