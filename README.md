@@ -14,8 +14,8 @@ would reformat 27 of 27 files
 $ groovyfmt
 reformatted 27 of 27 files
 $ groovyfmt --lint
-test/groovy/BaseTest.groovy:2:1: UnusedImport: The [mock.CurrentBuild] import is never referenced
-test/groovy/BaseTest.groovy:4:1: UnusedImport: The [org.junit.Before] import is never referenced
+test/groovy/BaseTest.groovy:2:1: UnusedImport: The [mock.CurrentBuild] import is never referenced (fixable)
+test/groovy/BaseTest.groovy:4:1: UnusedImport: The [org.junit.Before] import is never referenced (fixable)
 ...
 9 violations in 27 files (UnusedImport 9)
 ```
@@ -98,6 +98,7 @@ With no paths it works on the current directory. Directories are searched for `*
 | `groovyfmt` | format files in place |
 | `groovyfmt --check` | list files that would be reformatted, exit 1 if any |
 | `groovyfmt --lint` | report lint violations, exit 1 if any |
+| `groovyfmt --lint --fix` | fix what can be fixed safely (unused and duplicate imports, unnecessary semicolons), then report the rest |
 | `groovyfmt --syntax` | only parse, and report each place groovyfmt could not parse, exit 1 if any |
 | `groovyfmt --stdin` | format stdin to stdout, for editors |
 | `groovyfmt --rules` | list lint rules and whether each is on |
@@ -125,7 +126,7 @@ Columns count characters. The message names the bracket left open when there is 
 ```console
 $ groovyfmt --lint --output-format json
 {"version":1,"files":[
-{"path":"A.groovy","status":"unchanged","skip_reason":null,"diagnostics":[{"rule":"UnusedImport","severity":"warning","message":"The [a.b.Unused] import is never referenced","line":1,"column":1,"end_line":1,"end_column":18,"fixable":false}]},
+{"path":"A.groovy","status":"unchanged","skip_reason":null,"diagnostics":[{"rule":"UnusedImport","severity":"warning","message":"The [a.b.Unused] import is never referenced","line":1,"column":1,"end_line":1,"end_column":18,"fixable":true}]},
 {"path":"Broken.groovy","status":"skipped","skip_reason":"parse error","diagnostics":[{"rule":"ParseError","severity":"warning","message":"expected `}` to close the `{` on line 1","line":1,"column":10,"end_line":1,"end_column":10,"fixable":false}]}
 ],"summary":{"files":2,"unchanged":1,"would_reformat":0,"reformatted":0,"skipped":1,"errors":0,"diagnostics":2}}
 ```
@@ -136,12 +137,12 @@ The schema is versioned: `version` changes whenever a field is removed or change
 |---|---|
 | `version` | `1` |
 | `files[].path` | the file as the text output names it, relative to where groovyfmt runs when it was found by a walk from there (a name that isn't UTF-8 is shown with replacement characters) |
-| `files[].status` | `unchanged`, `would_reformat` (`--check`), `reformatted` (in place), `skipped` (not parsed, not UTF-8, over 10 MB, or not formattable) or `error` (unreadable, or the write failed). `--lint` and `--syntax` never change files, so a file they read is `unchanged` |
-| `files[].skip_reason` | for `skipped` and `error`, why (`parse error`, `not valid UTF-8`, an I/O error); else `null` |
+| `files[].status` | `unchanged`, `would_reformat` (`--check`), `reformatted` (in place), `fixed` (`--lint --fix`), `skipped` (not parsed, not UTF-8, over 10 MB, or not formattable) or `error` (unreadable, or the write failed). `--lint` without `--fix` and `--syntax` never change files, so a file they read is `unchanged` |
+| `files[].skip_reason` | for `skipped` and `error`, why (`parse error`, `not valid UTF-8`, an I/O error); with `--fix`, `not fixed: <why>` for a file whose fix failed a check; else `null` |
 | `files[].diagnostics[]` | lint violations (`--lint`, enabled rules only) and, for a file that doesn't parse, the places groovyfmt could not parse (rule `ParseError`, in every mode, at most 10 per file) |
 | `rule`, `severity`, `message` | the rule name, `warning`, and the message text (the same as the text output, unescaped) |
 | `line`, `column`, `end_line`, `end_column` | 1-based; columns count characters; the end is just past the flagged code |
-| `fixable` | whether a fix exists for this violation |
+| `fixable` | whether `--lint --fix` would fix it |
 | `summary` | counts of files by status (`errors` counts `error`) and of diagnostics |
 
 Strings are standard JSON. Every control character is escaped, and so is a `[` after `##` (as `\u005b`), so file names and quoted source can't act as terminal escapes or GitHub Actions workflow commands when the document is printed in a log; a JSON parser reads back the original text.
@@ -173,9 +174,9 @@ The general rules are named after their [CodeNarc](https://codenarc.org/) equiva
 
 | Rule | Default | Flags |
 |---|---|---|
-| UnusedImport | on | an import whose name (or alias) never appears in code or as a word in a comment |
+| UnusedImport | on | an import whose name (or alias) never appears in code or as a word in a comment; not an annotated import (`@Library`, `@Grab`), which is there for its annotation |
 | DuplicateImport | on | the same import twice |
-| UnnecessarySemicolon | on | a `;` at the end of a line, unless the next line starts with `{` (without the `;` that closure would become an argument of the statement before) |
+| UnnecessarySemicolon | on | a `;` at the end of a line, unless the next line starts with `{` (without the `;` that closure would become an argument of the statement before), `++` or `--` |
 | EmptyCatchBlock | on | an empty `catch`, unless the parameter is named `ignore` or `ignored` |
 | EmptyIfStatement | on | an `if` with an empty block |
 | EmptyElseBlock | on | an `else` with an empty block |
@@ -231,6 +232,19 @@ In classes whose superclass is `Specification` or ends in `Spec` or `Specificati
 | SpockBlockOrder | on | blocks in an order Spock refuses to compile (`then:` without `when:`, `when:` not followed by `then:`, `given:` after another block, anything but `and:`, `combined:` or `filter:` after `where:`), and labels that aren't Spock blocks |
 | SpockDataTableColumns | on | a `where:` data table row with a different number of columns than the row above |
 | SpockEmptyBlock | off | a `then:` or `expect:` block with no conditions, only a description (off by default: Spock accepts it, and Spock's own tests use empty blocks on purpose) |
+
+### Fixing
+
+`groovyfmt --lint --fix` removes, in place, what three rules flag: an `UnusedImport` or `DuplicateImport` line (with its line break, and only when nothing but whitespace or a `;` shares the line) and an `UnnecessarySemicolon` `;`. It then reports the violations that remain and exits 1 if there are any. Plain `--lint` marks these violations with ` (fixable)` (`"fixable": true` in JSON). A rule turned off in the config is neither fixed nor reported.
+
+```console
+$ groovyfmt --lint --fix
+src/A.groovy:4:1: UnusedImport: The [b.C] import is never referenced
+fixed 4 violations in 1 files (DuplicateImport 1, UnnecessarySemicolon 2, UnusedImport 1)
+1 violations in 3 files (UnusedImport 1)
+```
+
+As with formatting, each fix is checked before the file is written: the fixed file must parse cleanly, its tokens must be the original's minus exactly the removed ones, its parse tree must keep the original's shape (so removing a `;` can't join two statements or turn one into another's body), and linting it must find the original's other violations and nothing new. A file that fails a check is left as it was and listed as `path not fixed: <why>` on stderr. A file that doesn't parse is never fixed. Writes go through the same path as formatting: symlinks, permissions, owners, hard links and `exclude` are handled the same way. Running it again changes nothing.
 
 ## Configuration
 

@@ -1,4 +1,5 @@
 use groovyfmt::config::{self, Config, Resolver};
+use groovyfmt::fix::{self, Fix};
 use groovyfmt::format::{Outcome, Style, format};
 use groovyfmt::lint::{self, RULES};
 use groovyfmt::report::{self, Diagnostic, FileReport};
@@ -47,6 +48,9 @@ Options:
       --rules              List lint rules and whether each is on, then exit
       --strict             List skipped files (unparseable, not UTF-8, too large) and
                            exit 1 if there are any, so CI can't pass on unchecked files
+      --fix                With --lint: remove unused and duplicate imports and
+                           unnecessary semicolons in place (violations marked
+                           \"(fixable)\"), then report what remains
   -v, --verbose            Also report skipped files, where each one failed to parse,
                            and timing
   -h, --help               Print help
@@ -68,6 +72,8 @@ struct Args {
     github: bool,
     /// `--output-format json` or `sarif`: one document on stdout instead of report lines
     machine: Option<Machine>,
+    /// `--lint --fix`
+    fix: bool,
     verbose: bool,
     strict: bool,
 }
@@ -168,6 +174,7 @@ fn parse_args() -> Args {
             "--tree" => set_mode(&mut a, Mode::Tree),
             "-v" | "--verbose" => a.verbose = true,
             "--strict" => a.strict = true,
+            "--fix" => a.fix = true,
             "--config" => a.config = Some(PathBuf::from(value("--config"))),
             "--stdin-filepath" => a.stdin_filepath = Some(PathBuf::from(value("--stdin-filepath"))),
             "--indent" => {
@@ -212,6 +219,9 @@ fn parse_args() -> Args {
             die("--output-format json works with --check, --lint, --syntax and formatting in place")
         }
         (Some(Machine::Sarif), _) => die("--output-format sarif works with --lint and --syntax"),
+    }
+    if a.fix && a.mode != Mode::Lint {
+        die("--fix needs --lint");
     }
     if a.indent.is_some() && a.mode == Mode::SuggestStyle {
         die("--indent can't be combined with --suggest-style, which tries the indents itself");
@@ -705,7 +715,7 @@ fn lint_diagnostic(v: lint::Violation) -> Diagnostic {
         col: v.col,
         end_line: v.end_line,
         end_col: v.end_col,
-        fixable: false,
+        fixable: v.fix.is_some(),
     }
 }
 
@@ -775,15 +785,15 @@ fn main() {
         Mode::Rules => rules(&one_config(&mut res, &a)),
         Mode::Stdin => stdin(&mut res, &a),
         _ => {
-            // only write mode rewrites; reading through a named link is reading its target
-            let (files, links, cfgs) = collect(&a.paths, &mut res, a.mode == Mode::Write);
+            // only write mode and --fix rewrite; reading through a named link is reading its target
+            let (files, links, cfgs) = collect(&a.paths, &mut res, a.mode == Mode::Write || a.fix);
             if a.verbose && !matches!(a.mode, Mode::Errors | Mode::Tree) {
                 report(files.iter().map(|f| &*cfgs[f]));
             }
             match a.mode {
-                Mode::Lint => lint_files(&files, &cfgs, &a, false),
+                Mode::Lint => lint_files(&files, &links, &cfgs, &a, false),
                 Mode::Syntax => syntax(&files, &a),
-                Mode::LintStats => lint_files(&files, &cfgs, &a, true),
+                Mode::LintStats => lint_files(&files, &links, &cfgs, &a, true),
                 Mode::Stats => stats(&files, &cfgs),
                 Mode::SuggestStyle => suggest_style(&files, &cfgs),
                 Mode::Errors => errors(&files),
@@ -942,19 +952,63 @@ fn fmt(files: &[PathBuf], links: &HashMap<PathBuf, PathBuf>, cfgs: &Configs, a: 
     }
 }
 
-fn lint_files(files: &[PathBuf], cfgs: &Configs, a: &Args, stats_only: bool) -> i32 {
+/// One file's lint result: the violations (after any fix), and with `--fix` what was fixed,
+/// why a fix was refused, and whether the write failed.
+struct Linted {
+    violations: Vec<lint::Violation>,
+    fixed: Vec<lint::Violation>,
+    refused: Option<&'static str>,
+    written: std::io::Result<()>,
+}
+
+fn lint_files(
+    files: &[PathBuf],
+    links: &HashMap<PathBuf, PathBuf>,
+    cfgs: &Configs,
+    a: &Args,
+    stats_only: bool,
+) -> i32 {
     let t = Instant::now();
     let mut out = Out::new(a);
     let listed = (a.verbose || a.strict) && out.text();
     let want_diag = listed || !out.text();
     let results = par_map(files, |p| {
-        read(p).map(|src| {
-            let src = src.map_err(|why| (why, Diag::default()))?;
-            lint::lint_file(p, &src).map_err(|why| (why, diag_if(want_diag, &src)))
-        })
+        // with --fix, as when formatting: a named link's target is read and rewritten
+        let real = links.get(p).map_or(p, PathBuf::as_path);
+        let (src, id) = match read_as(real, p)? {
+            Ok(read) => read,
+            Err(why) => return Ok(Err((why, Diag::default()))),
+        };
+        let violations = match lint::lint_file(p, &src) {
+            Ok(vs) => vs,
+            Err(why) => return Ok(Err((why, diag_if(want_diag, &src)))),
+        };
+        let mut r = Linted {
+            violations,
+            fixed: Vec::new(),
+            refused: None,
+            written: Ok(()),
+        };
+        if a.fix {
+            let cfg = &cfgs[p];
+            match fix::fix(p, &src, |v| cfg.rule_enabled(v.rule)) {
+                Fix::Nothing => {}
+                Fix::Refused(why) => r.refused = Some(why),
+                Fix::Fixed(text, fixed) => {
+                    r.written = write_atomic(real, &text, id);
+                    if r.written.is_ok() {
+                        // the fix checked that the fixed text lints
+                        r.violations = lint::lint_file(p, &text).unwrap_or_default();
+                        r.fixed = fixed;
+                    }
+                }
+            }
+        }
+        Ok(Ok(r))
     });
     let (mut skipped, mut total, mut failed) = (0usize, 0usize, false);
     let mut by_rule: BTreeMap<&str, usize> = BTreeMap::new();
+    let (mut fixed_files, mut fixed_by_rule) = (0usize, BTreeMap::<&str, usize>::new());
     for (path, r) in files.iter().zip(results) {
         match r {
             Err(e) => {
@@ -970,9 +1024,26 @@ fn lint_files(files: &[PathBuf], cfgs: &Configs, a: &Args, stats_only: bool) -> 
                 }
                 out.file(path, "skipped", Some(why), parse_diagnostics(diag));
             }
-            Ok(Ok(vs)) => {
+            Ok(Ok(r)) => {
+                if let Err(e) = &r.written {
+                    eprintln!("groovyfmt: {}: {e}", shown(path));
+                    failed = true;
+                    out.error(path, &e.to_string());
+                    continue;
+                }
+                fixed_files += usize::from(!r.fixed.is_empty());
+                for v in &r.fixed {
+                    *fixed_by_rule.entry(v.rule).or_default() += 1;
+                }
+                let refused = r.refused.map(|why| format!("not fixed: {why}"));
+                if let Some(why) = &refused
+                    && out.text()
+                {
+                    eprintln!("{} {why}", shown(path));
+                }
                 let cfg = &cfgs[path];
-                let vs: Vec<_> = vs
+                let vs: Vec<_> = r
+                    .violations
                     .into_iter()
                     .filter(|v| cfg.rule_enabled(v.rule))
                     .collect();
@@ -981,12 +1052,13 @@ fn lint_files(files: &[PathBuf], cfgs: &Configs, a: &Args, stats_only: bool) -> 
                     *by_rule.entry(v.rule).or_default() += 1;
                 }
                 if !out.text() {
-                    out.file(
-                        path,
-                        "unchanged",
-                        None,
-                        vs.into_iter().map(lint_diagnostic).collect(),
-                    );
+                    let status = if r.fixed.is_empty() {
+                        "unchanged"
+                    } else {
+                        "fixed"
+                    };
+                    let diagnostics = vs.into_iter().map(lint_diagnostic).collect();
+                    out.file(path, status, refused.as_deref(), diagnostics);
                     continue;
                 }
                 for v in vs {
@@ -1004,8 +1076,9 @@ fn lint_files(files: &[PathBuf], cfgs: &Configs, a: &Args, stats_only: bool) -> 
                             gh_escape(&message, false)
                         )
                     } else {
+                        let fixable = if v.fix.is_some() { " (fixable)" } else { "" };
                         format!(
-                            "{}:{}:{}: {}: {message}",
+                            "{}:{}:{}: {}: {message}{fixable}",
                             shown(path),
                             v.line,
                             v.col,
@@ -1015,6 +1088,19 @@ fn lint_files(files: &[PathBuf], cfgs: &Configs, a: &Args, stats_only: bool) -> 
                 }
             }
         }
+    }
+    if a.fix && out.text() {
+        let n: usize = fixed_by_rule.values().sum();
+        let parts: Vec<_> = fixed_by_rule
+            .iter()
+            .map(|(r, n)| format!("{r} {n}"))
+            .collect();
+        let rules = if parts.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", parts.join(", "))
+        };
+        eprintln!("fixed {n} violations in {fixed_files} files{rules}");
     }
     let mut summary = format!("{total} violations in {} files", files.len());
     if !by_rule.is_empty() {

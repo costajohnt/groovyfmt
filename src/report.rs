@@ -26,9 +26,9 @@ pub struct Diagnostic {
 pub struct FileReport {
     /// As the text output names the file, unescaped.
     pub path: String,
-    /// unchanged, would_reformat, reformatted, skipped or error
+    /// unchanged, would_reformat, reformatted, fixed, skipped or error
     pub status: &'static str,
-    /// Why the file was skipped, or the error.
+    /// Why the file was skipped, the error, or (`--fix`) why it was not fixed.
     pub reason: Option<String>,
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -98,11 +98,12 @@ pub fn json(files: &[FileReport]) -> String {
     }
     let _ = writeln!(
         s,
-        "\n],\"summary\":{{\"files\":{},\"unchanged\":{},\"would_reformat\":{},\"reformatted\":{},\"skipped\":{},\"errors\":{},\"diagnostics\":{diagnostics}}}}}",
+        "\n],\"summary\":{{\"files\":{},\"unchanged\":{},\"would_reformat\":{},\"reformatted\":{},\"fixed\":{},\"skipped\":{},\"errors\":{},\"diagnostics\":{diagnostics}}}}}",
         files.len(),
         count("unchanged"),
         count("would_reformat"),
         count("reformatted"),
+        count("fixed"),
         count("skipped"),
         count("error"),
     );
