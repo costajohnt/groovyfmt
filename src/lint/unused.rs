@@ -251,6 +251,7 @@ pub(super) fn check(
         }) && annotations(src, *d)
             .iter()
             .all(|a| matches!(*a, "SuppressWarnings" | "Deprecated"))
+            && !type_read_as_name(*d)
     });
     if decls.is_empty() {
         return;
@@ -261,7 +262,14 @@ pub(super) fn check(
     let prefixes = std::cell::OnceCell::new();
     let maybe_dynamic = |name: &str| {
         prefixes
-            .get_or_init(|| dynamic_prefixes(src, dynamic))
+            .get_or_init(|| {
+                // `metaClass` can add or reach any member by name
+                if src.contains("metaClass") {
+                    vec![String::new()]
+                } else {
+                    dynamic_prefixes(src, dynamic)
+                }
+            })
             .iter()
             .any(|p: &String| name.starts_with(p.as_str()))
     };
@@ -322,6 +330,25 @@ pub(super) fn check(
             }
         }
     }
+}
+
+/// `final ClassNode name` with no value: the grammar reads `ClassNode` as the declared
+/// name and `name` as a statement of its own on the same line (grails-core `AstUtils`), so
+/// the name this declaration has is not the variable's. Left alone.
+fn type_read_as_name(d: Node) -> bool {
+    let mut c = d.walk();
+    let no_value = d
+        .named_children(&mut c)
+        .filter(|x| x.kind() == "variable_declarator")
+        .all(|x| x.child_by_field_name("value").is_none())
+        && d.child_by_field_name("value").is_none();
+    no_value
+        && d.next_named_sibling().is_some_and(|s| {
+            s.kind() == "expression_statement"
+                && s.start_position().row == d.end_position().row
+                && s.named_child(0).is_some_and(|e| e.kind() == "identifier")
+                && s.named_child_count() == 1
+        })
 }
 
 /// The names the declarations could be used by: each name, and for `getX` / `isX` / `setX`
@@ -448,6 +475,21 @@ mod tests {
     }
 
     #[test]
+    fn a_type_the_grammar_reads_as_the_name_is_never_reported() {
+        // grails-core AstUtils: `final ClassNode placeHolderType`, assigned in each branch
+        let src = "def f(t) {\n  final ClassNode placeHolderType\n  if (t) {\n    placeHolderType = g()\n  } else {\n    placeHolderType = h()\n  }\n  use(placeHolderType)\n}\n";
+        assert_eq!(rules(src, "UnusedVariable"), vec![] as Vec<usize>);
+        // a value-less local that parses as itself is still judged
+        assert_eq!(
+            rules("def f() {\n  final x\n}\n", "UnusedVariable"),
+            vec![2]
+        );
+        // metaClass reaches members by name
+        let src = "class A {\n  private int x\n  def f() { this.metaClass.y = { -> 1 } }\n}\n";
+        assert_eq!(rules(src, "UnusedPrivateField"), vec![] as Vec<usize>);
+    }
+
+    #[test]
     fn local_variables() {
         let src = "def f() {\n  def a = 1\n  def b = 2\n  int c = b\n  def (d, e) = g()\n  def s = 1\n  println \"$s\"\n  def x = 1\n  def k = { x }\n  k()\n  def _ = 3\n  def t\n  // t is mentioned here only\n}\nswitch (y) {\n  case 1:\n    def q = 1\n    break\n  case 2:\n    use(q)\n}\n";
         assert_eq!(rules(src, "UnusedVariable"), vec![2, 4, 12]);
@@ -477,27 +519,28 @@ mod tests {
 
     #[test]
     fn unused_symbols_are_linear_in_file_size() {
-        // 4,000 locals in one chain of nested blocks, then 4,000 private fields and methods.
-        // Climbing parents per local (tree-sitter walks down from the root for each) took
-        // minutes on this; a scan of the file per declaration would be quadratic too.
-        let mut src = String::from("class A {\n  def g() {\n");
-        for i in 0..4_000 {
-            src.push_str(&format!("    def v{i} = {i}\n    if (v{i}) {{\n"));
-        }
-        src.push_str(&"    }\n".repeat(4_000));
-        src.push_str("  }\n");
-        for i in 0..4_000 {
-            src.push_str(&format!(
-                "  private int f{i}\n  private void m{i}() {{ }}\n"
-            ));
-        }
-        src.push_str("}\n");
-        let t = std::time::Instant::now();
-        let vs = lint(&src).expect("parses");
-        let count = |r: &str| vs.iter().filter(|v| v.rule == r).count();
-        assert_eq!(count("UnusedPrivateField"), 4_000);
-        assert_eq!(count("UnusedPrivateMethod"), 4_000);
-        assert_eq!(count("UnusedVariable"), 0);
-        assert!(t.elapsed().as_secs() < 10, "{:?}", t.elapsed());
+        // n locals in one chain of nested blocks, then n private fields and methods. Climbing
+        // parents per local (tree-sitter walks down from the root for each) took minutes on
+        // 4,000; a scan of the file per declaration would be quadratic too.
+        let run = |n: usize| {
+            let mut src = String::from("class A {\n  def g() {\n");
+            for i in 0..n {
+                src.push_str(&format!("    def v{i} = {i}\n    if (v{i}) {{\n"));
+            }
+            src.push_str(&"    }\n".repeat(n));
+            src.push_str("  }\n");
+            for i in 0..n {
+                src.push_str(&format!(
+                    "  private int f{i}\n  private void m{i}() {{ }}\n"
+                ));
+            }
+            src.push_str("}\n");
+            let vs = lint(&src).expect("parses");
+            let count = |r: &str| vs.iter().filter(|v| v.rule == r).count();
+            assert_eq!(count("UnusedPrivateField"), n);
+            assert_eq!(count("UnusedPrivateMethod"), n);
+            assert_eq!(count("UnusedVariable"), 0);
+        };
+        crate::scaling::assert_scales("unused symbols", run, 1_000, 4, 8);
     }
 }
