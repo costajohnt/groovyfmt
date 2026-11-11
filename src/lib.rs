@@ -6,10 +6,16 @@ use std::path::Path;
 use tree_sitter::{Node, Parser, Tree};
 
 pub fn parse(src: &str) -> Tree {
-    let mut p = Parser::new();
-    p.set_language(&dekobon_tree_sitter_groovy::LANGUAGE.into())
-        .expect("grammar ABI mismatch");
-    p.parse(src, None).expect("parse cancelled")
+    // one parser per thread, reused: a file is parsed two to four times
+    thread_local! {
+        static PARSER: std::cell::RefCell<Parser> = std::cell::RefCell::new({
+            let mut p = Parser::new();
+            p.set_language(&dekobon_tree_sitter_groovy::LANGUAGE.into())
+                .expect("grammar ABI mismatch");
+            p
+        });
+    }
+    PARSER.with_borrow_mut(|p| p.parse(src, None).expect("parse cancelled"))
 }
 
 /// Visit every node in document order. Iterative, so deeply nested input can't overflow the
