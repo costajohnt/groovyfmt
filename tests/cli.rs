@@ -7,6 +7,12 @@ use std::process::{Command, Output, Stdio};
 const UGLY: &str = "class A {\ndef f() {\nprintln 'x'   \n}\n}\n";
 const PRETTY: &str = "class A {\n    def f() {\n        println 'x'\n    }\n}\n";
 
+/// The groovyfmt binary: GROOVYFMT_TEST_BIN when set (test binaries copied to another
+/// machine, such as a Windows one, where the build's path doesn't exist), else cargo's.
+fn bin() -> String {
+    std::env::var("GROOVYFMT_TEST_BIN").unwrap_or_else(|_| env!("CARGO_BIN_EXE_groovyfmt").into())
+}
+
 struct Dir(PathBuf);
 
 impl Dir {
@@ -34,7 +40,7 @@ impl Drop for Dir {
 }
 
 fn run(dir: &Path, args: &[&str], stdin: Option<&str>) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_groovyfmt"));
+    let mut cmd = Command::new(bin());
     cmd.args(args)
         .current_dir(dir)
         .stdin(Stdio::piped())
@@ -816,7 +822,7 @@ fn changed_since_without_git_fails_clearly() {
     d.write("A.groovy", UGLY);
     let empty = d.0.join("empty");
     std::fs::create_dir(&empty).unwrap();
-    let o = Command::new(env!("CARGO_BIN_EXE_groovyfmt"))
+    let o = Command::new(bin())
         .args(["--check", "--changed-since", "HEAD"])
         .current_dir(&d.0)
         .env("PATH", &empty)

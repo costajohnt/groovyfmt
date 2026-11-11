@@ -9,6 +9,12 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
+/// The groovyfmt binary: GROOVYFMT_TEST_BIN when set (test binaries copied to another
+/// machine, such as a Windows one, where the build's path doesn't exist), else cargo's.
+fn bin() -> String {
+    std::env::var("GROOVYFMT_TEST_BIN").unwrap_or_else(|_| env!("CARGO_BIN_EXE_groovyfmt").into())
+}
+
 struct Dir(PathBuf);
 
 impl Dir {
@@ -58,7 +64,7 @@ struct Server {
 
 impl Server {
     fn start(dir: &Path) -> Server {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_groovyfmt"))
+        let mut child = Command::new(bin())
             .arg("--lsp")
             .current_dir(dir)
             .stdin(Stdio::piped())
@@ -197,7 +203,7 @@ impl Server {
 }
 
 fn cli(dir: &Path, args: &[&str], stdin: &str) -> (Option<i32>, String) {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_groovyfmt"))
+    let mut c = Command::new(bin())
         .args(args)
         .current_dir(dir)
         .stdin(Stdio::piped())

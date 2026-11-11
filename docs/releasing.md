@@ -43,7 +43,7 @@ cargo build --release --locked --target x86_64-pc-windows-gnu
 CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=$PWD/scripts/wine-run.sh cargo test --locked --target x86_64-pc-windows-gnu
 ```
 
-`scripts/wine-run.sh` runs each test binary, and through it `groovyfmt.exe`, under Wine with a UTF-8 locale and the prefix `~/.wine-gf`; `scripts/ci-local.sh` does all of this when the tools are there. Wine maps `/` to the drive `Z:`, so Linux paths work as arguments. Native Windows has not run it yet; the README's Windows section lists what Wine can't show.
+`scripts/wine-run.sh` runs each test binary, and through it `groovyfmt.exe`, under Wine with a UTF-8 locale and the prefix `~/.wine-gf`; `scripts/ci-local.sh` does all of this when the tools are there. Wine maps `/` to the drive `Z:`, so Linux paths work as arguments. The test binaries also run on a Windows machine as they are: copy them with `groovyfmt.exe` and `tests/fixtures`, and set `GROOVYFMT_TEST_BIN` and `GROOVYFMT_TEST_FIXTURES` to those copies (the paths cargo bakes in are Linux ones). That is how the README's Windows results were checked on Windows Server 2022.
 
 ## Docker image
 
