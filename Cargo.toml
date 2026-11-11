@@ -39,9 +39,14 @@ toml = "1.2"
 # fix/dynamic-member-name, fix/untyped-varargs, fix/unicode-identifiers,
 # fix/leading-dot-decimals, fix/annotation-positions,
 # fix/annotated-untyped-methods, fix/default-methods, fix/enum-constant-forms,
-# fix/spaced-type-arguments, fix/try-resource-line-break branches).
+# fix/spaced-type-arguments, fix/try-resource-line-break,
+# fix/slashy-escaped-slash, fix/comparison-less-than, fix/def-type-declarations,
+# fix/keyword-names, fix/command-shapes, fix/groovy5-loops-patterns,
+# fix/spaced-generics-leftovers, fix/array-initializers, fix/declaration-forms,
+# fix/one-offs, fix/command-chain-calls, fix/empty-subscript,
+# fix/reserve-else branches).
 # Back to the crates.io release once those land upstream.
-dekobon-tree-sitter-groovy = { git = "https://github.com/costajohnt/tree-sitter-groovy", rev = "35421724a2d1d54bbc1d33a479ee4cbbfa971fdc" }
+dekobon-tree-sitter-groovy = { git = "https://github.com/costajohnt/tree-sitter-groovy", rev = "65a9b34b447fa1ab58322c84df55da90c4656af4" }
 
 [profile.release]
 lto = true
