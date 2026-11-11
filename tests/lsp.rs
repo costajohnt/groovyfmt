@@ -683,7 +683,11 @@ fn invalid_json_gets_a_parse_error_and_the_session_goes_on() {
             js(MESSY)
         ),
     );
-    assert_eq!(srv.diagnostics(&uri(&path)).len(), 5, "with the empty catch");
+    assert_eq!(
+        srv.diagnostics(&uri(&path)).len(),
+        5,
+        "with the empty catch"
+    );
     let edits = srv.result(
         "textDocument/formatting",
         &format!("{{\"textDocument\":{{\"uri\":{}}},\"options\":{{\"tabSize\":4,\"insertSpaces\":true}}}}", js(&uri(&path))),
