@@ -501,7 +501,13 @@ module.exports = grammar({
         repeat($._command_later_argument),
       )),
       seq(
-        field('receiver', choice($.identifier, $.field_access)),
+        // also `resolver?.setLocale request, response, l`
+        field('receiver', choice(
+          $.identifier,
+          $.field_access,
+          $.safe_navigation_expression,
+          $.spread_dot_expression,
+        )),
         field('argument', $._command_trailing_argument),
         repeat1($._command_later_argument),
       ),
@@ -572,6 +578,8 @@ module.exports = grammar({
       $.binary_expression,
       $.instanceof_expression,
       $.cast_expression,
+      // `menuIcon ext == 'pdf' ? A : B, m`
+      $.ternary_expression,
       // `assertEquals [:], map`: a list or map whose `[` is on the
       // receiver's line, which the comma after it tells from a subscript.
       alias($._command_list_argument, $.list_literal),
@@ -1203,7 +1211,8 @@ module.exports = grammar({
     // `def` may stand before the type, or for it: `def Object x`, `def x`.
     formal_parameter: $ => seq(
       repeat($.annotation),
-      optional('final'),
+      // annotations may follow `final`: `final @DelegatesTo(X) Closure c`
+      optional(seq('final', repeat($.annotation))),
       optional('def'),
       optional(field('type', choice($._type, $.varargs_type))),
       field('name', $.identifier),
@@ -1422,7 +1431,13 @@ module.exports = grammar({
     // a name included, since a value can't be a declaration: `x = foo bar`.
     // prec.right: a comma after an argument starts the next argument.
     _value_command: $ => prec.right(seq(
-      field('receiver', choice($.identifier, $.field_access)),
+      // also `def saved = [a, b]*.save flush: true`
+      field('receiver', choice(
+        $.identifier,
+        $.field_access,
+        $.safe_navigation_expression,
+        $.spread_dot_expression,
+      )),
       $._command_value_start,
       field('argument', choice(
         $._expression,
@@ -2181,9 +2196,22 @@ module.exports = grammar({
     // next line is two statements, not a call on `'x'`.
     argument_list: $ => seq(
       alias($._call_open, '('),
-      optional($._argument_list_body),
+      optional(choice(
+        $._argument_list_body,
+        alias($._argument_list_command, $.command_chain),
+      )),
       ')',
     ),
+
+    // §5.5 — a command call on a dotted receiver as the first argument, which
+    // takes the arguments after it too, as Groovy reads it:
+    // `form(new Spec().ui new Attachment(), { … })` passes `form` one value.
+    _argument_list_command: $ => prec.right(seq(
+      field('receiver', $.field_access),
+      $._command_literal_start,
+      field('argument', $._expression),
+      repeat($._command_later_argument),
+    )),
 
     // After `new Type` the parenthesis may follow a newline: `new File`
     // then `("Foo")` on the next line is one expression.
@@ -2234,11 +2262,17 @@ module.exports = grammar({
     // a map; it isn't a subscript of the statement before it.
     // Several indexes select several elements: `list[1, 2]`, `map['a', 'b']`.
     // An index may be spread: `(1..5)[*1..3]`.
+    // An empty map is an index too: `render [:] as JSON` is `render[:]`.
     subscript_expression: $ => prec.left(PREC.POSTFIX, seq(
       field('object', $._expression),
       alias($._subscript_open, '['),
-      field('index', choice($._expression, $.spread_arguments)),
-      repeat(seq(',', field('index', choice($._expression, $.spread_arguments)))),
+      choice(
+        seq(
+          field('index', choice($._expression, $.spread_arguments)),
+          repeat(seq(',', field('index', choice($._expression, $.spread_arguments)))),
+        ),
+        ':',
+      ),
       ']',
     )),
 

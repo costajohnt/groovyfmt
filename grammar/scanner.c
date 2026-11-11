@@ -133,6 +133,16 @@ static inline bool is_whitespace(int32_t c) {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == 0xFEFF;
 }
 
+// Skips whitespace; true when a line ended in it.
+static bool skip_whitespace(TSLexer *lexer) {
+    bool newline = false;
+    while (is_whitespace(lexer->lookahead)) {
+        newline |= lexer->lookahead == '\n' || lexer->lookahead == '\r';
+        lexer->advance(lexer, true);
+    }
+    return newline;
+}
+
 void *tree_sitter_groovy_external_scanner_create(void) {
     return NULL;
 }
@@ -166,6 +176,8 @@ bool tree_sitter_groovy_external_scanner_scan(
     const bool *valid_symbols
 ) {
     (void)payload;
+    // whether the whitespace skipped before the token held a line end
+    bool newline = false;
 
     // SPECIFICATION.md §5.7 — inside a string body `//` and `/*` are text,
     // never a comment; the grammar's text tokens take them.
@@ -550,9 +562,7 @@ bool tree_sitter_groovy_external_scanner_scan(
             lexer->advance(lexer, true);
         }
         if (lexer->lookahead == '\n' || lexer->lookahead == '\r') {
-            while (is_whitespace(lexer->lookahead)) {
-                lexer->advance(lexer, true);
-            }
+            newline = skip_whitespace(lexer);
             if (lexer->lookahead == '(') {
                 lexer->mark_end(lexer);
                 lexer->result_symbol = LINE_BREAK;
@@ -594,9 +604,7 @@ bool tree_sitter_groovy_external_scanner_scan(
     // `def var = 1`, `trait.parentFile`, `Pipeline pipeline = p`.
     if ((valid_symbols[VAR_KEYWORD] || valid_symbols[PIPELINE_KEYWORD]
          || valid_symbols[TRAIT_KEYWORD]) && !valid_symbols[ERROR_SENTINEL]) {
-        while (is_whitespace(lexer->lookahead)) {
-            lexer->advance(lexer, true);
-        }
+        newline |= skip_whitespace(lexer);
         int32_t c = lexer->lookahead;
         if (c == 'v' || c == 'p' || c == 't') {
             char word[12];
@@ -654,9 +662,7 @@ bool tree_sitter_groovy_external_scanner_scan(
     // a name and then `(` or `<` follow on the same line. Otherwise it is
     // left to the grammar, which lexes it as an identifier.
     if (valid_symbols[RECORD_KEYWORD] && !valid_symbols[ERROR_SENTINEL]) {
-        while (is_whitespace(lexer->lookahead)) {
-            lexer->advance(lexer, true);
-        }
+        newline |= skip_whitespace(lexer);
         if (lexer->lookahead == 'r') {
             for (const char *p = "record"; *p; p++) {
                 if (lexer->lookahead != *p) {
@@ -708,9 +714,7 @@ bool tree_sitter_groovy_external_scanner_scan(
         return false;
     }
 
-    while (is_whitespace(lexer->lookahead)) {
-        lexer->advance(lexer, true);
-    }
+    newline |= skip_whitespace(lexer);
     if (lexer->lookahead != '/') {
         return false;
     }
@@ -730,7 +734,8 @@ bool tree_sitter_groovy_external_scanner_scan(
         // EOF-bounded loop: lexer->eof() guarantees termination on
         // unterminated input. Do not tighten without preserving the
         // EOF guard.
-        while (!lexer->eof(lexer) && lexer->lookahead != '\n') {
+        // A lone `\r` ends a line too (classic Mac line endings).
+        while (!lexer->eof(lexer) && lexer->lookahead != '\n' && lexer->lookahead != '\r') {
             advance(lexer);
         }
         lexer->result_symbol = LINE_COMMENT;
@@ -780,11 +785,30 @@ bool tree_sitter_groovy_external_scanner_scan(
         }
         return false;
     }
-    if (next == '=') {
+    if (!wants_slashy) {
+        return false;
+    }
+    // Groovy reads a `/` right after an operand as division, never as the
+    // start of a slashy string: `a/2 + b/2`, `"${t/1000f},${n/1000f}"`. An
+    // operand has just ended where a subscript `[` could follow, unless a
+    // line ended in between where a statement may end: `x` then `/re/`.
+    if (valid_symbols[SUBSCRIPT_OPEN] && !valid_symbols[ERROR_SENTINEL]
+        && (!newline || !valid_symbols[LINE_BREAK])) {
+        return false;
+    }
+    // Where an expression must start (after `=~`, `~`, `(`, `,` or an
+    // operator) and no statement or command argument could start instead,
+    // a `/` can't be division: the body may then start with whitespace
+    // (`=~ / X /`, `split(/ /)`) and run over several lines (`def s = /`).
+    bool lenient = !valid_symbols[LINE_BREAK] && !valid_symbols[COMMAND_LITERAL_START]
+        && !valid_symbols[COMMAND_NAMED_KEY] && !valid_symbols[COMMAND_VALUE_START]
+        && !valid_symbols[ERROR_SENTINEL];
+    if (next == '=' && !lenient) {
         // `/=` is the augmented-assign operator. The in-grammar
         // lexer owns it. Returning false here causes tree-sitter
         // to rewind the cursor to before the leading `/`, so the
-        // in-grammar lexer can match `/=` cleanly.
+        // in-grammar lexer can match `/=` cleanly. Where an
+        // expression must start it opens a slashy: `split(/=/, 2)`.
         return false;
     }
     // Slashy string opening `/` — we've consumed it; the body and
@@ -807,16 +831,6 @@ bool tree_sitter_groovy_external_scanner_scan(
     //       closing `/` on the same line. Without this, `a / b\nc`
     //       at end of file would emit a slashy opener and leave
     //       the body unterminated.
-    if (!wants_slashy) {
-        return false;
-    }
-    // Where an expression must start (after `=~`, `~`, `(`, `,` or an
-    // operator) and no statement or command argument could start instead,
-    // a `/` can't be division: the body may then start with whitespace
-    // (`=~ / X /`, `split(/ /)`) and run over several lines (`def s = /`).
-    bool lenient = !valid_symbols[LINE_BREAK] && !valid_symbols[COMMAND_LITERAL_START]
-        && !valid_symbols[COMMAND_NAMED_KEY] && !valid_symbols[COMMAND_VALUE_START]
-        && !valid_symbols[ERROR_SENTINEL];
     if (lexer->lookahead == '/' || (is_whitespace(lexer->lookahead) && !lenient)) {
         return false;
     }
