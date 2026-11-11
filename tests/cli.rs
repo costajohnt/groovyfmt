@@ -1463,13 +1463,17 @@ fn max_line_length_from_config_with_lines_diff_and_suggest_style() {
     let o = run(&d.0, &["--check", "--diff", "D.groovy"], None);
     assert_eq!(o.status.code(), Some(1));
     d.write("D.patch", &stdout(&o));
-    let applied = Command::new("git")
-        .args(["apply", "D.patch"])
-        .current_dir(&d.0)
-        .output()
-        .unwrap();
-    assert!(applied.status.success(), "{:?}", applied);
-    assert_eq!(d.read("D.groovy"), wrapped);
+    if have_git() {
+        let applied = Command::new("git")
+            .args(["apply", "D.patch"])
+            .current_dir(&d.0)
+            .output()
+            .unwrap();
+        assert!(applied.status.success(), "{:?}", applied);
+        assert_eq!(d.read("D.groovy"), wrapped);
+    } else {
+        d.write("D.groovy", wrapped);
+    }
     let o = run(&d.0, &["--check", "D.groovy"], None);
     assert_eq!(o.status.code(), Some(0), "idempotent");
 
