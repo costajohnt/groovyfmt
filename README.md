@@ -36,10 +36,10 @@ The comparison flatters groovyfmt somewhat. It skips the 9 spock files it can't 
 
 | Channel | Status |
 |---|---|
-| [Release binaries](#release-binaries) | available; [Windows](#windows) in releases after 0.8.0, tested on Windows Server 2022 and under Wine |
+| [Release binaries](#release-binaries) | available; [Windows](#windows) since 0.9.0, tested on Windows Server 2022 and under Wine |
 | [Build from source](#build-from-source) | available |
-| [pre-commit](#pre-commit) | available from `main`, and in releases after 0.8.0 |
-| [GitHub Action](#github-actions) | available from `main`, and in releases after 0.8.0; while the repository is private, only with a token that can read it |
+| [pre-commit](#pre-commit) | available since 0.9.0 |
+| [GitHub Action](#github-actions) | available since 0.9.0; while the repository is private, only with a token that can read it |
 | [Gradle plugin](#gradle) | not published yet; works today from a checkout with `includeBuild` |
 | [npm](#npm) (`npx groovyfmt`) | not published yet; comes once the repository is public |
 | [Homebrew](#homebrew) | not published yet; comes once the repository is public |
@@ -490,10 +490,10 @@ The action installs the release binary for the runner (Linux or macOS, x64 or ar
 
 ```yaml
 - uses: actions/checkout@v5
-- uses: costajohnt/groovyfmt@main  # or a release tag after v0.8.0
+- uses: costajohnt/groovyfmt@v0.9.0
   # with:
   #   args: --check --output-format github   # the default; "" only installs
-  #   version: 0.8.0                         # default: the release of the action ref used
+  #   version: 0.9.0                         # default: the release of the action ref used
   #   token: ${{ github.token }}             # the default
 - run: groovyfmt --lint --output-format github
 ```
@@ -541,7 +541,7 @@ plugins {
 }
 
 groovyfmt {
-    // version = '0.8.0'                          // default: the plugin's own version
+    // version = '0.9.0'                          // default: the plugin's own version
     // binary = file('/usr/local/bin/groovyfmt')  // run this binary and download nothing
     // args = ['--strict']                        // added to every run
     // paths = ['src', 'build.gradle']            // default: the project directory
@@ -575,7 +575,7 @@ check.dependsOn 'groovyfmtCheck', 'groovyfmtLint'
 ```yaml
 repos:
   - repo: https://github.com/costajohnt/groovyfmt
-    rev: main  # or a release tag after v0.8.0, which pre-commit prefers
+    rev: v0.9.0
     hooks:
       - id: groovyfmt        # format in place; or groovyfmt-check to only report
       - id: groovyfmt-lint
