@@ -114,7 +114,9 @@ Formatting is safe by construction. The output is parsed again and its token str
 
 ### Lint rules
 
-Named after their [CodeNarc](https://codenarc.org/) equivalents so existing configurations map across. Files that don't parse are not linted, which keeps false positives out.
+The general rules are named after their [CodeNarc](https://codenarc.org/) equivalents so existing configurations map across; the Jenkins, Gradle and Spock rules catch, in milliseconds, mistakes those tools otherwise report only when a build runs. Files that don't parse are not linted, which keeps false positives out.
+
+#### General
 
 | Rule | Default | Flags |
 |---|---|---|
@@ -136,6 +138,46 @@ Named after their [CodeNarc](https://codenarc.org/) equivalents so existing conf
 | ComparisonWithSelf | off | a variable compared with itself (Spock equality checks do this on purpose); not inside a GORM where query (`Book.where { title == title }`, `@Where`), where the left side is the domain property |
 
 A block holding only a comment doesn't count as empty.
+
+#### Jenkinsfiles
+
+What the Declarative Pipeline plugin rejects when a build starts. They check a top-level `pipeline { }` in a file named `Jenkinsfile`, `Jenkinsfile.*` or `*.jenkinsfile`, or in any file whose first statement it is (after comments and imports); scripted pipelines (`node { }`) are left alone. Directory walks find only files named `Jenkinsfile`, so name other pipeline files on the command line. The section lists follow the [syntax reference](https://www.jenkins.io/doc/book/pipeline/syntax/) and the plugin's own parser where they differ.
+
+| Rule | Default | Flags |
+|---|---|---|
+| JenkinsMissingSection | on | a `pipeline` without `agent` or `stages`; `stages`, `parallel` or `matrix` without a stage; a stage with none of `steps`, `stages`, `parallel`, `matrix`; an empty `steps`, `post`, `when`, `environment`, `options`, `parameters`, `triggers` or `libraries` |
+| JenkinsConflictingSections | on | a section twice in the same block, or a stage with more than one of `steps`, `stages`, `parallel`, `matrix` |
+| JenkinsUnknownSection | on | a name that isn't a section where it stands (`steps` directly in `pipeline`, `parameters` in a stage, a misspelled `post` condition, the pre-0.8 `properties` or `notifications`), anything but `stage` in `stages`, and `stage`, `properties` or a `parallel` beside other steps in `steps` |
+| JenkinsStatementOutsideSection | on | Groovy code (`def x = 1`, `if`, an expression) directly in `pipeline`, `stages`, a stage, `matrix`, `post` or `when` |
+| JenkinsScriptRequired | on | `if`, `for`, `while`, `try`, `switch`, `def` or an assignment in `steps` (or in a block step inside it) without `script { }` |
+| JenkinsUnknownWhenCondition | on | a `when` condition that isn't built in (`branch`, `expression`, `allOf` and so on) |
+| JenkinsMisplacedOption | on | `parameters` or `triggers` inside `options`, or a pipeline-wide option (`buildDiscarder`, `disableConcurrentBuilds`, `skipStagesAfterUnstable`, ...) in a stage's `options` |
+| JenkinsDuplicateStageName | on | two stages with the same name in one `stages` or `parallel` |
+| JenkinsStageName | on | a stage with no name, or a name that isn't a plain string (`stage("Deploy ${env}")` is rejected) |
+| JenkinsAgentForm | on | `agent` with no value, a bare `agent` other than `any` or `none`, or an `agent { }` block that is empty or names more than one agent type |
+
+Option names and agent types aren't checked against a list: plugins add their own, and any block-scoped step is a valid option.
+
+#### Gradle build scripts
+
+In `*.gradle` files.
+
+| Rule | Default | Flags |
+|---|---|---|
+| GradleRemovedConfiguration | on | `compile`, `runtime`, `testCompile` or `testRuntime` dependencies, removed in Gradle 7.0 (the message names the replacement); not when the build declares a configuration of that name itself |
+| GradleJcenter | on | `jcenter()`, deprecated in Gradle 7.0 and removed in 9.0 |
+| GradleLeftShiftTask | on | `task name << { }`, removed in Gradle 5.0 |
+| GradleDynamicVersion | off | a `+` or `latest.*` dependency version (off by default: whether to pin is a policy choice) |
+
+#### Spock specifications
+
+In classes whose superclass is `Specification` or ends in `Spec` or `Specification` (a project's base spec). The fixture methods `setup`, `cleanup`, `setupSpec` and `cleanupSpec` are skipped, as Spock ignores labels there.
+
+| Rule | Default | Flags |
+|---|---|---|
+| SpockBlockOrder | on | blocks in an order Spock refuses to compile (`then:` without `when:`, `when:` not followed by `then:`, `given:` after another block, anything but `and:`, `combined:` or `filter:` after `where:`), and labels that aren't Spock blocks |
+| SpockDataTableColumns | on | a `where:` data table row with a different number of columns than the row above |
+| SpockEmptyBlock | off | a `then:` or `expect:` block with no conditions, only a description (off by default: Spock accepts it, and Spock's own tests use empty blocks on purpose) |
 
 ## Configuration
 

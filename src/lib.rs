@@ -120,11 +120,26 @@ mod tests {
             "annotation",
             "gstring_brace_interpolation",
             "gstring_dollar_interpolation",
+            // lint/jenkins.rs, lint/gradle.rs, lint/spock.rs
+            "pipeline_statement",
+            "expression_statement",
+            "closure_parameters",
+            "named_argument",
+            "local_variable_declaration",
+            "for_in_statement",
+            "do_while_statement",
+            "switch_expression",
+            "assignment_expression",
+            "package_declaration",
+            "class_declaration",
+            "superclass",
+            "method_declaration",
+            "quoted_identifier",
         ];
         for k in named {
             assert_ne!(lang.id_for_node_kind(k, true), 0, "missing node kind {k}");
         }
-        for k in [";", "=", "==", "{", "}"] {
+        for k in [";", "=", "==", "{", "}", "|", "||", "<<"] {
             assert_ne!(lang.id_for_node_kind(k, false), 0, "missing token {k}");
         }
         let fields = [
@@ -141,6 +156,12 @@ mod tests {
             "left",
             "right",
             "label",
+            "receiver",
+            "argument",
+            "function",
+            "arguments",
+            "closure",
+            "statement",
         ];
         for f in fields {
             assert!(lang.field_id_for_name(f).is_some(), "missing field {f}");

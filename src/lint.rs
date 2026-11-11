@@ -3,6 +3,7 @@
 
 use crate::text;
 use std::collections::HashSet;
+use std::path::Path;
 use tree_sitter::{Node, Tree};
 
 pub struct Rule {
@@ -93,7 +94,99 @@ pub const RULES: &[Rule] = &[
         default: false,
         description: "double-quoted string with nothing to interpolate (off by default: noisy where double quotes are the house style)",
     },
+    // Declarative Jenkins pipelines (src/lint/jenkins.rs)
+    Rule {
+        name: "JenkinsMissingSection",
+        default: true,
+        description: "pipeline without agent or stages, stages without a stage, a stage with none of steps, stages, parallel, matrix",
+    },
+    Rule {
+        name: "JenkinsConflictingSections",
+        default: true,
+        description: "a section twice in one block, or a stage with more than one of steps, stages, parallel, matrix",
+    },
+    Rule {
+        name: "JenkinsUnknownSection",
+        default: true,
+        description: "a section that doesn't belong where it is in pipeline, stage, matrix, post or stages",
+    },
+    Rule {
+        name: "JenkinsStatementOutsideSection",
+        default: true,
+        description: "Groovy code directly in pipeline, stages, stage, matrix, post or when instead of in steps",
+    },
+    Rule {
+        name: "JenkinsScriptRequired",
+        default: true,
+        description: "if, for, while, try, switch, def or an assignment directly in steps without script { }",
+    },
+    Rule {
+        name: "JenkinsUnknownWhenCondition",
+        default: true,
+        description: "a when condition that isn't built in",
+    },
+    Rule {
+        name: "JenkinsMisplacedOption",
+        default: true,
+        description: "parameters or triggers in options, or a pipeline-wide option in a stage's options",
+    },
+    Rule {
+        name: "JenkinsDuplicateStageName",
+        default: true,
+        description: "two stages with the same name in one stages or parallel block",
+    },
+    Rule {
+        name: "JenkinsStageName",
+        default: true,
+        description: "a stage with no name, or a name that isn't a plain string",
+    },
+    Rule {
+        name: "JenkinsAgentForm",
+        default: true,
+        description: "agent with no value, an empty or multi-type block, or a bare type other than any and none",
+    },
+    // Gradle build scripts (src/lint/gradle.rs)
+    Rule {
+        name: "GradleRemovedConfiguration",
+        default: true,
+        description: "compile, runtime, testCompile or testRuntime dependencies (removed in Gradle 7.0)",
+    },
+    Rule {
+        name: "GradleJcenter",
+        default: true,
+        description: "the jcenter() repository (removed in Gradle 9.0)",
+    },
+    Rule {
+        name: "GradleLeftShiftTask",
+        default: true,
+        description: "task name << { } (removed in Gradle 5.0)",
+    },
+    Rule {
+        name: "GradleDynamicVersion",
+        default: false,
+        description: "a + or latest.* dependency version (off by default: a policy choice)",
+    },
+    // Spock specifications (src/lint/spock.rs)
+    Rule {
+        name: "SpockBlockOrder",
+        default: true,
+        description: "feature method blocks in an order Spock rejects, or a label Spock doesn't know",
+    },
+    Rule {
+        name: "SpockEmptyBlock",
+        default: false,
+        description: "an empty then: or expect: block (off by default: Spock allows it, and its own tests use empty blocks on purpose)",
+    },
+    Rule {
+        name: "SpockDataTableColumns",
+        default: true,
+        description: "a data table row with a different number of columns than the row above",
+    },
 ];
+
+mod gradle;
+mod jenkins;
+mod spock;
 
 #[derive(Debug, PartialEq)]
 pub struct Violation {
@@ -104,12 +197,19 @@ pub struct Violation {
 }
 
 pub fn lint(src: &str) -> Result<Vec<Violation>, &'static str> {
+    lint_file(Path::new(""), src)
+}
+
+/// Lint `src` as the file at `path`, whose name decides the Jenkinsfile and Gradle rules.
+pub fn lint_file(path: &Path, src: &str) -> Result<Vec<Violation>, &'static str> {
     let tree = crate::parse(src);
     if tree.root_node().has_error() {
         return Err("parse error");
     }
     let mut v = Vec::new();
     imports(src, &tree, &mut v);
+    jenkins::check(path, src, tree.root_node(), &mut v);
+    gradle::check(path, src, tree.root_node(), &mut v);
     let mut nodes = Vec::new();
     crate::preorder(tree.root_node(), |n| {
         nodes.push(n);
@@ -150,6 +250,7 @@ pub fn lint(src: &str) -> Result<Vec<Violation>, &'static str> {
             "map_literal" => duplicate_map_key(src, n, &mut v),
             "switch_block" => duplicate_case(src, n, &mut v),
             "binary_expression" => comparison_with_self(src, n, &mut v),
+            "class_declaration" => spock::class(src, n, &mut v),
             _ => {}
         }
     }
@@ -676,7 +777,24 @@ mod tests {
     #[test]
     fn every_rule_fires_and_every_emitted_rule_is_registered() {
         let src = "import a.B\nimport a.B\nimport c.Unused\ndef s = \"x\";\ntry { f() } catch (e) { }\nif (true) { }\nif (a = 1) { f() } else { }\ntry { } finally { }\nwhile (a) { }\nfor (i in xs) { }\ndef m = [a: 1, a: 2]\nswitch (x) { case 1: f(); break\n case 1: g() }\nif (x == x) { f() }\nB.go()\n";
-        let emitted: HashSet<&str> = lint(src).expect("parses").iter().map(|v| v.rule).collect();
+        let mut emitted: HashSet<&str> =
+            lint(src).expect("parses").iter().map(|v| v.rule).collect();
+        let jenkins = "pipeline {\n agent foo\n agent none\n def x = 1\n bogus { }\n options { parameters([]) }\n stages {\n  stage(\"${x}\") {\n   when { onBranch 'x' }\n   steps { if (x) { } }\n  }\n  stage('a') { }\n  stage('a') { steps { echo 1 } }\n }\n}\n";
+        let gradle =
+            "repositories { jcenter() }\ndependencies { compile 'a:b:+' }\ntask t << { }\n";
+        let spock = "class S extends Specification {\n def f() {\n  when:\n  f()\n  then: 'x'\n  where:\n  a | b\n  2 | 3 | 4\n }\n def g() {\n  then:\n  x\n }\n}\n";
+        for (name, src) in [
+            ("Jenkinsfile", jenkins),
+            ("build.gradle", gradle),
+            ("S.groovy", spock),
+        ] {
+            emitted.extend(
+                lint_file(Path::new(name), src)
+                    .expect("parses")
+                    .iter()
+                    .map(|v| v.rule),
+            );
+        }
         let all: HashSet<&str> = RULES.iter().map(|r| r.name).collect();
         assert_eq!(emitted, all);
     }
