@@ -1483,9 +1483,42 @@ fn max_line_length_from_config_with_lines_diff_and_suggest_style() {
         "class A {\ndef f() {\nfoo(alpha, beta, gamma, delta, epsilon)\n        bar(\n            alpha,\n            beta,\n            gamma,\n            delta,\n            epsilon\n        )\n}\n}\n"
     );
 
-    // --suggest-style still runs, with the other settings in the config applied
-    let o = run(&d.0, &["--suggest-style", "D.groovy"], None);
+    // --suggest-style measures indent styles only: a file indented the default way but with
+    // lines over the limit is unchanged under the defaults
+    d.write("S.groovy", plain);
+    let o = run(&d.0, &["--suggest-style", "S.groovy"], None);
     assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert!(
+        stdout(&o).contains("1 of 1 files unchanged"),
+        "{}{}",
+        stdout(&o),
+        stderr(&o)
+    );
+
+    // -v names a file formatted without wrapping, and why: nesting too deep to wrap
+    let deep = format!("x = {}y{}\n", "f(a, ".repeat(600), ")".repeat(600));
+    d.write("N.groovy", &deep);
+    let o = run(&d.0, &["-v", "--check", "N.groovy"], None);
+    assert!(
+        stderr(&o).contains("not wrapped N.groovy: nesting too deep to wrap"),
+        "{}",
+        stderr(&o)
+    );
+    let o = run(&d.0, &["--check", "N.groovy"], None);
+    assert!(!stderr(&o).contains("not wrapped"), "only with -v");
+    let o = run(
+        &d.0,
+        &["-v", "--stdin", "--stdin-filepath", "N.groovy"],
+        Some(&deep),
+    );
+    assert!(
+        stderr(&o).contains("not wrapped N.groovy: nesting too deep to wrap"),
+        "{}",
+        stderr(&o)
+    );
+    // a file that wraps, or has nothing to wrap, gets no such line
+    let o = run(&d.0, &["-v", "--check", "D.groovy"], None);
+    assert!(!stderr(&o).contains("not wrapped"), "{}", stderr(&o));
 
     for bad in ["39", "401", "\"80\""] {
         d.write(".groovyfmt.toml", &format!("max_line_length = {bad}\n"));

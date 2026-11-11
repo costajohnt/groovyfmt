@@ -107,6 +107,12 @@ pub fn last_report() -> Report {
     LAST.with_borrow(Clone::clone)
 }
 
+/// Why the last file formatted on this thread was formatted without wrapping, if it was; the
+/// report is cleared, so a later file that doesn't wrap at all doesn't inherit it.
+pub fn take_fallback() -> Option<&'static str> {
+    LAST.take().fallback
+}
+
 pub(crate) fn set_report(r: Report) {
     LAST.set(r);
 }
