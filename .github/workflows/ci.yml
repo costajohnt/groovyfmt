@@ -1,9 +1,12 @@
 name: CI
 
-# Not run on pushes or pull requests, to save Actions minutes: run
-# scripts/ci-local.sh before merging instead. This workflow runs for a release
-# and when started by hand (gh workflow run ci.yml --ref <branch>).
+# Runs on every pull request and every push to main, so a break on macOS or in
+# an install channel shows up before a release tag is pushed rather than at it.
+# scripts/ci-local.sh runs the Linux half of this on your own machine.
 on:
+  pull_request:
+  push:
+    branches: [main]
   # release.yml calls this workflow, so a tag publishes only if every job here passes.
   workflow_call:
   workflow_dispatch:

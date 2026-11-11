@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The checks CI runs on Linux, for running on your own machine before a merge.
-# GitHub Actions only runs for releases (and when started by hand), where it also
-# covers macOS and the release builds. Usage: scripts/ci-local.sh [corpus-dir]
+# GitHub Actions runs the same checks on pull requests, pushes to main and
+# releases, where it also covers macOS, the release builds and the install
+# channels. Usage: scripts/ci-local.sh [corpus-dir]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 msrv=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
