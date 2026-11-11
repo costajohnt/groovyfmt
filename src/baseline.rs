@@ -140,10 +140,13 @@ impl Baseline {
     /// file and the problem, never its content.
     pub fn load(file: &Path) -> Result<Baseline, String> {
         let err = |e: &dyn std::fmt::Display| format!("{}: {e}", crate::display_path(file));
-        let f = std::fs::File::open(file).map_err(|e| err(&e))?;
+        let not_file = || err(&"the baseline is not a regular file");
+        // Windows refuses to open a directory at all, with "Access is denied"
+        let f = std::fs::File::open(file)
+            .map_err(|e| if file.is_dir() { not_file() } else { err(&e) })?;
         let meta = f.metadata().map_err(|e| err(&e))?;
         if !meta.is_file() {
-            return Err(err(&"the baseline is not a regular file"));
+            return Err(not_file());
         }
         let mut bytes = Vec::new();
         f.take(crate::MAX_FILE_BYTES + 1)
