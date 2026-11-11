@@ -97,6 +97,7 @@ With no paths it works on the current directory. Directories are searched for `*
 |---|---|
 | `groovyfmt` | format files in place |
 | `groovyfmt --check` | list files that would be reformatted, exit 1 if any |
+| `groovyfmt --check --diff` | print a unified diff of what formatting would change, exit 1 if any |
 | `groovyfmt --lint` | report lint violations, exit 1 if any |
 | `groovyfmt --lint --fix` | fix what can be fixed safely (unused and duplicate imports, unnecessary semicolons), then report the rest |
 | `groovyfmt --syntax` | only parse, and report each place groovyfmt could not parse, exit 1 if any |
@@ -104,7 +105,7 @@ With no paths it works on the current directory. Directories are searched for `*
 | `groovyfmt --rules` | list lint rules and whether each is on |
 | `groovyfmt --suggest-style` | suggest the indent settings that fit the code, writing nothing (see [Configuration](#configuration)) |
 
-Options: `--config <file>`, `--indent <n>`, `--stdin-filepath <path>` (see [Editors](#editors)), `--output-format text|github|json|sarif` (see [Machine-readable output](#machine-readable-output)), `--strict` (list skipped files and exit 1 if there are any, with `--check`, `--lint` or in place), `-v` (also list skipped files and timing), and `--` to treat every later argument as a path. Exit status is 0 when clean, 1 when files need formatting or lint found something (or, with `--strict`, files were skipped), and 2 on errors (bad arguments, bad config, unreadable files, or `--stdin` input that can't be formatted).
+Options: `--config <file>`, `--indent <n>`, `--stdin-filepath <path>` (see [Editors](#editors)), `--output-format text|github|json|sarif` (see [Machine-readable output](#machine-readable-output)), `--strict` (list skipped files and exit 1 if there are any, with `--check`, `--lint` or in place), `--lines <start>-<end>` and `--changed-since <rev>` (see [Changing less](#changing-less)), `-v` (also list skipped files and timing), and `--` to treat every later argument as a path. Exit status is 0 when clean, 1 when files need formatting or lint found something (or, with `--strict`, files were skipped), and 2 on errors (bad arguments, bad config, unreadable files, or `--stdin` input that can't be formatted).
 
 ### Parse errors
 
@@ -155,6 +156,14 @@ Strings are standard JSON. Every control character is escaped, and so is a `[` a
   with:
     sarif_file: groovyfmt.sarif
 ```
+
+### Changing less
+
+`--check --diff` prints a unified diff of what formatting would change instead of the file names, and writes nothing; `--lint --fix --diff` does the same for the fixes. Exit statuses don't change. The diff names files `a/<path>` and `b/<path>` as the text output names them, so from the same directory `git apply` or `patch -p1` applies it. A diff has to print file content as it is, so for a file whose name holds a control character, `"` or `\`, or whose diff would print a control character other than a tab, `##[`, or a line starting with `::`, a `# groovyfmt: <path>: diff not shown` line takes its place (both tools skip it); that keeps a file name or content from forging a patch header or acting on a terminal or a CI log. The name is checked before it goes into the `---` / `+++` lines, and the patch is checked as a whole. Files with CR LF line endings diff as they are, since that CR only ends a line; a CR anywhere else withholds the diff.
+
+`--lines <start>-<end>` (1-based, inclusive, repeatable) changes only those lines, for one file or `--stdin`, as editors do for a selection; every other line comes out byte for byte as it was. Indentation comes from the whole parse tree, so the whole file is formatted and the original text put back outside the ranges, and the result goes through the same token check as formatting. No line is added or removed: a blank line formatting would drop is emptied instead, so the lines after a range keep their numbers and running it again with the same ranges changes nothing.
+
+`--changed-since <rev>` limits a run (formatting, `--check`, `--lint`, `--syntax`) to files under the working directory that differ from git revision `rev` in the working tree or index, plus untracked files git doesn't ignore. Those files are formatted whole. It runs `git diff --name-only -z --relative <rev> --` and `git ls-files -z --others --exclude-standard`; `rev` can't start with `-`, and a missing git or a directory outside a repository is an error (exit 2).
 
 ### What formatting changes
 

@@ -380,7 +380,7 @@ fn indent_for(
 /// Leaf tokens as (kind, text). Only comments are compared without trailing whitespace,
 /// since stripping it from a line comment is a legitimate change; any other leaf, string
 /// fragments included, must match exactly.
-fn tokens<'a>(src: &'a str, tree: &Tree) -> Vec<(u16, &'a str)> {
+pub(crate) fn tokens<'a>(src: &'a str, tree: &Tree) -> Vec<(u16, &'a str)> {
     let mut v = Vec::new();
     let mut c = tree.walk();
     'outer: loop {
