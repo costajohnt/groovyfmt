@@ -9,6 +9,7 @@
 - Packaging for npm (`npm/`, the `groovyfmt` package with one `@groovyfmt/<os>-<arch>` package per platform), Homebrew (`packaging/homebrew/`, a formula rendered from a release's checksums) and a Docker image (`Dockerfile`, `scratch` plus the static binary). None of these is published yet: the release workflow's `publish-npm` and `publish-image` jobs stay off until the repository variables `PUBLISH_NPM` and `PUBLISH_IMAGE` are set (`docs/releasing.md`). CI builds and runs each against the latest release.
 - `--strict`: with `--check`, `--lint` or when formatting in place, list the files that were skipped (they don't parse, aren't UTF-8, are over 10 MB or nest too deeply) and exit 1 if there are any. Without it a skipped file never affects the exit status, so CI can pass on files nothing checked.
 - `--` ends the options: every argument after it is a path, even one starting with `-`.
+- A Gradle plugin (`gradle-plugin/`, id `io.github.costajohnt.groovyfmt`) with `groovyfmtCheck` and `groovyfmtLint`, which `check` runs, and `groovyfmtFormat`. It downloads the release binary into `~/.gradle/groovyfmt/`, checks its `.sha256` before unpacking it, and reuses it; `binary` runs a local one instead. Gradle 7.6+ on Java 11+, configuration cache compatible. Not published yet: use it with `includeBuild` from a checkout (README, Gradle). The release workflow's `publish-gradle-plugin` job stays off until the repository variable `PUBLISH_GRADLE_PLUGIN` is set (`docs/releasing.md`).
 
 ### Changed
 
