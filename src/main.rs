@@ -1137,7 +1137,7 @@ fn lint_files(
             Ok(read) => read,
             Err(why) => return Ok(Err((why, Diag::default()))),
         };
-        let violations = match lint::lint(&src) {
+        let violations = match lint::lint_file(p, &src) {
             Ok(vs) => vs,
             Err(why) => return Ok(Err((why, diag_if(want_diag, &src)))),
         };
@@ -1150,7 +1150,7 @@ fn lint_files(
         };
         if a.fix {
             let cfg = &cfgs[p];
-            match fix::fix(&src, |v| cfg.rule_enabled(v.rule)) {
+            match fix::fix(p, &src, |v| cfg.rule_enabled(v.rule)) {
                 Fix::Nothing => {}
                 Fix::Refused(why) => r.refused = Some(why),
                 Fix::Fixed(text, fixed) => {
@@ -1161,7 +1161,7 @@ fn lint_files(
                     }
                     if r.written.is_ok() {
                         // the fix checked that the fixed text lints
-                        r.violations = lint::lint(&text).unwrap_or_default();
+                        r.violations = lint::lint_file(p, &text).unwrap_or_default();
                         r.fixed = fixed;
                     }
                 }
