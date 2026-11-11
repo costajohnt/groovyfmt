@@ -24,7 +24,7 @@ Set one with `gh variable set PUBLISH_NPM --body true --repo costajohnt/groovyfm
 `publish-npm` publishes with npm trusted publishing (OIDC): there is no npm token secret, and provenance is attached automatically. That needs, once:
 
 1. The repository public. npm does not attach provenance for private repositories, and the job passes `--provenance`.
-2. The `@groovyfmt` scope: on npmjs.com, create the organization `groovyfmt` (free for public packages) with your account as owner. The scope was unclaimed when this was written.
+2. The `@groovyfmt` scope: on npmjs.com, create the organization `groovyfmt` (free for public packages) with your account as owner. Done on 2026-11-11: the organization exists and 0.9.1 of all six packages was published by hand.
 3. A trusted publisher on each of the six packages (`groovyfmt`, `@groovyfmt/darwin-arm64`, `@groovyfmt/darwin-x64`, `@groovyfmt/linux-arm64`, `@groovyfmt/linux-x64`, `@groovyfmt/win32-x64`): in the package's Settings, Trusted Publisher, GitHub Actions, with organization or user `costajohnt`, repository `groovyfmt`, workflow filename `release.yml`, and no environment. Then, under publishing access, require two-factor authentication and disallow tokens.
 
    The trusted publisher form lives on a package's settings page, so a package may have to exist first. If so, publish the first version of each package by hand (`npm login`, then `node npm/build.mjs v<version> <dir>` on archives fetched with `gh release download v<version> --repo costajohnt/groovyfmt --pattern 'groovyfmt-*'`, then `npm publish ./npm/dist/<package> --access public` for the five platform packages and `groovyfmt` last), configure the trusted publishers, and let CI publish every later version.
