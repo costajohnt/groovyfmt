@@ -6,8 +6,9 @@
 //! it must find the input's other violations and nothing new. Otherwise the file is left as
 //! it was. Removing one `;` can expose another (`a();;`), so this runs a few rounds.
 
-use crate::lint::{Violation, lint};
+use crate::lint::{Violation, lint_file};
 use std::ops::Range;
+use std::path::Path;
 use tree_sitter::{Node, Tree};
 
 #[derive(Debug, PartialEq)]
@@ -22,14 +23,14 @@ pub enum Fix {
 
 const MAX_ROUNDS: usize = 4;
 
-/// Fix the violations of `src` that have a fix and that `wanted` (a rule enabled in the
-/// config) accepts.
-pub fn fix(src: &str, wanted: impl Fn(&Violation) -> bool) -> Fix {
+/// Fix the violations of `src`, the text of `path` (which decides the Jenkins, Gradle and
+/// Spock rules), that have a fix and that `wanted` (a rule enabled in the config) accepts.
+pub fn fix(path: &Path, src: &str, wanted: impl Fn(&Violation) -> bool) -> Fix {
     let auto = |v: &Violation| v.fix.is_some() && wanted(v);
     let mut text = src.to_string();
     let mut fixed = Vec::new();
     for _ in 0..MAX_ROUNDS {
-        let Ok(vs) = lint(&text) else {
+        let Ok(vs) = lint_file(path, &text) else {
             return Fix::Refused("parse error");
         };
         let (todo, keep): (Vec<_>, Vec<_>) = vs.into_iter().partition(|v| auto(v));
@@ -38,7 +39,7 @@ pub fn fix(src: &str, wanted: impl Fn(&Violation) -> bool) -> Fix {
         }
         let removed = ranges(&todo);
         let out = delete(&text, &removed);
-        if let Err(why) = check(&text, &out, &removed, keep, &auto) {
+        if let Err(why) = check(path, &text, &out, &removed, keep, &auto) {
             return Fix::Refused(why);
         }
         fixed.extend(todo);
@@ -87,6 +88,7 @@ fn inside(n: Node, removed: &[Range<usize>]) -> bool {
 }
 
 fn check(
+    path: &Path,
     src: &str,
     out: &str,
     removed: &[Range<usize>],
@@ -115,7 +117,7 @@ fn check(
         })
         .map(key)
         .collect();
-    let mut got: Vec<_> = lint(out)
+    let mut got: Vec<_> = lint_file(path, out)
         .map_err(|_| "the fixed file would not parse")?
         .iter()
         .filter(|v| !auto(v))
@@ -171,9 +173,10 @@ fn shape(tree: &Tree, removed: &[Range<usize>]) -> Vec<(u16, Option<u16>, usize)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lint::lint;
 
     fn fixed(src: &str) -> Fix {
-        fix(src, |_| true)
+        fix(Path::new("A.groovy"), src, |_| true)
     }
 
     fn text(src: &str) -> String {
@@ -278,13 +281,13 @@ mod tests {
     fn only_wanted_rules_are_fixed() {
         let src = "import a.B;\nx = 1;\n";
         let semis = |v: &Violation| v.rule == "UnnecessarySemicolon";
-        let Fix::Fixed(t, f) = fix(src, semis) else {
+        let Fix::Fixed(t, f) = fix(Path::new("A.groovy"), src, semis) else {
             panic!()
         };
         assert_eq!((t.as_str(), f.len()), ("import a.B\nx = 1\n", 2));
         // the import line goes with its `;` even when UnnecessarySemicolon is off
         let imports = |v: &Violation| v.rule == "UnusedImport";
-        let Fix::Fixed(t, f) = fix(src, imports) else {
+        let Fix::Fixed(t, f) = fix(Path::new("A.groovy"), src, imports) else {
             panic!()
         };
         assert_eq!(t, "x = 1;\n");
@@ -298,6 +301,7 @@ mod tests {
         // same tokens, different tree
         assert_eq!(
             check(
+                Path::new("A.groovy"),
                 "while (x);\na()\n",
                 "while (x)\na()\n",
                 &[9..10],
@@ -307,10 +311,31 @@ mod tests {
             Err("the parse tree would change shape")
         );
         // a change of tokens
-        assert!(check("x = 1;\n", "x = 2\n", &[5..6], Vec::new(), &|_| true).is_err());
-        assert!(check("x = 1;\n", "x = 1\n", &[5..6], Vec::new(), &|_| true).is_ok());
+        assert!(
+            check(
+                Path::new("A.groovy"),
+                "x = 1;\n",
+                "x = 2\n",
+                &[5..6],
+                Vec::new(),
+                &|_| true
+            )
+            .is_err()
+        );
+        assert!(
+            check(
+                Path::new("A.groovy"),
+                "x = 1;\n",
+                "x = 1\n",
+                &[5..6],
+                Vec::new(),
+                &|_| true
+            )
+            .is_ok()
+        );
         assert_eq!(
             check(
+                Path::new("A.groovy"),
                 "x = 1;\ny = 2\n",
                 "x = 1\ny = 2 +\n",
                 &[5..6],
