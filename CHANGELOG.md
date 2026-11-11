@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+Lint false positives found by reviewing the output on the corpus and 34 open source repositories:
+
+- `UnusedImport` no longer reports a class used only inside `${...}` that the grammar leaves as plain string text, as in a `"""` string holding `"${TextUtil.escapeString(path)}"` (common in Gradle's integration tests). Across the corpus and the 34 repositories this removes 97 false reports.
+- `UnusedImport` checks comments for the name as a whole word, so `// Listing` no longer counts as a use of `List`. This adds 29 reports across the corpus and the 34 repositories, each an import whose name appears nowhere else as a word (`import org.gradle.api.Project` next to `ProjectBuilder`). Comment text used to be searched once per import, which took 10 s on a 5 MB file with 30,000 imports; it now takes under 1 s.
+- `UnnecessarySemicolon` no longer reports a `;` before a line starting with `{`: without it the closure on that line becomes an argument of the statement before (`new DataflowVariable();` then `{-> ... }.callTimeoutAsync(t)` in GPars).
+- `AssignmentInConditional` treats an assignment in extra parentheses, `if ((m = matcher(s)))`, as meant, as GCC and ESLint do.
+- `ComparisonWithSelf` (off by default) no longer reports a comparison inside a GORM where query (`Book.where { title == title }`, `@Where({ ... })`), where the left side is the domain property and the right a variable.
+- `DuplicateCaseStatement` treats `case 'a':` and `case "a":` as the same label, as `DuplicateMapKey` already did for keys.
+
 ## 0.8.0 (2026-11-10)
 
 ### Changed
