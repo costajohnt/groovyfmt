@@ -39,11 +39,11 @@ The comparison flatters groovyfmt somewhat. It skips the 9 spock files it can't 
 | [Release binaries](#release-binaries) | available; [Windows](#windows) since 0.9.1, tested on Windows Server 2022 and under Wine |
 | [Build from source](#build-from-source) | available |
 | [pre-commit](#pre-commit) | available since 0.9.1 |
-| [GitHub Action](#github-actions) | available since 0.9.1; while the repository is private, only with a token that can read it |
+| [GitHub Action](#github-actions) | available since 0.9.1 |
 | [Gradle plugin](#gradle) | not published yet; works today from a checkout with `includeBuild` |
-| [npm](#npm) (`npx groovyfmt`) | not published yet; comes once the repository is public |
-| [Homebrew](#homebrew) | not published yet; comes once the repository is public |
-| [Docker image](#docker) | not published yet; comes once the repository is public |
+| [npm](#npm) (`npx groovyfmt`) | not published yet |
+| [Homebrew](#homebrew) | available: `brew install costajohnt/tap/groovyfmt` |
+| [Docker image](#docker) | not published yet |
 
 ### Release binaries
 
@@ -97,11 +97,11 @@ Not published yet. Once it is, `npx groovyfmt` runs it without installing, and `
 
 ### Homebrew
 
-Not published yet. Once the tap exists:
-
 ```sh
 brew install costajohnt/tap/groovyfmt
 ```
+
+A binary formula for macOS and Linux, on Apple Silicon, Intel and arm64.
 
 ### Docker
 
@@ -498,7 +498,7 @@ The action installs the release binary for the runner (Linux or macOS, x64 or ar
 - run: groovyfmt --lint --output-format github
 ```
 
-`--output-format github` turns findings into annotations on the pull request diff. While the repository is private, `token` must be able to read it, which `github.token` can only do in workflows of this repository. Without `version`, the action installs the release named by the `Cargo.toml` at the ref you use, so a release tag installs that release and `main` the latest one.
+`--output-format github` turns findings into annotations on the pull request diff. Without `version`, the action installs the release named by the `Cargo.toml` at the ref you use, so a release tag installs that release and `main` the latest one.
 
 On a Windows runner the action's steps run in bash (Git Bash, which GitHub's Windows images have) and unpack the `.zip` with PowerShell's `Expand-Archive`; later steps find `groovyfmt` on `PATH` in `pwsh`, `cmd` or `bash`. This has not run on a GitHub Windows runner yet.
 
@@ -515,8 +515,6 @@ Without the action:
     ./groovyfmt --check --output-format github
     ./groovyfmt --lint --output-format github
 ```
-
-This snippet has the same token limit: outside this repository, set `GH_TOKEN` to a token that can read `costajohnt/groovyfmt` (for example a fine-grained personal access token with read access to its contents, stored as a secret).
 
 Add `--strict` to `--check` or `--lint` to fail the job when a file was skipped (it doesn't parse, isn't UTF-8 or is over 10 MB), which otherwise passes unchecked.
 
@@ -554,7 +552,7 @@ A task fails with groovyfmt's own output when files need formatting or lint find
 
 Apply the plugin to the root project only. groovyfmt searches the whole directory tree, subprojects included (it skips `build` directories), so one run covers a multi-project build; applying it to subprojects too would check their files twice.
 
-While the repository is private, the download needs a token that can read it: the environment variable `GROOVYFMT_GITHUB_TOKEN` or `GITHUB_TOKEN`, or the Gradle property `groovyfmt.githubToken` in a `gradle.properties` file. The token is sent only to `api.github.com`, in a header. Don't pass it as `-P` on the command line: Gradle 7.6 keeps every command-line `-P` value, in plain text, in its configuration cache. With `--offline` the plugin uses the cached binary and fails if there is none. On Windows on ARM, which has no release binary, set `binary`.
+The download needs no token. To avoid GitHub's rate limit for anonymous downloads on shared CI machines, set the environment variable `GROOVYFMT_GITHUB_TOKEN` or `GITHUB_TOKEN`, or the Gradle property `groovyfmt.githubToken` in a `gradle.properties` file; the token is sent only to `api.github.com`, in a header. Don't pass it as `-P` on the command line: Gradle 7.6 keeps every command-line `-P` value, in plain text, in its configuration cache. With `--offline` the plugin uses the cached binary and fails if there is none. On Windows on ARM, which has no release binary, set `binary`.
 
 Without the plugin, with `groovyfmt` on `PATH`:
 
