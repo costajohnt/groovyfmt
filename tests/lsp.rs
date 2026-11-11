@@ -313,6 +313,8 @@ fn a_full_session_matches_the_cli() {
         summary(&ds),
         [
             s("UnusedImport", 2, 0, 0, 0, 21),
+            // a rule added after the server: its name is the code too
+            s("UnnecessaryGroovyImport", 2, 0, 0, 0, 21),
             s("UnusedImport", 2, 1, 0, 1, 15),
             s("UnnecessarySemicolon", 2, 4, 14, 4, 15),
             s("UnnecessarySemicolon", 2, 9, 8, 9, 9),
@@ -623,7 +625,7 @@ fn invalid_json_gets_a_parse_error_and_the_session_goes_on() {
     let path = d.0.join("A.groovy");
     assert_eq!(
         srv.open(&uri(&path), MESSY).len(),
-        5,
+        6,
         "with the empty catch"
     );
     for bad in [
@@ -685,7 +687,7 @@ fn invalid_json_gets_a_parse_error_and_the_session_goes_on() {
     );
     assert_eq!(
         srv.diagnostics(&uri(&path)).len(),
-        5,
+        6,
         "with the empty catch"
     );
     let edits = srv.result(
