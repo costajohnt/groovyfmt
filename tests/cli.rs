@@ -905,7 +905,7 @@ fn explain_describes_one_rule() {
         "{}",
         stdout(&o)
     );
-    assert_eq!(stdout(&o).lines().count(), 16);
+    assert_eq!(stdout(&o).lines().count(), groovyfmt::lint::RULES.len());
 }
 
 #[test]
