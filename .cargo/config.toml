@@ -1,5 +1,6 @@
 # The Windows release is cross-compiled from Linux with mingw-w64 (docs/releasing.md).
 [target.x86_64-pc-windows-gnu]
 linker = "x86_64-w64-mingw32-gcc"
-# The C runtime linked in, so groovyfmt.exe needs no mingw DLLs beside it.
+# The C runtime linked in, so groovyfmt.exe never needs mingw DLLs beside it. With Rust
+# 1.98 and mingw-w64 14 the imports are the same without it; this keeps it that way.
 rustflags = ["-C", "target-feature=+crt-static"]

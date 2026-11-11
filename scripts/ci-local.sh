@@ -30,7 +30,7 @@ fi
 # Windows: cross-compiled with mingw-w64, every test run under Wine (scripts/wine-run.sh).
 win=x86_64-pc-windows-gnu
 if command -v x86_64-w64-mingw32-gcc > /dev/null && rustup target list --installed | grep -qx "$win" \
-  && { command -v wine > /dev/null || [ -x /usr/lib/wine/wine64 ]; }; then
+  && { command -v wine > /dev/null || command -v wine64 > /dev/null || [ -x /usr/lib/wine/wine64 ]; }; then
   export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=$PWD/scripts/wine-run.sh
   export WINEPREFIX=${WINEPREFIX:-$HOME/.wine-gf}
   wineserver=$(command -v wineserver || echo /usr/lib/wine/wineserver64)
