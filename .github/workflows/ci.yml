@@ -66,6 +66,8 @@ jobs:
           - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
           - { target: aarch64-apple-darwin, os: macos-latest }
           - { target: x86_64-apple-darwin, os: macos-latest }
+          # Cross-compiled with mingw-w64 and smoke-tested under Wine: no Windows runner.
+          - { target: x86_64-pc-windows-gnu, os: ubuntu-latest }
     env:
       TARGET: ${{ matrix.target }}
     steps:
@@ -77,20 +79,28 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
       - name: musl tools
-        if: runner.os == 'Linux'
+        if: contains(matrix.target, 'linux-musl')
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools
+      # .cargo/config.toml sets the linker and links the C runtime statically
+      - name: mingw-w64 and Wine
+        if: contains(matrix.target, 'windows')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 wine64
       - name: Build
         env:
           CC_x86_64_unknown_linux_musl: musl-gcc
           CC_aarch64_unknown_linux_musl: musl-gcc
+          CC_x86_64_pc_windows_gnu: x86_64-w64-mingw32-gcc
         run: cargo build --release --locked --target "$TARGET"
       - name: Smoke test
         shell: bash
         run: |
           set -exo pipefail
           bin=target/$TARGET/release/groovyfmt
+          case $TARGET in *windows*) bin=$bin.exe ;; esac
           file "$bin"
           run=
           case $TARGET in
@@ -103,6 +113,12 @@ jobs:
               # No glibc: the binary must start on Alpine.
               docker run --rm -v "$PWD/$bin:/groovyfmt:ro" alpine:3 /groovyfmt --version ;;
             x86_64-apple-darwin) run='arch -x86_64' ;;
+            *windows*)
+              # Only Windows' own DLLs: no mingw runtime to ship alongside.
+              x86_64-w64-mingw32-objdump -p "$bin" | grep 'DLL Name' | tee dlls.txt
+              if grep -viE 'DLL Name: (kernel32|ntdll|msvcrt|ws2_32|userenv|advapi32|bcrypt|bcryptprimitives|api-ms-win-[a-z0-9-]+)\.dll$' dlls.txt; then exit 1; fi
+              export WINEPREFIX=$RUNNER_TEMP/wine
+              run=scripts/wine-run.sh ;;
           esac
           $run "$bin" --version
           printf 'class A {\ndef f() {\nprintln 1\n}\n}\n' > "$RUNNER_TEMP/A.groovy"
@@ -116,13 +132,22 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = tag ]; then label=$GITHUB_REF_NAME; else label=dev; fi
           name=groovyfmt-$label-$TARGET
           mkdir "$name"
-          cp "target/$TARGET/release/groovyfmt" README.md LICENSE "$name"/
-          tar -czf "$name.tar.gz" "$name"
-          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+          case $TARGET in
+            *windows*)
+              cp "target/$TARGET/release/groovyfmt.exe" README.md LICENSE "$name"/
+              zip -r "$name.zip" "$name"
+              shasum -a 256 "$name.zip" > "$name.zip.sha256" ;;
+            *)
+              cp "target/$TARGET/release/groovyfmt" README.md LICENSE "$name"/
+              tar -czf "$name.tar.gz" "$name"
+              shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256" ;;
+          esac
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.target }}
-          path: groovyfmt-*.tar.gz*
+          path: |
+            groovyfmt-*.tar.gz*
+            groovyfmt-*.zip*
 
   # The install channels (action.yml, npm/, packaging/, Dockerfile), each run
   # against the latest published release so none of them can rot. Skipped when

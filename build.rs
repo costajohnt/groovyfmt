@@ -9,8 +9,10 @@ fn main() {
         .flag_if_supported("-Wno-trigraphs")
         .file(dir.join("parser.c"))
         .file(dir.join("scanner.c"));
-    #[cfg(target_env = "msvc")]
-    c.flag("-utf-8");
+    // the target's toolchain, not the host's: a cross build from Linux to msvc needs it too
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        c.flag("-utf-8");
+    }
     c.compile("tree-sitter-groovy");
     println!("cargo:rerun-if-changed=grammar");
 }

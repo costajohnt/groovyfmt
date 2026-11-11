@@ -21,6 +21,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import java.util.zip.GZIPInputStream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 import org.gradle.api.GradleException;
 import org.gradle.api.logging.Logger;
 
@@ -48,15 +50,22 @@ final class Provisioner {
             case "aarch64": case "arm64": arch = "aarch64"; break;
             default: arch = null;
         }
-        if (os.startsWith("windows")) {
-            throw new GradleException("groovyfmt has no Windows release binary yet. Set groovyfmt.binary to a groovyfmt you built, or run it under WSL.");
-        }
-        String suffix = os.equals("linux") ? "unknown-linux-musl" : os.startsWith("mac") ? "apple-darwin" : null;
+        String suffix = os.equals("linux") ? "unknown-linux-musl" : os.startsWith("mac") ? "apple-darwin"
+                : os.startsWith("windows") && "x86_64".equals(arch) ? "pc-windows-gnu" : null;
         if (arch == null || suffix == null) {
             throw new GradleException("groovyfmt has no release binary for " + osName + "/" + osArch
-                    + " (Linux and macOS, x86_64 and arm64 only). Set groovyfmt.binary to a groovyfmt you built.");
+                    + " (Linux and macOS, x86_64 and arm64, and Windows x86_64 only). Set groovyfmt.binary to a groovyfmt you built.");
         }
         return arch + "-" + suffix;
+    }
+
+    static boolean isWindows(String target) {
+        return target.endsWith("-windows-gnu");
+    }
+
+    /** The binary's name in a target's archive and in the cache. */
+    static String exeName(String target) {
+        return isWindows(target) ? "groovyfmt.exe" : "groovyfmt";
     }
 
     /** Returns the cached binary, downloading and verifying it first if needed. */
@@ -68,13 +77,13 @@ final class Provisioner {
         String tag = "v" + m.group(1);
         String target = target(System.getProperty("os.name"), System.getProperty("os.arch"));
         Path dir = cacheRoot.resolve(m.group(1)).resolve(target);
-        Path exe = dir.resolve("groovyfmt");
+        Path exe = dir.resolve(exeName(target));
         if (Files.isExecutable(exe)) return exe;
         if (offline) {
             throw new GradleException("groovyfmt " + tag + " for " + target + " is not in the cache (" + dir
                     + ") and Gradle is offline. Run once without --offline, or set groovyfmt.binary.");
         }
-        String archive = "groovyfmt-" + tag + "-" + target + ".tar.gz";
+        String archive = "groovyfmt-" + tag + "-" + target + (isWindows(target) ? ".zip" : ".tar.gz");
         logger.lifecycle("Downloading groovyfmt {} for {}", tag, target);
         Files.createDirectories(dir);
         Path tmp = Files.createTempDirectory(dir, "download-");
@@ -99,8 +108,13 @@ final class Provisioner {
                 fetch(URI.create(base + archive + ".sha256"), null, null, sha);
             }
             verify(tgz, Files.readString(sha, StandardCharsets.UTF_8));
-            Path extracted = tmp.resolve("groovyfmt");
-            extract(tgz, "groovyfmt-" + tag + "-" + target + "/groovyfmt", extracted);
+            Path extracted = tmp.resolve(exeName(target));
+            String entry = "groovyfmt-" + tag + "-" + target + "/" + exeName(target);
+            if (isWindows(target)) {
+                extractZip(tgz, entry, extracted);
+            } else {
+                extract(tgz, entry, extracted);
+            }
             if (!extracted.toFile().setExecutable(true)) {
                 throw new IOException("could not make " + extracted + " executable");
             }
@@ -177,6 +191,20 @@ final class Provisioner {
             }
         }
         throw new GradleException("groovyfmt: " + tarGz.getFileName() + " has no " + entry);
+    }
+
+    /** {@link #extract} for a .zip: only the entry named {@code entry} is read, and no entry name becomes a path. */
+    static void extractZip(Path zip, String entry, Path dest) throws IOException {
+        try (ZipInputStream in = new ZipInputStream(new BufferedInputStream(Files.newInputStream(zip)))) {
+            for (ZipEntry e; (e = in.getNextEntry()) != null; ) {
+                // a directory entry's name ends in `/`, so it never matches
+                if (e.getName().equals(entry)) {
+                    Files.copy(in, dest, StandardCopyOption.REPLACE_EXISTING);
+                    return;
+                }
+            }
+        }
+        throw new GradleException("groovyfmt: " + zip.getFileName() + " has no " + entry);
     }
 
     private static String field(byte[] h, int off, int len) {

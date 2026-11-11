@@ -44,8 +44,9 @@ runs:
           Linux/ARM64) target=aarch64-unknown-linux-musl ;;
           macOS/X64) target=x86_64-apple-darwin ;;
           macOS/ARM64) target=aarch64-apple-darwin ;;
+          Windows/X64) target=x86_64-pc-windows-gnu ;;
           *)
-            echo "::error::groovyfmt has no release binary for $RUNNER_OS/$RUNNER_ARCH yet (Linux and macOS, x64 and arm64 only)"
+            echo "::error::groovyfmt has no release binary for $RUNNER_OS/$RUNNER_ARCH yet (Linux and macOS, x64 and arm64, and Windows x64 only)"
             exit 1 ;;
         esac
         version=$INPUT_VERSION
@@ -61,20 +62,33 @@ runs:
           echo "::error::version must be like 0.8.0, v0.8.0 or latest"
           exit 1
         fi
-        archive=groovyfmt-$tag-$target.tar.gz
+        # Windows gets a .zip; every step here runs in bash, which is Git Bash on Windows runners
+        ext=tar.gz
+        if [ "$RUNNER_OS" = Windows ]; then ext=zip; fi
+        archive=groovyfmt-$tag-$target.$ext
         dir=$RUNNER_TEMP/groovyfmt-$tag-$target
         rm -rf "$dir"
         mkdir -p "$dir"
         gh release download "$tag" --repo "$repo" --dir "$dir" --pattern "$archive" --pattern "$archive.sha256"
         expected=$(cut -d ' ' -f 1 "$dir/$archive.sha256")
-        actual=$(shasum -a 256 "$dir/$archive" | cut -d ' ' -f 1)
+        if command -v shasum > /dev/null; then sum="shasum -a 256"; else sum=sha256sum; fi
+        actual=$($sum "$dir/$archive" | cut -d ' ' -f 1)
         if [ "$expected" != "$actual" ] || [ -z "$actual" ]; then
           echo "::error::Checksum mismatch for $archive: expected $expected, got $actual"
           exit 1
         fi
-        tar -xzf "$dir/$archive" -C "$dir" --strip-components=1
+        if [ "$ext" = zip ]; then
+          # Expand-Archive is in every PowerShell; the paths go in through the environment, unquoted
+          ZIP="$dir/$archive" DEST="$dir" pwsh -NoProfile -NonInteractive -Command 'Expand-Archive -LiteralPath $env:ZIP -DestinationPath $env:DEST -Force'
+          mv "$dir/groovyfmt-$tag-$target/groovyfmt.exe" "$dir/groovyfmt.exe"
+          # GITHUB_PATH takes a Windows path there
+          path_dir=$(cygpath -w "$dir")
+        else
+          tar -xzf "$dir/$archive" -C "$dir" --strip-components=1
+          path_dir=$dir
+        fi
         "$dir/groovyfmt" --version
-        echo "$dir" >> "$GITHUB_PATH"
+        echo "$path_dir" >> "$GITHUB_PATH"
         echo "version=$tag" >> "$GITHUB_OUTPUT"
         echo "dir=$dir" >> "$GITHUB_OUTPUT"
     - if: inputs.args != ''

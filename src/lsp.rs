@@ -879,6 +879,23 @@ mod tests {
             // bytes that aren't UTF-8 are a valid file name on unix
             assert_eq!(uri_path("file:///x%FF").unwrap().as_os_str().len(), 3);
         }
+        #[cfg(windows)]
+        {
+            // as VS Code sends them: a lowercase drive and an escaped colon
+            assert_eq!(
+                p("file:///c%3A/Users/a/B.groovy").as_deref(),
+                Some("c:/Users/a/B.groovy")
+            );
+            assert_eq!(
+                p("file:///C:/a%20b/%C3%A9%23x.gradle").as_deref(),
+                Some("C:/a b/é#x.gradle")
+            );
+            let file = uri_path("file:///C:/x/Jenkinsfile").unwrap();
+            assert_eq!(file.file_name().unwrap(), "Jenkinsfile");
+            assert!(file.is_absolute(), "{file:?}");
+            // a name is UTF-16 there: bytes that aren't UTF-8 name nothing
+            assert_eq!(uri_path("file:///C:/x%FF"), None);
+        }
         for bad in [
             "untitled:Untitled-1",
             "https://example.com/A.groovy",

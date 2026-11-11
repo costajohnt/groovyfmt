@@ -83,6 +83,17 @@ pub fn first_error(tree: &Tree) -> Option<Node<'_>> {
     }
 }
 
+/// A path as groovyfmt prints it (reports, JSON, SARIF, patch headers, errors): on Windows
+/// with `/` between components, so output and patches are the same on every platform. A
+/// name that isn't valid Unicode shows U+FFFD in place of the bad part.
+pub fn display_path(p: &Path) -> String {
+    let s = p.display().to_string();
+    // `\` can't be part of a file name on Windows, so this changes only separators
+    #[cfg(windows)]
+    let s = s.replace('\\', "/");
+    s
+}
+
 /// Groovy sources, Gradle build scripts, and Jenkinsfiles.
 pub fn is_groovy_file(path: &Path) -> bool {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -110,6 +121,10 @@ pub(crate) mod scaling {
     /// The CPU time this thread has used, where the OS reports it without a dependency
     /// (Linux: `/proc/thread-self/stat`), so other tests and processes don't count.
     fn thread_cpu() -> Option<Duration> {
+        // Linux's: Wine makes the path answer on Windows builds too, from the host's /proc
+        if !cfg!(target_os = "linux") {
+            return None;
+        }
         let s = std::fs::read_to_string("/proc/thread-self/stat").ok()?;
         // after the parenthesized command name comes field 3; utime and stime are 14 and 15
         let fields: Vec<&str> = s.get(s.rfind(')')? + 2..)?.split(' ').collect();
@@ -118,13 +133,20 @@ pub(crate) mod scaling {
         Some(Duration::from_millis(ticks * 10))
     }
 
-    /// How long `f(n)` takes: this thread's CPU time where available, else wall time.
+    /// How long `f(n)` takes: this thread's CPU time where available, else wall time, which
+    /// counts whatever else the machine is doing too, so the fastest of three runs.
     fn cost(f: &impl Fn(usize), n: usize) -> Duration {
         let (cpu, wall) = (thread_cpu(), Instant::now());
         f(n);
         match (cpu, thread_cpu()) {
             (Some(a), Some(b)) => b.saturating_sub(a),
-            _ => wall.elapsed(),
+            _ => (0..2)
+                .map(|_| {
+                    let t = Instant::now();
+                    f(n);
+                    t.elapsed()
+                })
+                .fold(wall.elapsed(), Duration::min),
         }
     }
 
