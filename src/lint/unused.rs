@@ -26,7 +26,11 @@ pub(super) const KINDS: &[&str] = &[
 ];
 
 /// The kinds of the nodes that can reach a member by a computed name.
-pub(super) const DYNAMIC: &[&str] = &["quoted_identifier", "method_invocation", "subscript_expression"];
+pub(super) const DYNAMIC: &[&str] = &[
+    "quoted_identifier",
+    "method_invocation",
+    "subscript_expression",
+];
 
 /// The kinds of the nodes that can hold a name: identifiers, and the text of strings.
 pub(super) const LEAVES: &[&str] = &[
@@ -44,8 +48,7 @@ fn index(src: &str, leaves: &[Node], wanted: Vec<String>) -> HashMap<String, Vec
     for w in wanted.iter().filter(|w| !w.is_empty()) {
         maybe[usize::from(w.as_bytes()[0])] |= 1 << w.len().min(63);
     }
-    let might =
-        |w: &str| maybe[usize::from(w.as_bytes()[0])] & (1 << w.len().min(63)) != 0;
+    let might = |w: &str| maybe[usize::from(w.as_bytes()[0])] & (1 << w.len().min(63)) != 0;
     let mut idx: HashMap<String, Vec<usize>> =
         wanted.into_iter().map(|w| (w, Vec::new())).collect();
     for n in leaves {
@@ -234,9 +237,7 @@ pub(super) fn check(
                 // `None` at a script's top level
                 scope_of.insert(n.id(), scopes.last().copied());
             }
-            "block" | "closure" | "switch_block" | "lambda_expression" => {
-                scopes.push(n.end_byte())
-            }
+            "block" | "closure" | "switch_block" | "lambda_expression" => scopes.push(n.end_byte()),
             _ => {}
         }
     }

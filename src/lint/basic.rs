@@ -91,17 +91,15 @@ pub(super) fn check(src: &str, nodes: &[Node], v: &mut Vec<Violation>) {
                     ));
                 }
             }
-            "binary_expression" => {
-                match n.child_by_field_id(f.operator).map_or("", |o| o.kind()) {
-                    "==" => {
-                        two_constants(src, n, v);
-                        broken_oddness(src, n, v);
-                    }
-                    "!=" | "<" | "<=" | ">" | ">=" => two_constants(src, n, v),
-                    "||" | "&&" => broken_null_check(src, n, v),
-                    _ => {}
+            "binary_expression" => match n.child_by_field_id(f.operator).map_or("", |o| o.kind()) {
+                "==" => {
+                    two_constants(src, n, v);
+                    broken_oddness(src, n, v);
                 }
-            }
+                "!=" | "<" | "<=" | ">" | ">=" => two_constants(src, n, v),
+                "||" | "&&" => broken_null_check(src, n, v),
+                _ => {}
+            },
             "spaceship_expression" => two_constants(src, n, v),
             "method_invocation" => {
                 // `x.removeAll(y)`, `x.equals(y)`, `x.compareTo(y)`
@@ -161,7 +159,10 @@ fn dead_code<'a>(n: Node<'a>, c: &mut tree_sitter::TreeCursor<'a>, v: &mut Vec<V
             && !k.ends_with("comment")
         {
             let declaration = k.ends_with("_declaration")
-                && !matches!(k, "local_variable_declaration" | "multi_assignment_declaration");
+                && !matches!(
+                    k,
+                    "local_variable_declaration" | "multi_assignment_declaration"
+                );
             let habit = k == "break_statement"
                 && matches!(jump.kind(), "return_statement" | "throw_statement");
             if !declaration

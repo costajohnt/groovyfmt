@@ -176,6 +176,27 @@ Whitespace only:
 
 Formatting is safe by construction. The output is parsed again and its token stream compared with the input's; if anything other than whitespace would change, or the input doesn't parse cleanly, the file is left untouched (`-v` lists these). Running it twice changes nothing the second time.
 
+### Spacing within lines
+
+With `normalize_spacing = true` in the config, groovyfmt also fixes the spaces between tokens on each line. It never adds or removes a line break and never touches strings, GString interpolations or comments. The style:
+
+- one space around binary operators, assignment (`=`, `+=`), `?` and `:` in a ternary, `?:`, `->`, `**`, `as`, `in` and `instanceof`
+- one space after a comma and none before it; none before a `;`, one after it inside a `for (…)`
+- no space inside `(…)` or `[…]`, and none inside `<…>` of a generic type (`Map<String, Integer>`)
+- no space between a call, constructor, annotation or method declaration and its `(` (`foo(x)`, `new Foo()`, `@Ann(x)`, `def f(a)`), one after `if`, `for`, `while`, `switch`, `catch` and `synchronized`
+- one space before a `{`, inside a one-line `{ … }` and around `else`, `catch` and `finally` after a `}`
+- in map entries, named arguments, labels and `case x:`, no space before the `:` and one after it in map entries and named arguments
+- no space after a prefix operator (`-x`, `!x`, `*args`) or before a postfix one (`i++`), around `::`, or before the `[` of an array type (`String[]`), and one after a cast (`(String) x`)
+- any other run of spaces becomes one
+
+Some spacing is left as written because changing it could change what the code means or how it reads: member access (`.`, `?.`, `*.`, `.&`), ranges (`1..n`), a subscript after a space (`a [1]`), a call with a space before `(` whose result is used further (`foo (x).bar()`, `foo (x) + 1`, which Groovy may read as a command call), a binary operator with a space before it and none after (`a -b`, `println -1`), `<` and `>` comparisons chained like a generic type (`x as Kind<Path>[]`), a closure parameter's default (`{ int b=2 -> }`), and closures that look like template placeholders (`{{name}}`, `${x}` outside a string, a closure standing alone as a statement).
+
+Alignment is kept. A run of two or more spaces, or a tab, stays when the token after it lines up with a token on a nearby line: the line above or below, or a line indented the same way within 20 lines (an `=` column, map keys and values across nested values, Gradle dependency columns, trailing comments). A single space before a map key's `:` stays when it lines up colons (`9 :` over `10:`). When something earlier on the line gets shorter or longer, a run before a trailing comment absorbs the difference so the comment doesn't move, and on a line laid out in columns (`[ 4,  4,  3]` over `[10,  9,  8]`) nothing before its last aligned column changes. Spock data tables are never touched: every statement from a `where:` label to the end of its block keeps its spacing exactly. A gap next to a comment is kept too.
+
+Besides the token check, spacing output must parse to the same tree shape as the input; if it doesn't, the file is formatted without spacing changes instead.
+
+Limits, so a hostile file can't make it slow: a line longer than 1,000 bytes keeps its spacing (it is still re-indented), and alignment is looked up only in the first 2,000 characters of a line. Lines whose alignment depends on each other are settled in repeated passes over the file, each linear in its size; two or three are typical, and a file that hasn't settled after 64 is skipped (`-v` lists it as `spacing did not settle`) rather than written half-respaced.
+
 ### Lint rules
 
 The general rules are named after their [CodeNarc](https://codenarc.org/) equivalents so existing configurations map across; the Jenkins, Gradle and Spock rules catch, in milliseconds, mistakes those tools otherwise report only when a build runs. Files that don't parse are not linted, which keeps false positives out.
@@ -311,6 +332,7 @@ indent = 4                  # spaces per block level, 1 to 16
 continuation_indent = 8     # arguments, literals, continued lines (default: same as indent)
 use_tabs = false            # true: indent with tabs, one per indent level
 indent_after_labels = false # true: indent Spock when:/then: blocks under their label
+normalize_spacing = false   # true: also fix the spaces between tokens within a line
 exclude = ["generated/**", "**/*.gsh"] # skip these files and directories
 
 [lint]                      # rule = true/false; unlisted rules keep their default
@@ -506,13 +528,57 @@ Exit codes: 0 clean, 1 something to fix (parse error, lint violation, or formatt
 2 a usage or I/O error.
 ```
 
+### Language server
+
+An agent or tool that speaks the Language Server Protocol can run `groovyfmt --lsp` instead of the CLI ([Editors](#editors)). It publishes parse errors and lint violations for each document it opens, with the same rules, config and positions as `--syntax` and `--lint`, returns formatting as a text edit that changes only whitespace, and offers the `--lint --fix` fixes as code actions. It never writes a file: the edits go back to the client, which applies them.
+
 ### pre-commit
 
 To check the same things before each commit, use the hooks in [pre-commit](#pre-commit).
 
 ## Editors
 
-Neovim and VS Code call `groovyfmt --stdin`, which prints nothing and exits 2 when it can't format the buffer, so a parse error never replaces your code.
+`groovyfmt --lsp` is a language server on stdin and stdout. An editor that speaks the Language Server Protocol gets formatting (whole file and selection), parse errors and lint violations as you type, and the `--lint --fix` fixes as code actions ("Fix all auto-fixable problems", kind `source.fixAll.groovyfmt`, and a quick fix per fixable violation), all from the binary the CLI uses. Each document gets the config `--stdin-filepath` would find for its path, read again on every request, so an edited `.groovyfmt.toml` applies right away; an excluded file gets no diagnostics and no edits, and a buffer that doesn't parse gets its parse errors and no edits. `--config` and `--indent` apply as on the command line. It is a formatter and linter server, not a Groovy language server: no completion, hover, go-to-definition or rename. Only `file:` documents are served, so an unsaved buffer with no path gets nothing.
+
+- **Neovim** 0.11 or later, with the built-in client:
+  ```lua
+  vim.lsp.config("groovyfmt", {
+    cmd = { "groovyfmt", "--lsp" },
+    filetypes = { "groovy" },
+    root_markers = { ".groovyfmt.toml", "groovyfmt.toml", ".git" },
+  })
+  vim.lsp.enable("groovyfmt")
+  ```
+  `vim.lsp.buf.format()` formats; `vim.lsp.buf.code_action({ context = { only = { "source.fixAll" } }, apply = true })` applies the fixes.
+- **VS Code** has no groovyfmt extension, and VS Code itself only runs language servers that an extension starts. A generic client such as [Generic LSP Client](https://github.com/llllvvuu/vscode-glspc) (`llllvvuu.glspc`) can start it, in `settings.json`:
+  ```json
+  "glspc.serverCommand": "groovyfmt",
+  "glspc.serverCommandArguments": ["--lsp"],
+  "glspc.languageId": "groovy"
+  ```
+  To fix on save, add `"editor.codeActionsOnSave": { "source.fixAll.groovyfmt": "explicit" }`.
+- **Helix** (`languages.toml`; Helix knows Groovy, `*.gradle` and Jenkinsfiles but has no Groovy language server by default):
+  ```toml
+  [language-server.groovyfmt]
+  command = "groovyfmt"
+  args = ["--lsp"]
+
+  [[language]]
+  name = "groovy"
+  language-servers = ["groovyfmt"]
+  auto-format = true
+  ```
+- **Zed** can't add a language server from settings alone; it starts the ones its extensions declare. With the [Groovy extension](https://github.com/valentinegb/zed-groovy), which declares a server named `groovy`, point that server at groovyfmt in `settings.json` (this replaces the extension's own server):
+  ```json
+  "lsp": {
+    "groovy": { "binary": { "path": "/usr/local/bin/groovyfmt", "arguments": ["--lsp"] } }
+  },
+  "languages": {
+    "Groovy": { "formatter": "language_server", "format_on_save": "on" }
+  }
+  ```
+
+Without a language server client, call `groovyfmt --stdin`, which prints nothing and exits 2 when it can't format the buffer, so a parse error never replaces your code.
 
 Add `--stdin-filepath <path>` (it requires `--stdin`) to tell groovyfmt which file the buffer belongs to. The config is then found by walking up from that file's directory, as for a file named on the command line, instead of from the working directory; the path names the buffer in error messages, and if the path matches `exclude` the buffer comes back unchanged with exit 0. The file doesn't have to exist yet.
 

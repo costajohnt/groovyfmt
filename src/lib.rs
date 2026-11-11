@@ -2,13 +2,20 @@ pub mod config;
 pub mod diff;
 pub mod fix;
 pub mod format;
+pub mod json;
 pub mod lint;
+pub mod lsp;
 pub mod report;
+mod spacing;
 pub mod syntax;
 
 use std::path::Path;
 use tree_sitter::{Node, Parser, Tree};
 use tree_sitter_language::LanguageFn;
+
+/// Files larger than this are skipped: generated or vendored code, and a guard against
+/// a crafted input exhausting memory. `--lsp` leaves documents this large alone too.
+pub const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 
 unsafe extern "C" {
     fn tree_sitter_groovy() -> *const ();
@@ -149,6 +156,50 @@ mod tests {
             "superclass",
             "method_declaration",
             "quoted_identifier",
+            // spacing.rs
+            "expression_statement",
+            "named_argument",
+            "argument_list",
+            "formal_parameters",
+            "formal_parameter",
+            "closure_parameters",
+            "type_arguments",
+            "type_parameters",
+            "array_type",
+            "dimension",
+            "dimension_expression",
+            "method_reference_expression",
+            "unary_expression",
+            "update_expression",
+            "unary_update_expression",
+            "spread_arguments",
+            "ternary_expression",
+            "elvis_expression",
+            "cast_expression",
+            "parenthesized_type_cast",
+            "object_creation_expression",
+            "lambda_expression",
+            "variable_declarator",
+            "local_variable_declaration",
+            "field_declaration",
+            "multi_assignment_declaration",
+            "multi_assignment_expression",
+            "switch_default",
+            "switch_arrow_case",
+            "switch_expression",
+            "quoted_identifier",
+            "power_expression",
+            "membership_expression",
+            "instanceof_expression",
+            "spaceship_expression",
+            "regex_find_expression",
+            "regex_match_expression",
+            "identity_expression",
+            "logical_implication_expression",
+            "return_statement",
+            "list_literal",
+            "do_while_statement",
+            "synchronized_statement",
             // lint/basic.rs, lint/imports.rs, lint/unused.rs
             "switch_default",
             "static_initializer",
@@ -184,7 +235,38 @@ mod tests {
             assert_ne!(lang.id_for_node_kind(k, true), 0, "missing node kind {k}");
         }
         for k in [
-            ";", "=", "==", "{", "}", "|", "||", "<<", "&&", "!=", "%", "private", "static",
+            ";",
+            "=",
+            "==",
+            "{",
+            "}",
+            "(",
+            ")",
+            "[",
+            "]",
+            ",",
+            ":",
+            "?",
+            "->",
+            "::",
+            "<",
+            ">",
+            "|",
+            "||",
+            "else",
+            "catch",
+            "finally",
+            "while",
+            "if",
+            "for",
+            "switch",
+            "synchronized",
+            "<<",
+            "&&",
+            "!=",
+            "%",
+            "private",
+            "static",
         ] {
             assert_ne!(lang.id_for_node_kind(k, false), 0, "missing token {k}");
         }
@@ -208,6 +290,7 @@ mod tests {
             "arguments",
             "closure",
             "statement",
+            "base",
             "type",
             "return_type",
             "parameters",

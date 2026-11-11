@@ -53,10 +53,14 @@ fn fixtures_format_whitespace_only_and_idempotently() {
             indent: 2,
             continuation: Some(8),
             indent_after_labels: true,
-            use_tabs: false,
+            ..Style::default()
         },
         Style {
             use_tabs: true,
+            ..Style::default()
+        },
+        Style {
+            normalize_spacing: true,
             ..Style::default()
         },
     ];
@@ -76,6 +80,30 @@ fn fixtures_format_whitespace_only_and_idempotently() {
         }
     }
     assert!(paths.len() >= 20, "{} fixtures", paths.len());
+    // spacing changes only what the option is for, and never moves a line break
+    let src = std::fs::read_to_string(format!("{dir}/spacing.groovy")).unwrap();
+    let plain = check("spacing.groovy", &src, &Style::default());
+    let spaced = check("spacing.groovy", &src, &styles[3]);
+    assert_ne!(plain, spaced, "spacing.groovy: spacing changed nothing");
+    assert_eq!(plain.lines().count(), spaced.lines().count());
+    for (a, b) in plain.lines().zip(spaced.lines()) {
+        assert_eq!(a.replace([' ', '\t'], ""), b.replace([' ', '\t'], ""));
+    }
+    for line in [
+        "        a  | b  || c",
+        "        a -b",
+        "        foo (x).bar()",
+        "        y [1]",
+        "        println \"keep ${a+b}   as is\"",
+        "   c  =  d'''  +'e'",
+        "    String  name      // aligned",
+        "        if (a) { println a } else if (b) { println b } else { println 'none' }",
+    ] {
+        assert!(
+            spaced.contains(&format!("{line}\n")),
+            "{line:?} in\n{spaced}"
+        );
+    }
     assert!(
         changed_when_scrambled * 2 >= paths.len(),
         "only {changed_when_scrambled} of {} fixtures change when scrambled",

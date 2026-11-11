@@ -641,7 +641,13 @@ pub fn lint_file(path: &Path, src: &str) -> Result<Vec<Violation>, &'static str>
             _ => {}
         }
     }
-    let [basic_nodes, unused_nodes, import_nodes, name_leaves, dynamic] = by_module;
+    let [
+        basic_nodes,
+        unused_nodes,
+        import_nodes,
+        name_leaves,
+        dynamic,
+    ] = by_module;
     basic::check(src, &basic_nodes, &mut v);
     unused::check(src, &unused_nodes, &name_leaves, &dynamic, &mut v);
     imports::check(path, src, &import_nodes, &mut v);
