@@ -49,7 +49,7 @@ struct Tok<'t> {
     odd: bool,
 }
 
-fn is_atom(n: Node) -> bool {
+pub(crate) fn is_atom(n: Node) -> bool {
     let k = n.kind();
     n.child_count() == 0
         || k.contains("string")
@@ -210,7 +210,7 @@ fn is_op(t: &Tok) -> bool {
 
 /// `a -b`: a space before a binary operator and none after reads as a prefix operator on a
 /// command argument, whatever the parser made of it; left as written.
-fn lopsided(op: Node, src: &str) -> bool {
+pub(crate) fn lopsided(op: Node, src: &str) -> bool {
     let b = src.as_bytes();
     let before = op.start_byte() > 0 && matches!(b[op.start_byte() - 1], b' ' | b'\t');
     let after = b
@@ -221,7 +221,7 @@ fn lopsided(op: Node, src: &str) -> bool {
 
 /// `x as Kind<Path>[]` read as `Kind < Path > []`: a `<` or `>` comparison chained with the
 /// other one is a generic type the grammar didn't recognize; spacing it would change the parse.
-fn generic_like(op: Node) -> bool {
+pub(crate) fn generic_like(op: Node) -> bool {
     let cmp = |n: Option<Node>| {
         n.is_some_and(|n| {
             n.kind() == "binary_expression"

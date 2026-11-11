@@ -8,6 +8,7 @@ pub mod lsp;
 pub mod report;
 mod spacing;
 pub mod syntax;
+pub mod wrap;
 
 use std::path::Path;
 use tree_sitter::{Node, Parser, Tree};

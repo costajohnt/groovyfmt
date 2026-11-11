@@ -63,6 +63,18 @@ fn fixtures_format_whitespace_only_and_idempotently() {
             normalize_spacing: true,
             ..Style::default()
         },
+        // wrapping only adds line breaks: still whitespace-only and idempotent
+        Style {
+            max_line_length: Some(80),
+            ..Style::default()
+        },
+        Style {
+            max_line_length: Some(60),
+            normalize_spacing: true,
+            use_tabs: true,
+            continuation: Some(8),
+            ..Style::default()
+        },
     ];
     let mut changed_when_scrambled = 0;
     for p in &paths {
@@ -103,6 +115,44 @@ fn fixtures_format_whitespace_only_and_idempotently() {
             spaced.contains(&format!("{line}\n")),
             "{line:?} in\n{spaced}"
         );
+    }
+    // wrap.groovy: long lines are wrapped where that is safe, everything else is left long
+    let src = std::fs::read_to_string(format!("{dir}/wrap.groovy")).unwrap();
+    let plain = check("wrap.groovy", &src, &Style::default());
+    let wrapped = check("wrap.groovy", &src, &styles[4]);
+    assert!(wrapped.lines().count() > plain.lines().count() + 30);
+    let long: Vec<&str> = wrapped
+        .lines()
+        .filter(|l| l.chars().count() > 80)
+        .map(str::trim_start)
+        .collect();
+    let left = [
+        "package ",
+        "import ",
+        "@SuppressWarnings(",
+        "println \"a GString",
+        "String s = \"a very long string",
+        "foo(a, b) // a long trailing comment",
+        "implementation group:",
+        "names.each { name ->",
+        "lines inside a multi-line string",
+        "argumentOne ",
+        "[alpha, beta, gamma, delta, epsilon]  |",
+        "case [alphaAlphaAlpha,",
+    ];
+    assert_eq!(long.len(), left.len(), "{long:#?}");
+    for (l, want) in long.iter().zip(left) {
+        assert!(l.starts_with(want), "{l:?} is long, expected {want:?}");
+    }
+    for line in [
+        "        def builder = Foo.builder()\n            .name(\"alpha\")\n",
+        "        if (someCondition && otherCondition ||\n            yetAnotherCondition && theLastCondition ||\n            done) {\n",
+        "        task(\n            type: Copy,\n",
+        "        ) {\n",
+        "        return computeTheFirstThing(argumentOne) +\n            computeTheSecondThing(argumentTwo) +\n            more\n",
+        "        def other = configuredValueFromTheEnvironment ?:\n            defaultValueFromTheConfigurationFile\n",
+    ] {
+        assert!(wrapped.contains(line), "{line:?} in\n{wrapped}");
     }
     assert!(
         changed_when_scrambled * 2 >= paths.len(),

@@ -10,6 +10,7 @@
 //! use_tabs = false            # a tab per `indent` columns of leading indentation
 //! indent_after_labels = false # indent Spock when:/then: blocks under their label
 //! normalize_spacing = false   # also fix the spaces between tokens within a line
+//! max_line_length = 120       # wrap longer lines where that is safe, 40..=400 (default: none)
 //! exclude = ["generated/**"]  # globs relative to this file's directory
 //!
 //! [lint]                      # rule name = on/off; omitted rules use their default
@@ -77,6 +78,14 @@ impl Config {
                 ("normalize_spacing", _) => {
                     return Err("`normalize_spacing` must be true or false".into());
                 }
+                ("max_line_length", toml::Value::Integer(n))
+                    if usize::try_from(*n).is_ok_and(|n| crate::wrap::WIDTHS.contains(&n)) =>
+                {
+                    cfg.style.max_line_length = Some(*n as usize)
+                }
+                ("max_line_length", _) => {
+                    return Err("`max_line_length` must be an integer from 40 to 400".into());
+                }
                 ("lint", toml::Value::Table(rules)) => {
                     for (rule, on) in rules {
                         if !RULES.iter().any(|r| r.name == rule) {
@@ -104,7 +113,7 @@ impl Config {
                 }
                 (other, _) => {
                     return Err(format!(
-                        "unknown key `{other}` (expected `indent`, `continuation_indent`, `use_tabs`, `indent_after_labels`, `normalize_spacing`, `exclude` or `[lint]`)"
+                        "unknown key `{other}` (expected `indent`, `continuation_indent`, `use_tabs`, `indent_after_labels`, `normalize_spacing`, `max_line_length`, `exclude` or `[lint]`)"
                     ));
                 }
             }
@@ -362,6 +371,22 @@ mod tests {
                 .unwrap_err()
                 .contains("`normalize_spacing` must be true or false")
         );
+        assert_eq!(Config::default().style.max_line_length, None);
+        assert_eq!(
+            Config::parse("max_line_length = 100")
+                .unwrap()
+                .style
+                .max_line_length,
+            Some(100)
+        );
+        for bad in ["39", "401", "-1", "\"100\"", "true", "100.0"] {
+            assert!(
+                Config::parse(&format!("max_line_length = {bad}"))
+                    .unwrap_err()
+                    .contains("`max_line_length` must be an integer from 40 to 400"),
+                "{bad}"
+            );
+        }
         assert!(!c.rule_enabled("UnusedImport"));
         assert!(c.rule_enabled("UnnecessaryGString"));
         assert!(
