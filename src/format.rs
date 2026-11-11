@@ -333,7 +333,9 @@ fn indent_for(
 
     let first = text(leaf, src);
     let closes_anchor = matches!(first, "}" | ")" | "]") && path[path.len() - 2].0 == a;
-    if closes_anchor || after_annotation || matches!(first, "else" | "catch" | "finally") {
+    // the keyword, not a map key or named argument spelled the same (`[else: 1]`)
+    let continues = !leaf.is_named() && matches!(first, "else" | "catch" | "finally");
+    if closes_anchor || after_annotation || continues {
         return base;
     }
     // The statement right after a label (`when:` then a newline) hangs off the label.
@@ -466,6 +468,13 @@ mod tests {
         let want = "class T {\n    void f(String a,\n        String b) {\n        a()\n    }\n    def g() {\n        if (a &&\n            b) {\n            c()\n        } else if (d) {\n            e()\n        }\n        try {\n            f()\n        } catch (IOException |\n            RuntimeException x) {\n            g()\n        }\n    }\n}\n";
         assert_eq!(fmt(src), want);
         assert_eq!(fmt(want), want, "idempotent");
+    }
+
+    #[test]
+    fn keys_named_like_keywords_keep_their_indent() {
+        let src = "def m = [\nelse: 1,\ncatch: 2,\nfinally: 3,\n]\nf(\nelse: 1,\n)\ntry {\na()\n}\ncatch (e) {\n}\nfinally {\n}\n";
+        let want = "def m = [\n    else: 1,\n    catch: 2,\n    finally: 3,\n]\nf(\n    else: 1,\n)\ntry {\n    a()\n}\ncatch (e) {\n}\nfinally {\n}\n";
+        assert_eq!(fmt(src), want);
     }
 
     #[test]

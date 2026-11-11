@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `--strict`: with `--check`, `--lint` or when formatting in place, list the files that were skipped (they don't parse, aren't UTF-8, are over 10 MB or nest too deeply) and exit 1 if there are any. Without it a skipped file never affects the exit status, so CI can pass on files nothing checked.
+- `--` ends the options: every argument after it is a path, even one starting with `-`.
+
+### Fixed
+
+- A line starting with a map key or named argument called `else`, `catch` or `finally` (`[` then `else: 1,`) keeps its indent instead of moving to the level of the line holding the `[` or `(`. Across the corpus and the 34 trial repositories no file has that shape; one GPars file changes because the grammar reads its `else` (after `if (follower) follower value`) as a name, and that `else` block now lines up with its `if` instead of sitting one level left of it.
+- Formatting a file whose name is close to the 255-byte limit no longer fails with `File name too long`: the temporary file beside it now has a short name of its own instead of one built from the file's name.
+- A worker thread that dies outside the per-file panic guard now turns each of its files into an `internal error, please report` error. Before, its results were dropped, the list came back short and later results could be reported against the wrong files.
+- Command-line parsing: a flag that takes no value rejects one (`--check=false` used to turn check on), and `--stdin` with path arguments is an error instead of ignoring the paths (name the buffer with `--stdin-filepath`).
+
 ## 0.8.0 (2026-11-10)
 
 ### Changed
