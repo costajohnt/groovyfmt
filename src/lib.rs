@@ -1,7 +1,11 @@
 pub mod config;
+pub mod diff;
+pub mod fix;
 pub mod format;
 pub mod lint;
+pub mod report;
 mod spacing;
+pub mod syntax;
 
 use std::path::Path;
 use tree_sitter::{Node, Parser, Tree};

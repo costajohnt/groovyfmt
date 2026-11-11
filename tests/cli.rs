@@ -169,6 +169,745 @@ fn strict_fails_on_skipped_files_and_lists_them() {
     );
 }
 
+const BROKEN_AT: &str =
+    "Broken.groovy:1:10: could not parse: expected `}` to close the `{` on line 1\n";
+
+#[test]
+fn syntax_mode_reports_where_parsing_failed() {
+    let d = Dir::new("syntax");
+    d.write("Ok.groovy", PRETTY);
+    let o = run(&d.0, &["--syntax"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(
+        (stdout(&o), stderr(&o)),
+        ("".into(), "could not parse 0 of 1 files\n".into())
+    );
+
+    d.write("Broken.groovy", "def x = {\n");
+    let o = run(&d.0, &["--syntax"], None);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(stdout(&o), BROKEN_AT);
+    assert_eq!(stderr(&o), "could not parse 1 of 2 files\n");
+    let g = run(&d.0, &["--syntax", "--output-format", "github"], None);
+    assert_eq!(g.status.code(), Some(1));
+    assert_eq!(
+        stdout(&g),
+        "::warning file=Broken.groovy,line=1,col=10,title=could not parse::expected `}` to close the `{` on line 1\n"
+    );
+    assert_eq!(d.read("Broken.groovy"), "def x = {\n", "never writes");
+
+    // at most ten places per file, then a count of the rest
+    let many: String = (0..12).map(|i| format!("def f{i}() {{ x = }}\n")).collect();
+    d.write("many/M.groovy", &many);
+    let o = run(&d.0, &["--syntax", "many"], None);
+    assert_eq!(o.status.code(), Some(1));
+    let lines: Vec<String> = stdout(&o).lines().map(String::from).collect();
+    assert_eq!(lines.len(), 11, "{lines:?}");
+    assert_eq!(
+        lines[0],
+        "many/M.groovy:1:14: could not parse: unexpected `=` in a block"
+    );
+    assert_eq!(
+        lines[10],
+        "many/M.groovy: 2 more places groovyfmt could not parse"
+    );
+
+    for (args, msg) in [
+        (&["--syntax", "--check"][..], "can't be combined"),
+        (
+            &["--syntax", "nope.groovy"],
+            "nope.groovy: no such file or directory",
+        ),
+    ] {
+        let o = run(&d.0, args, None);
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+        assert!(stderr(&o).contains(msg), "{args:?}: {}", stderr(&o));
+    }
+}
+
+#[test]
+fn skipped_files_show_where_parsing_failed() {
+    let d = Dir::new("syntaxskip");
+    d.write("Broken.groovy", "def x = {\n");
+    for mode in [&["--check"][..], &["--lint"], &[]] {
+        for flag in ["-v", "--strict"] {
+            let args: Vec<&str> = mode.iter().copied().chain([flag]).collect();
+            let o = run(&d.0, &args, None);
+            assert!(
+                stderr(&o).contains(&format!("skipped Broken.groovy: parse error\n{BROKEN_AT}")),
+                "{args:?}: {}",
+                stderr(&o)
+            );
+        }
+        let plain = run(&d.0, mode, None);
+        assert!(!stderr(&plain).contains("could not parse"), "{mode:?}");
+    }
+    let o = run(&d.0, &["--stdin"], Some("def x = {\n"));
+    assert_eq!(o.status.code(), Some(2));
+    assert_eq!(stdout(&o), "");
+    assert_eq!(
+        stderr(&o),
+        "groovyfmt: <stdin>: not formatted: parse error\n<stdin>:1:10: could not parse: expected `}` to close the `{` on line 1\n"
+    );
+    let args = [
+        "--stdin",
+        "--stdin-filepath",
+        "a:b.groovy",
+        "--output-format",
+        "github",
+    ];
+    let o = run(&d.0, &args, Some("def x = {\n"));
+    assert_eq!(o.status.code(), Some(2));
+    assert_eq!(
+        stderr(&o),
+        "::error file=a%3Ab.groovy::Not formatted: parse error\n::warning file=a%3Ab.groovy,line=1,col=10,title=could not parse::expected `}` to close the `{` on line 1\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn syntax_messages_escape_names_and_quoted_source() {
+    let d = Dir::new("syntaxesc");
+    d.write("x##[error]\x1b[31m.groovy", "f(a b '##[e]\x07')\n");
+    let o = run(&d.0, &["--syntax"], None);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(
+        stdout(&o),
+        "x##\\[error]\\u{1b}[31m.groovy:1:7: could not parse: unexpected `'##\\[e]\\u{7}'` in an argument list\n"
+    );
+    let g = run(&d.0, &["--syntax", "--output-format", "github"], None);
+    assert!(
+        stdout(&g)
+            .lines()
+            .all(|l| !l.contains("##[") && !l.contains('\x1b')),
+        "{}",
+        stdout(&g)
+    );
+    assert!(
+        stdout(&g).starts_with("::warning file=x##\\[error]"),
+        "{}",
+        stdout(&g)
+    );
+}
+
+const LINTED: &str = "import a.b.Unused\ndef a = 1;\n";
+
+/// A, Broken and Ugly: lint violations, a parse error, and a file to format.
+fn json_dir(name: &str) -> Dir {
+    let d = Dir::new(name);
+    d.write("A.groovy", LINTED);
+    d.write("Broken.groovy", "def x = {\n");
+    d.write("Ugly.groovy", UGLY);
+    d
+}
+
+const JSON_A: &str = r#"{"path":"A.groovy","status":"unchanged","skip_reason":null,"diagnostics":[{"rule":"UnusedImport","severity":"warning","message":"The [a.b.Unused] import is never referenced","line":1,"column":1,"end_line":1,"end_column":18,"fixable":true},{"rule":"UnnecessarySemicolon","severity":"warning","message":"Semicolons as line endings can be removed safely","line":2,"column":10,"end_line":2,"end_column":11,"fixable":true}]}"#;
+const JSON_BROKEN: &str = r#"{"path":"Broken.groovy","status":"skipped","skip_reason":"parse error","diagnostics":[{"rule":"ParseError","severity":"warning","message":"expected `}` to close the `{` on line 1","line":1,"column":10,"end_line":1,"end_column":10,"fixable":false}]}"#;
+
+fn json_file(path: &str, status: &str) -> String {
+    format!(r#"{{"path":"{path}","status":"{status}","skip_reason":null,"diagnostics":[]}}"#)
+}
+
+fn json_doc(files: &[&str], summary: &str) -> String {
+    format!(
+        "{{\"version\":1,\"files\":[\n{}\n],\"summary\":{{{summary}}}}}\n",
+        files.join(",\n")
+    )
+}
+
+#[test]
+fn json_output_is_one_document_on_stdout() {
+    let d = json_dir("json");
+    let o = run(&d.0, &["--lint", "--output-format", "json"], None);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(stderr(&o), "", "no summary line");
+    assert_eq!(
+        stdout(&o),
+        json_doc(
+            &[JSON_A, JSON_BROKEN, &json_file("Ugly.groovy", "unchanged")],
+            r#""files":3,"unchanged":2,"would_reformat":0,"reformatted":0,"fixed":0,"skipped":1,"errors":0,"diagnostics":3"#
+        )
+    );
+
+    let o = run(&d.0, &["--check", "--output-format=json"], None);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(stderr(&o), "");
+    let unchanged_a = json_file("A.groovy", "unchanged");
+    assert_eq!(
+        stdout(&o),
+        json_doc(
+            &[
+                &unchanged_a,
+                JSON_BROKEN,
+                &json_file("Ugly.groovy", "would_reformat")
+            ],
+            r#""files":3,"unchanged":1,"would_reformat":1,"reformatted":0,"fixed":0,"skipped":1,"errors":0,"diagnostics":1"#
+        )
+    );
+    assert_eq!(d.read("Ugly.groovy"), UGLY);
+
+    let o = run(&d.0, &["--syntax", "--output-format", "json"], None);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(
+        stdout(&o),
+        json_doc(
+            &[
+                &unchanged_a,
+                JSON_BROKEN,
+                &json_file("Ugly.groovy", "unchanged")
+            ],
+            r#""files":3,"unchanged":2,"would_reformat":0,"reformatted":0,"fixed":0,"skipped":1,"errors":0,"diagnostics":1"#
+        )
+    );
+
+    let o = run(&d.0, &["--output-format", "json", "-v"], None);
+    assert_eq!(o.status.code(), Some(0));
+    assert_eq!(
+        stderr(&o),
+        "config: none found, using defaults\n",
+        "-v keeps its config lines on stderr"
+    );
+    assert_eq!(
+        stdout(&o),
+        json_doc(
+            &[
+                &unchanged_a,
+                JSON_BROKEN,
+                &json_file("Ugly.groovy", "reformatted")
+            ],
+            r#""files":3,"unchanged":1,"would_reformat":0,"reformatted":1,"fixed":0,"skipped":1,"errors":0,"diagnostics":1"#
+        )
+    );
+    assert_eq!(d.read("Ugly.groovy"), PRETTY);
+
+    // no files: still a document
+    let e = Dir::new("jsonempty");
+    let o = run(&e.0, &["--check", "--output-format", "json"], None);
+    assert_eq!(o.status.code(), Some(0));
+    assert_eq!(
+        stdout(&o),
+        "{\"version\":1,\"files\":[\n],\"summary\":{\"files\":0,\"unchanged\":0,\"would_reformat\":0,\"reformatted\":0,\"fixed\":0,\"skipped\":0,\"errors\":0,\"diagnostics\":0}}\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn json_records_unreadable_files_as_errors() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = Dir::new("jsonerr");
+    let p = d.write("Locked.groovy", PRETTY);
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // root reads anything; nothing to test then
+    if std::fs::read(&p).is_ok() {
+        return;
+    }
+    let o = run(&d.0, &["--lint", "--output-format", "json"], None);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(stderr(&o).contains("Locked.groovy"), "{}", stderr(&o));
+    assert!(
+        stdout(&o).contains(
+            r#"{"path":"Locked.groovy","status":"error","skip_reason":"Permission denied (os error 13)","diagnostics":[]}"#
+        ),
+        "{}",
+        stdout(&o)
+    );
+}
+
+#[test]
+fn sarif_output_for_lint_and_parse_errors() {
+    let d = json_dir("sarif");
+    let o = run(&d.0, &["--lint", "--output-format", "sarif"], None);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(stderr(&o), "");
+    let s = stdout(&o);
+    assert!(
+        s.starts_with(r#"{"$schema":"https://json.schemastore.org/sarif-2.1.0.json","version":"2.1.0","runs":[{"tool":{"driver":{"name":"groovyfmt","#),
+        "{s}"
+    );
+    assert!(s.contains(r#"{"id":"UnusedImport","shortDescription":{"text":"import whose name (or alias) never appears in code or as a word in a comment"},"defaultConfiguration":{"level":"warning","enabled":true}}"#), "{s}");
+    assert!(s.contains(r#""columnKind":"unicodeCodePoints""#), "{s}");
+    assert!(s.contains(r#"{"ruleId":"UnusedImport","ruleIndex":0,"level":"warning","message":{"text":"The [a.b.Unused] import is never referenced"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"A.groovy"},"region":{"startLine":1,"startColumn":1,"endLine":1,"endColumn":18}}}]}"#), "{s}");
+    // ParseError comes after every rule in the table
+    let parse = format!(
+        r#"{{"ruleId":"ParseError","ruleIndex":{},"level":"warning","message":{{"text":"expected `}}` to close the `{{` on line 1"}},"locations":[{{"physicalLocation":{{"artifactLocation":{{"uri":"Broken.groovy"}},"region":{{"startLine":1,"startColumn":10,"endLine":1,"endColumn":10}}}}}}]}}"#,
+        groovyfmt::lint::RULES.len()
+    );
+    assert!(s.contains(&parse), "{s}");
+    assert_eq!(s.matches("\"ruleId\"").count(), 3);
+
+    for (args, msg) in [
+        (
+            &["--check", "--output-format", "sarif"][..],
+            "sarif works with --lint and --syntax",
+        ),
+        (
+            &["--output-format", "sarif"],
+            "sarif works with --lint and --syntax",
+        ),
+        (
+            &["--stdin", "--output-format", "json"],
+            "json works with --check, --lint, --syntax",
+        ),
+        (&["--rules", "--output-format", "json"], "json works with"),
+    ] {
+        let o = run(&d.0, args, None);
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+        assert_eq!(stdout(&o), "", "{args:?}");
+        assert!(stderr(&o).contains(msg), "{args:?}: {}", stderr(&o));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn json_and_sarif_escape_hostile_names_and_messages() {
+    let d = Dir::new("jsonesc");
+    // quotes, a backslash, a control character, a legacy workflow command and non-ASCII,
+    // in the file name and in the source text a message quotes
+    d.write(
+        "q\"\\\x01##[e]é.groovy",
+        "def m = ['\"##[x]é\x1b': 1, '\"##[x]é\x1b': 2]\n",
+    );
+    let o = run(&d.0, &["--lint", "--output-format", "json"], None);
+    assert_eq!(o.status.code(), Some(1), "{}", stderr(&o));
+    let s = stdout(&o);
+    // `[` is `[`
+    let lb = "\\u005b";
+    let path = format!(r#"{{"path":"q\"\\\u0001##{lb}e]é.groovy","status":"unchanged","#);
+    assert!(s.contains(&path), "{s}");
+    let message =
+        format!("\"message\":\"Key `\\\"##{lb}x]é\\u001b` appears more than once in this map\"");
+    assert!(s.contains(&message), "{s}");
+    let o = run(&d.0, &["--lint", "--output-format", "sarif"], None);
+    let s = stdout(&o);
+    assert!(
+        s.contains(r#""uri":"q%22%5C%01%23%23%5Be%5D%C3%A9.groovy""#),
+        "{s}"
+    );
+    for out in [
+        stdout(&o),
+        stdout(&run(&d.0, &["--lint", "--output-format", "json"], None)),
+    ] {
+        assert!(!out.contains("##["), "{out}");
+        assert!(!out.chars().any(|c| c.is_control() && c != '\n'), "{out:?}");
+    }
+}
+
+const FIXABLE: &str = "import a.Used\nimport a.Unused\nimport a.Used\nimport b.C; import b.D\nimport e.F // why\n\nUsed u = new Used();\nprintln u;\n";
+const FIXED: &str =
+    "import a.Used\nimport b.C; import b.D\nimport e.F // why\n\nUsed u = new Used()\nprintln u\n";
+
+#[test]
+fn lint_fix_removes_imports_and_semicolons_and_reports_the_rest() {
+    let d = Dir::new("fix");
+    d.write("A.groovy", FIXABLE);
+    let l = run(&d.0, &["--lint"], None);
+    assert_eq!(l.status.code(), Some(1));
+    assert_eq!(
+        stdout(&l),
+        "A.groovy:2:1: UnusedImport: The [a.Unused] import is never referenced (fixable)\n\
+         A.groovy:3:1: DuplicateImport: Duplicate import: import a.Used (fixable)\n\
+         A.groovy:4:1: UnusedImport: The [b.C] import is never referenced\n\
+         A.groovy:4:13: UnusedImport: The [b.D] import is never referenced\n\
+         A.groovy:5:1: UnusedImport: The [e.F] import is never referenced\n\
+         A.groovy:7:20: UnnecessarySemicolon: Semicolons as line endings can be removed safely (fixable)\n\
+         A.groovy:8:10: UnnecessarySemicolon: Semicolons as line endings can be removed safely (fixable)\n"
+    );
+    assert_eq!(d.read("A.groovy"), FIXABLE, "plain --lint never writes");
+
+    let f = run(&d.0, &["--lint", "--fix"], None);
+    assert_eq!(f.status.code(), Some(1), "violations remain");
+    assert_eq!(d.read("A.groovy"), FIXED);
+    assert_eq!(
+        stdout(&f),
+        "A.groovy:2:1: UnusedImport: The [b.C] import is never referenced\n\
+         A.groovy:2:13: UnusedImport: The [b.D] import is never referenced\n\
+         A.groovy:3:1: UnusedImport: The [e.F] import is never referenced\n"
+    );
+    assert_eq!(
+        stderr(&f),
+        "fixed 4 violations in 1 files (DuplicateImport 1, UnnecessarySemicolon 2, UnusedImport 1)\n\
+         3 violations in 1 files (UnusedImport 3)\n"
+    );
+    // a second run changes nothing
+    let again = run(&d.0, &["--lint", "--fix"], None);
+    assert_eq!(again.status.code(), Some(1));
+    assert_eq!(d.read("A.groovy"), FIXED);
+    assert!(
+        stderr(&again).starts_with("fixed 0 violations in 0 files\n"),
+        "{}",
+        stderr(&again)
+    );
+
+    // nothing left: exit 0; a disabled rule is neither fixed nor reported
+    d.write("B.groovy", "x = 1;\n");
+    d.write(".groovyfmt.toml", "[lint]\nUnusedImport = false\n");
+    let o = run(&d.0, &["--lint", "--fix", "B.groovy", "A.groovy"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(d.read("B.groovy"), "x = 1\n");
+    assert_eq!(d.read("A.groovy"), FIXED);
+
+    // a file that doesn't parse is never touched
+    d.write("Broken.groovy", "import a.B;\ndef x = {\n");
+    let o = run(&d.0, &["--lint", "--fix", "Broken.groovy"], None);
+    assert_eq!(o.status.code(), Some(0));
+    assert_eq!(d.read("Broken.groovy"), "import a.B;\ndef x = {\n");
+
+    for args in [
+        &["--fix"][..],
+        &["--check", "--fix"],
+        &["--syntax", "--fix"],
+    ] {
+        let o = run(&d.0, args, None);
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+        assert!(stderr(&o).contains("--fix needs --lint"), "{args:?}");
+    }
+}
+
+#[test]
+fn lint_fix_json_reports_fixed_files() {
+    let d = Dir::new("fixjson");
+    d.write("A.groovy", FIXABLE);
+    d.write("Clean.groovy", "x = 1\n");
+    let o = run(&d.0, &["--lint", "--fix", "--output-format", "json"], None);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(stderr(&o), "");
+    let s = stdout(&o);
+    assert!(
+        s.contains(r#"{"path":"A.groovy","status":"fixed","skip_reason":null,"diagnostics":[{"rule":"UnusedImport","severity":"warning","message":"The [b.C] import is never referenced","line":2,"column":1,"end_line":2,"end_column":11,"fixable":false},"#),
+        "{s}"
+    );
+    assert!(
+        s.contains(r#"{"path":"Clean.groovy","status":"unchanged","#),
+        "{s}"
+    );
+    assert!(s.ends_with(&(r#""summary":{"files":2,"unchanged":1,"would_reformat":0,"reformatted":0,"fixed":1,"skipped":0,"errors":0,"diagnostics":3}}"#.to_owned() + "\n")), "{s}");
+}
+
+#[cfg(unix)]
+#[test]
+fn lint_fix_writes_like_formatting_does() {
+    use std::os::unix::fs::MetadataExt;
+    // a link out of the working directory is refused; a link inside is fixed through
+    let d = Dir::new("fixlinks");
+    let out = Dir::new("fixlinksout");
+    let target = out.write("Real.groovy", "x = 1;\n");
+    std::os::unix::fs::symlink(&target, d.0.join("x.groovy")).unwrap();
+    d.write("real/In.groovy", "y = 2;\n");
+    std::os::unix::fs::symlink("real/In.groovy", d.0.join("in.groovy")).unwrap();
+    let o = run(&d.0, &["--lint", "--fix", "x.groovy", "in.groovy"], None);
+    assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains("x.groovy: symlink target is outside the working directory"),
+        "{}",
+        stderr(&o)
+    );
+    assert_eq!(out.read("Real.groovy"), "x = 1;\n");
+    assert_eq!(d.read("real/In.groovy"), "y = 2\n");
+    assert!(
+        std::fs::symlink_metadata(d.0.join("in.groovy"))
+            .unwrap()
+            .is_symlink()
+    );
+    // excluded files are left alone; hard links stay linked
+    d.write(".groovyfmt.toml", "exclude = [\"gen\"]\n");
+    d.write("gen/G.groovy", "z = 3;\n");
+    let h = d.write("H.groovy", "h = 4;\n");
+    std::fs::hard_link(&h, d.0.join("H2.groovy")).unwrap();
+    let o = run(&d.0, &["--lint", "--fix", "gen/G.groovy", "H.groovy"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(d.read("gen/G.groovy"), "z = 3;\n");
+    assert_eq!(d.read("H2.groovy"), "h = 4\n");
+    assert_eq!(std::fs::metadata(&h).unwrap().nlink(), 2);
+}
+
+const UGLY_PATCH: &str = "--- a/src/A.groovy\n+++ b/src/A.groovy\n@@ -1,5 +1,5 @@\n class A {\n-def f() {\n-println 'x'   \n-}\n+    def f() {\n+        println 'x'\n+    }\n }\n";
+
+#[test]
+fn check_diff_prints_a_patch_and_writes_nothing() {
+    let d = Dir::new("diff");
+    d.write("src/A.groovy", UGLY);
+    d.write("B.groovy", PRETTY);
+    let o = run(&d.0, &["--check", "--diff"], None);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(stdout(&o), UGLY_PATCH);
+    assert_eq!(stderr(&o), "would reformat 1 of 2 files\n");
+    assert_eq!(d.read("src/A.groovy"), UGLY);
+    // no final newline
+    d.write("src/A.groovy", "x = 1");
+    let o = run(&d.0, &["--check", "--diff", "src"], None);
+    assert_eq!(
+        stdout(&o),
+        "--- a/src/A.groovy\n+++ b/src/A.groovy\n@@ -1,1 +1,1 @@\n-x = 1\n\\ No newline at end of file\n+x = 1\n"
+    );
+    d.write("src/A.groovy", PRETTY);
+    let o = run(&d.0, &["--check", "--diff"], None);
+    assert_eq!((o.status.code(), stdout(&o)), (Some(0), String::new()));
+
+    for (args, msg) in [
+        (
+            &["--diff"][..],
+            "--diff works with --check and --lint --fix",
+        ),
+        (
+            &["--lint", "--diff"],
+            "--diff works with --check and --lint --fix",
+        ),
+        (
+            &["--check", "--diff", "--output-format", "json"],
+            "can't be combined with --output-format",
+        ),
+        (
+            &["--check", "--diff", "--output-format", "github"],
+            "can't be combined with --output-format",
+        ),
+    ] {
+        let o = run(&d.0, args, None);
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+        assert!(stderr(&o).contains(msg), "{args:?}: {}", stderr(&o));
+    }
+}
+
+#[test]
+fn lint_fix_diff_previews_the_fix() {
+    let d = Dir::new("fixdiff");
+    d.write("A.groovy", "import a.B\nx = 1;\n");
+    let o = run(&d.0, &["--lint", "--fix", "--diff"], None);
+    assert_eq!(o.status.code(), Some(1), "nothing was fixed on disk");
+    assert_eq!(
+        stdout(&o),
+        "--- a/A.groovy\n+++ b/A.groovy\n@@ -1,2 +1,1 @@\n-import a.B\n-x = 1;\n+x = 1\n"
+    );
+    assert_eq!(
+        stderr(&o),
+        "would fix 2 violations in 1 files (UnnecessarySemicolon 1, UnusedImport 1)\n0 violations in 1 files\n"
+    );
+    assert_eq!(d.read("A.groovy"), "import a.B\nx = 1;\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn diffs_never_print_control_characters_or_workflow_commands() {
+    let d = Dir::new("diffesc");
+    // a changed line holding `##[` or ESC, a context line starting `::`, a name with a quote
+    d.write("a/A.groovy", "class A {\ndef s = '##[error]x'\n}\n");
+    d.write("b/B.groovy", "class B {\ndef s = '\x1b[31m'\n}\n");
+    d.write(
+        "c/C.groovy",
+        "class C {\n  def f() {\n    def s = '''\n::warning::x\n'''\n  g()\n  }\n}\n",
+    );
+    d.write("d/q\"x.groovy", UGLY);
+    d.write("e/Ok.groovy", UGLY);
+    let o = run(&d.0, &["--check", "--diff"], None);
+    assert_eq!(o.status.code(), Some(1));
+    let out = stdout(&o);
+    for name in ["a/A.groovy", "b/B.groovy", "c/C.groovy", "d/q\"x.groovy"] {
+        assert!(
+            out.contains(&format!("# groovyfmt: {name}: diff not shown, as the file name or a changed line holds a control character or a CI workflow command\n")),
+            "{name}: {out}"
+        );
+    }
+    assert!(out.contains("--- a/e/Ok.groovy\n"), "{out}");
+    // names that would split or forge the `---` / `+++` header lines
+    for name in [
+        "f/x\n+++ b/other.groovy",
+        "f/a\rb.groovy",
+        "f/a\tb.groovy",
+        "f/x##[e].groovy",
+    ] {
+        d.write(name, UGLY);
+    }
+    let o = run(&d.0, &["--check", "--diff", "f"], None);
+    assert_eq!(o.status.code(), Some(1));
+    let out = stdout(&o);
+    assert_eq!(out.matches("# groovyfmt: f/").count(), 4, "{out}");
+    assert!(
+        out.lines().all(|l| l.starts_with("# groovyfmt: ")),
+        "{out:?}"
+    );
+    assert!(!out.contains("##["), "{out}");
+    // CR LF content diffs as it is
+    d.write("g/W.groovy", "class W {\r\ndef f() {}\r\n}\r\n");
+    let o = run(&d.0, &["--check", "--diff", "g"], None);
+    assert_eq!(
+        stdout(&o),
+        "--- a/g/W.groovy\n+++ b/g/W.groovy\n@@ -1,3 +1,3 @@\n class W {\r\n-def f() {}\r\n+    def f() {}\r\n }\r\n"
+    );
+    assert!(!out.contains("##["), "{out}");
+    assert!(!out.chars().any(|c| c.is_control() && c != '\n'), "{out:?}");
+    assert!(
+        out.lines().all(|l| !l.trim_start().starts_with("::")),
+        "{out}"
+    );
+}
+
+#[test]
+fn lines_limits_formatting_to_ranges() {
+    let d = Dir::new("lines");
+    let src = "class A {\ndef f() {\nprintln 1   \nprintln 2\n}\n}\n";
+    d.write("A.groovy", src);
+    let o = run(&d.0, &["--check", "--lines", "3-3", "A.groovy"], None);
+    assert_eq!(
+        (o.status.code(), stdout(&o)),
+        (Some(1), "A.groovy\n".into())
+    );
+    let o = run(&d.0, &["--lines", "3-3", "--lines=5-5", "A.groovy"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    let want = "class A {\ndef f() {\n        println 1\nprintln 2\n    }\n}\n";
+    assert_eq!(d.read("A.groovy"), want);
+    assert_eq!(
+        run(
+            &d.0,
+            &["--check", "--lines", "3-3", "--lines", "5-5", "A.groovy"],
+            None
+        )
+        .status
+        .code(),
+        Some(0),
+        "stable"
+    );
+    let o = run(&d.0, &["--stdin", "--lines", "4-4"], Some(src));
+    assert_eq!(
+        stdout(&o),
+        "class A {\ndef f() {\nprintln 1   \n        println 2\n}\n}\n"
+    );
+    // lines outside the file change nothing
+    let o = run(&d.0, &["--stdin", "--lines", "40-50"], Some(src));
+    assert_eq!(stdout(&o), src);
+
+    d.write("B.groovy", src);
+    for (args, msg) in [
+        (
+            &["--lines", "3-3"][..],
+            "--lines works on one file, or with --stdin",
+        ),
+        (
+            &["--lines", "3-3", "A.groovy", "B.groovy"],
+            "--lines works on one file",
+        ),
+        (&["--lines", "3-3", "."], "--lines works on one file"),
+        (
+            &["--lint", "--lines", "3-3", "A.groovy"],
+            "--lines works on one file",
+        ),
+        (&["--lines", "3", "A.groovy"], "--lines takes START-END"),
+        (&["--lines", "0-2", "A.groovy"], "--lines takes START-END"),
+        (&["--lines", "5-2", "A.groovy"], "--lines takes START-END"),
+    ] {
+        let o = run(&d.0, args, None);
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+        assert!(stderr(&o).contains(msg), "{args:?}: {}", stderr(&o));
+    }
+    assert_eq!(d.read("B.groovy"), src);
+}
+
+#[test]
+fn changed_since_limits_the_run_to_files_git_sees_as_changed() {
+    let d = Dir::new("changed");
+    let git = |args: &[&str]| {
+        let o = Command::new("git")
+            .args(args)
+            .current_dir(&d.0)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.invalid")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.invalid")
+            .output()
+            .expect("git");
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    };
+    // outside a repository: a clear error
+    let o = run(&d.0, &["--check", "--changed-since", "HEAD"], None);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(
+        stderr(&o).contains("--changed-since: git diff: "),
+        "{}",
+        stderr(&o)
+    );
+
+    git(&["init", "-q"]);
+    d.write("Same.groovy", UGLY);
+    d.write("Edited.groovy", UGLY);
+    d.write("sub/Deleted.groovy", UGLY);
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "x"]);
+    d.write("Edited.groovy", &format!("{UGLY}// more\n"));
+    d.write("sub/New.groovy", UGLY);
+    d.write(".gitignore", "Ignored.groovy\n");
+    d.write("Ignored.groovy", UGLY);
+    std::fs::remove_file(d.0.join("sub/Deleted.groovy")).unwrap();
+    let o = run(&d.0, &["--check", "--changed-since", "HEAD"], None);
+    assert_eq!(o.status.code(), Some(1), "{}", stderr(&o));
+    assert_eq!(stdout(&o), "Edited.groovy\nsub/New.groovy\n");
+    // from a subdirectory, only what is under it
+    let o = run(&d.0.join("sub"), &["--check", "--changed-since=HEAD"], None);
+    assert_eq!(stdout(&o), "New.groovy\n");
+    // whole files are formatted
+    let o = run(&d.0, &["--changed-since", "HEAD"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(d.read("Edited.groovy"), format!("{PRETTY}// more\n"));
+    assert_eq!(d.read("Same.groovy"), UGLY);
+
+    for (rev, msg) in [
+        (
+            "--output=x",
+            "--changed-since needs a git revision, not `--output=x`",
+        ),
+        ("", "--changed-since needs a git revision"),
+        ("no-such-rev", "--changed-since: git diff: "),
+    ] {
+        let o = run(&d.0, &["--check", "--changed-since", rev], None);
+        assert_eq!(o.status.code(), Some(2), "{rev}");
+        assert!(stderr(&o).contains(msg), "{rev}: {}", stderr(&o));
+    }
+    assert!(!d.0.join("x").exists());
+}
+
+#[test]
+fn explain_describes_one_rule() {
+    let d = Dir::new("explain");
+    let o = run(&d.0, &["--explain", "UnnecessarySemicolon"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(
+        stdout(&o),
+        "UnnecessarySemicolon: `;` at the end of a line\n\n\
+         On by default: yes. Here: on. `groovyfmt --lint --fix` fixes it.\n\n\
+         Why: Groovy ends a statement at the line break, so a `;` there is Java habit and clutter.\n\n\
+         Flagged:\n    def name = 'x';\n    println name;\n\n\
+         Instead:\n    def name = 'x'\n    println name\n\n\
+         Turn it off in .groovyfmt.toml:\n    [lint]\n    UnnecessarySemicolon = false\n"
+    );
+    // any case; the config decides "Here"
+    d.write(".groovyfmt.toml", "[lint]\nUnnecessaryGString = true\n");
+    let o = run(&d.0, &["--explain=unnecessarygstring"], None);
+    assert!(
+        stdout(&o).contains("On by default: no. Here: on. Not fixed automatically.")
+            && stdout(&o).ends_with(
+                "Turn it off in .groovyfmt.toml:\n    [lint]\n    UnnecessaryGString = false\n"
+            ),
+        "{}",
+        stdout(&o)
+    );
+    let o = run(&d.0, &["--explain", "Nope"], None);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(
+        stderr(&o).contains("unknown rule `Nope` (known: UnusedImport, "),
+        "{}",
+        stderr(&o)
+    );
+    // --rules keeps its format
+    let o = run(&d.0, &["--rules"], None);
+    assert!(
+        stdout(&o).starts_with("on   UnusedImport           import whose name"),
+        "{}",
+        stdout(&o)
+    );
+    assert_eq!(stdout(&o).lines().count(), groovyfmt::lint::RULES.len());
+}
+
 #[test]
 fn option_parsing_edge_cases() {
     let d = Dir::new("args");
@@ -1144,7 +1883,7 @@ fn nested_config_excludes_and_lint_apply_only_inside_it() {
     assert_eq!(l.status.code(), Some(1), "{}", stderr(&l));
     assert_eq!(
         stdout(&l),
-        "I.groovy:1:1: UnusedImport: The [a.b.Unused] import is never referenced\n"
+        "I.groovy:1:1: UnusedImport: The [a.b.Unused] import is never referenced (fixable)\n"
     );
 }
 

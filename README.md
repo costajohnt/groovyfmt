@@ -14,8 +14,8 @@ would reformat 27 of 27 files
 $ groovyfmt
 reformatted 27 of 27 files
 $ groovyfmt --lint
-test/groovy/BaseTest.groovy:2:1: UnusedImport: The [mock.CurrentBuild] import is never referenced
-test/groovy/BaseTest.groovy:4:1: UnusedImport: The [org.junit.Before] import is never referenced
+test/groovy/BaseTest.groovy:2:1: UnusedImport: The [mock.CurrentBuild] import is never referenced (fixable)
+test/groovy/BaseTest.groovy:4:1: UnusedImport: The [org.junit.Before] import is never referenced (fixable)
 ...
 9 violations in 27 files (UnusedImport 9)
 ```
@@ -97,12 +97,74 @@ With no paths it works on the current directory. Directories are searched for `*
 |---|---|
 | `groovyfmt` | format files in place |
 | `groovyfmt --check` | list files that would be reformatted, exit 1 if any |
+| `groovyfmt --check --diff` | print a unified diff of what formatting would change, exit 1 if any |
 | `groovyfmt --lint` | report lint violations, exit 1 if any |
+| `groovyfmt --lint --fix` | fix what can be fixed safely (unused and duplicate imports, unnecessary semicolons), then report the rest |
+| `groovyfmt --syntax` | only parse, and report each place groovyfmt could not parse, exit 1 if any |
 | `groovyfmt --stdin` | format stdin to stdout, for editors |
 | `groovyfmt --rules` | list lint rules and whether each is on |
+| `groovyfmt --explain <Rule>` | explain a lint rule: why it matters, an example, whether `--fix` fixes it, how to turn it off |
 | `groovyfmt --suggest-style` | suggest the indent settings that fit the code, writing nothing (see [Configuration](#configuration)) |
 
-Options: `--config <file>`, `--indent <n>`, `--stdin-filepath <path>` (see [Editors](#editors)), `--output-format text|github`, `--strict` (list skipped files and exit 1 if there are any, with `--check`, `--lint` or in place), `-v` (also list skipped files and timing), and `--` to treat every later argument as a path. Exit status is 0 when clean, 1 when files need formatting or lint found something (or, with `--strict`, files were skipped), and 2 on errors (bad arguments, bad config, unreadable files, or `--stdin` input that can't be formatted).
+Options: `--config <file>`, `--indent <n>`, `--stdin-filepath <path>` (see [Editors](#editors)), `--output-format text|github|json|sarif` (see [Machine-readable output](#machine-readable-output)), `--strict` (list skipped files and exit 1 if there are any, with `--check`, `--lint` or in place), `--lines <start>-<end>` and `--changed-since <rev>` (see [Changing less](#changing-less)), `-v` (also list skipped files and timing), and `--` to treat every later argument as a path. Exit status is 0 when clean, 1 when files need formatting or lint found something (or, with `--strict`, files were skipped), and 2 on errors (bad arguments, bad config, unreadable files, or `--stdin` input that can't be formatted).
+
+### Parse errors
+
+A file groovyfmt can't parse is never formatted or linted. `--syntax` lists where parsing failed, one line per place, up to 10 per file and then a count of the rest; `-v` and `--strict` show the same lines under each skipped file, and `--stdin` prints them after its error:
+
+```console
+$ groovyfmt --syntax
+Jenkinsfile:4:14: could not parse: `{` is never closed in a closure
+src/Build.groovy:12:21: could not parse: expected `)` to close the `(` on line 12
+could not parse 2 of 31 files
+```
+
+Columns count characters. The message names the bracket left open when there is one, else quotes the text the grammar stopped at and says where it was (in an argument list, at the top level). It says groovyfmt could not parse the code, not that the code is wrong: the grammar is not the Groovy compiler, and about 0.5% of valid files don't parse (see [Coverage](#coverage)). Exit status is 0 when every file parses, 1 when one doesn't, 2 on errors; `--output-format github` turns each place into an annotation.
+
+### Machine-readable output
+
+`--output-format json` works with `--check`, `--lint`, `--syntax` and formatting in place. stdout then holds one JSON document and nothing else, one line per file; the summary line is left out and so are the `-v` / `--strict` lists of skipped files, which the document already has. stderr still gets errors and `-v`'s `config:` lines. Exit statuses are unchanged; exit 2 with an empty stdout is a usage or config error.
+
+```console
+$ groovyfmt --lint --output-format json
+{"version":1,"files":[
+{"path":"A.groovy","status":"unchanged","skip_reason":null,"diagnostics":[{"rule":"UnusedImport","severity":"warning","message":"The [a.b.Unused] import is never referenced","line":1,"column":1,"end_line":1,"end_column":18,"fixable":true}]},
+{"path":"Broken.groovy","status":"skipped","skip_reason":"parse error","diagnostics":[{"rule":"ParseError","severity":"warning","message":"expected `}` to close the `{` on line 1","line":1,"column":10,"end_line":1,"end_column":10,"fixable":false}]}
+],"summary":{"files":2,"unchanged":1,"would_reformat":0,"reformatted":0,"skipped":1,"errors":0,"diagnostics":2}}
+```
+
+The schema is versioned: `version` changes whenever a field is removed or changes meaning (new fields may be added within a version).
+
+| Field | Meaning |
+|---|---|
+| `version` | `1` |
+| `files[].path` | the file as the text output names it, relative to where groovyfmt runs when it was found by a walk from there (a name that isn't UTF-8 is shown with replacement characters) |
+| `files[].status` | `unchanged`, `would_reformat` (`--check`), `reformatted` (in place), `fixed` (`--lint --fix`), `skipped` (not parsed, not UTF-8, over 10 MB, or not formattable) or `error` (unreadable, or the write failed). `--lint` without `--fix` and `--syntax` never change files, so a file they read is `unchanged` |
+| `files[].skip_reason` | for `skipped` and `error`, why (`parse error`, `not valid UTF-8`, an I/O error); with `--fix`, `not fixed: <why>` for a file whose fix failed a check; else `null` |
+| `files[].diagnostics[]` | lint violations (`--lint`, enabled rules only) and, for a file that doesn't parse, the places groovyfmt could not parse (rule `ParseError`, in every mode, at most 10 per file) |
+| `rule`, `severity`, `message` | the rule name, `warning`, and the message text (the same as the text output, unescaped) |
+| `line`, `column`, `end_line`, `end_column` | 1-based; columns count characters; the end is just past the flagged code |
+| `fixable` | whether `--lint --fix` would fix it |
+| `summary` | counts of files by status (`errors` counts `error`) and of diagnostics |
+
+Strings are standard JSON. Every control character is escaped, and so is a `[` after `##` (as `\u005b`), so file names and quoted source can't act as terminal escapes or GitHub Actions workflow commands when the document is printed in a log; a JSON parser reads back the original text.
+
+`--output-format sarif` (with `--lint` or `--syntax`) prints a SARIF 2.1.0 log of the same diagnostics, with every rule (and `ParseError`) described from the rule table, for GitHub code scanning:
+
+```yaml
+- run: groovyfmt --lint --output-format sarif > groovyfmt.sarif || true
+- uses: github/codeql-action/upload-sarif@v4
+  with:
+    sarif_file: groovyfmt.sarif
+```
+
+### Changing less
+
+`--check --diff` prints a unified diff of what formatting would change instead of the file names, and writes nothing; `--lint --fix --diff` does the same for the fixes. Exit statuses don't change. The diff names files `a/<path>` and `b/<path>` as the text output names them, so from the same directory `git apply` or `patch -p1` applies it. A diff has to print file content as it is, so for a file whose name holds a control character, `"` or `\`, or whose diff would print a control character other than a tab, `##[`, or a line starting with `::`, a `# groovyfmt: <path>: diff not shown` line takes its place (both tools skip it); that keeps a file name or content from forging a patch header or acting on a terminal or a CI log. The name is checked before it goes into the `---` / `+++` lines, and the patch is checked as a whole. Files with CR LF line endings diff as they are, since that CR only ends a line; a CR anywhere else withholds the diff.
+
+`--lines <start>-<end>` (1-based, inclusive, repeatable) changes only those lines, for one file or `--stdin`, as editors do for a selection; every other line comes out byte for byte as it was. Indentation comes from the whole parse tree, so the whole file is formatted and the original text put back outside the ranges, and the result goes through the same token check as formatting. No line is added or removed: a blank line formatting would drop is emptied instead, so the lines after a range keep their numbers and running it again with the same ranges changes nothing.
+
+`--changed-since <rev>` limits a run (formatting, `--check`, `--lint`, `--syntax`) to files under the working directory that differ from git revision `rev` in the working tree or index, plus untracked files git doesn't ignore. Those files are formatted whole. It runs `git diff --name-only -z --relative <rev> --` and `git ls-files -z --others --exclude-standard`; `rev` can't start with `-`, and a missing git or a directory outside a repository is an error (exit 2).
 
 ### What formatting changes
 
@@ -143,9 +205,9 @@ The general rules are named after their [CodeNarc](https://codenarc.org/) equiva
 
 | Rule | Default | Flags |
 |---|---|---|
-| UnusedImport | on | an import whose name (or alias) never appears in code or as a word in a comment |
+| UnusedImport | on | an import whose name (or alias) never appears in code or as a word in a comment; not an annotated import (`@Library`, `@Grab`), which is there for its annotation |
 | DuplicateImport | on | the same import twice |
-| UnnecessarySemicolon | on | a `;` at the end of a line, unless the next line starts with `{` (without the `;` that closure would become an argument of the statement before) |
+| UnnecessarySemicolon | on | a `;` at the end of a line, unless the next line starts with `{` (without the `;` that closure would become an argument of the statement before), `++` or `--` |
 | EmptyCatchBlock | on | an empty `catch`, unless the parameter is named `ignore` or `ignored` |
 | EmptyIfStatement | on | an `if` with an empty block |
 | EmptyElseBlock | on | an `else` with an empty block |
@@ -201,6 +263,21 @@ In classes whose superclass is `Specification` or ends in `Spec` or `Specificati
 | SpockBlockOrder | on | blocks in an order Spock refuses to compile (`then:` without `when:`, `when:` not followed by `then:`, `given:` after another block, anything but `and:`, `combined:` or `filter:` after `where:`), and labels that aren't Spock blocks |
 | SpockDataTableColumns | on | a `where:` data table row with a different number of columns than the row above |
 | SpockEmptyBlock | off | a `then:` or `expect:` block with no conditions, only a description (off by default: Spock accepts it, and Spock's own tests use empty blocks on purpose) |
+
+`groovyfmt --explain <Rule>` prints a rule's description, why it matters, flagged code and a fixed version, whether `--lint --fix` fixes it, and the `.groovyfmt.toml` lines to turn it off (or on).
+
+### Fixing
+
+`groovyfmt --lint --fix` removes, in place, what three rules flag: an `UnusedImport` or `DuplicateImport` line (with its line break, and only when nothing but whitespace or a `;` shares the line) and an `UnnecessarySemicolon` `;`. It then reports the violations that remain and exits 1 if there are any. Plain `--lint` marks these violations with ` (fixable)` (`"fixable": true` in JSON). A rule turned off in the config is neither fixed nor reported.
+
+```console
+$ groovyfmt --lint --fix
+src/A.groovy:4:1: UnusedImport: The [b.C] import is never referenced
+fixed 4 violations in 1 files (DuplicateImport 1, UnnecessarySemicolon 2, UnusedImport 1)
+1 violations in 3 files (UnusedImport 1)
+```
+
+As with formatting, each fix is checked before the file is written: the fixed file must parse cleanly, its tokens must be the original's minus exactly the removed ones, its parse tree must keep the original's shape (so removing a `;` can't join two statements or turn one into another's body), and linting it must find the original's other violations and nothing new. A file that fails a check is left as it was and listed as `path not fixed: <why>` on stderr. A file that doesn't parse is never fixed. Writes go through the same path as formatting: symlinks, permissions, owners, hard links and `exclude` are handled the same way. Running it again changes nothing.
 
 ## Configuration
 
@@ -356,6 +433,60 @@ repos:
 ```
 
 pre-commit passes the staged files by name, and `exclude` in `.groovyfmt.toml` still applies to them, so generated code stays untouched without repeating the patterns in the hook.
+
+## Using groovyfmt with coding agents
+
+A coding agent that edits a Jenkinsfile or a Gradle script has no compiler to tell it whether the file still reads as Groovy. groovyfmt answers in milliseconds, in a form an agent can act on: exit codes, `path:line:col` messages, and JSON.
+
+### Claude Code hook
+
+This [PostToolUse hook](https://code.claude.com/docs/en/hooks) formats every Groovy file Claude writes or edits, then lints it. It goes in `.claude/settings.json` (or `~/.claude/settings.json`) and needs `jq` and `groovyfmt` on `PATH`:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(jq -r '.tool_input.file_path // empty'); case \"$f\" in *.groovy|*.gradle|*.gvy|*.gy|*.gsh|*/Jenkinsfile|Jenkinsfile) groovyfmt -- \"$f\" >/dev/null 2>&1; groovyfmt --lint --strict --output-format json -- \"$f\" >&2 || exit 2;; esac"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The hook reads the edited path from the `tool_input.file_path` field of its JSON input and does nothing for other files. It formats the file in place, which changes nothing when the file doesn't parse. Then it lints with `--strict`, so a file groovyfmt couldn't parse fails too. When anything is found, the JSON report (lint violations, or `ParseError` diagnostics with line and column) goes to stderr and the hook exits 2; for PostToolUse, Claude Code then shows that stderr to Claude next to the tool result. A clean file prints nothing to Claude. `exclude` in `.groovyfmt.toml` still applies, since the file is named on the command line.
+
+### Instructions for the agent
+
+Put this in `AGENTS.md` or `CLAUDE.md`:
+
+```markdown
+## Groovy, Gradle and Jenkinsfiles
+
+After editing a `.groovy`, `.gradle` or `Jenkinsfile`, check it with groovyfmt:
+
+- `groovyfmt --syntax <file>`: does it parse? Each problem prints as
+  `file:line:col: could not parse: <message>`. groovyfmt's grammar is not the Groovy
+  compiler, so a few valid files fail; if the code is right, say so instead of rewriting it.
+- `groovyfmt --lint --fix <file>`: removes unused and duplicate imports and stray
+  semicolons, then lists what is left. `groovyfmt --explain <Rule>` explains a rule.
+- `groovyfmt --check --diff <file>`: shows what formatting would change; `groovyfmt <file>`
+  applies it.
+- Add `--output-format json` for a machine-readable report.
+
+Exit codes: 0 clean, 1 something to fix (parse error, lint violation, or formatting),
+2 a usage or I/O error.
+```
+
+### pre-commit
+
+To check the same things before each commit, use the hooks in [pre-commit](#pre-commit).
 
 ## Editors
 
