@@ -1,4 +1,5 @@
-//! `--lint --fix`: delete what UnusedImport, DuplicateImport and UnnecessarySemicolon flag
+//! `--lint --fix`: delete what UnusedImport, DuplicateImport, ImportFromSamePackage and
+//! UnnecessarySemicolon flag
 //! (their `Violation::fix` ranges), then prove the result safe, as `format` does its output.
 //! The fixed text must parse cleanly; its tokens must be the input's minus exactly the
 //! deleted ones; its parse tree must have the input's shape minus the deleted nodes (so a
@@ -218,6 +219,18 @@ mod tests {
         // a mention in a string is not a use
         assert_eq!(text("import a.Foo\nprintln 'a Foo'\n"), "println 'a Foo'\n");
         assert_eq!(text("import a.Foo\nprintln 'Foo'\n"), "println 'Foo'\n");
+    }
+
+    #[test]
+    fn removes_same_package_imports_but_not_default_ones() {
+        // `import a.C` stays: the file declares a C of its own; `java.util.Date` stays: it
+        // may be beating an `a.Date` that this file can't show
+        let src = "package a\nimport a.B\nimport a.*\nimport a.C\nimport java.util.Date\nclass C { B b; Date d }\n";
+        assert_eq!(
+            text(src),
+            "package a\nimport a.C\nimport java.util.Date\nclass C { B b; Date d }\n"
+        );
+        assert_eq!(fixed(&text(src)), Fix::Nothing, "idempotent");
     }
 
     #[test]

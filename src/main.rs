@@ -57,8 +57,8 @@ Options:
       --changed-since <REV>
                            Only the files that differ from git revision REV, or are
                            untracked (in the working directory, whole files)
-      --fix                With --lint: remove unused and duplicate imports and
-                           unnecessary semicolons in place (violations marked
+      --fix                With --lint: remove unused, duplicate and same-package
+                           imports and unnecessary semicolons in place (violations marked
                            \"(fixable)\"), then report what remains
   -v, --verbose            Also report skipped files, where each one failed to parse,
                            and timing

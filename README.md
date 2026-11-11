@@ -99,7 +99,7 @@ With no paths it works on the current directory. Directories are searched for `*
 | `groovyfmt --check` | list files that would be reformatted, exit 1 if any |
 | `groovyfmt --check --diff` | print a unified diff of what formatting would change, exit 1 if any |
 | `groovyfmt --lint` | report lint violations, exit 1 if any |
-| `groovyfmt --lint --fix` | fix what can be fixed safely (unused and duplicate imports, unnecessary semicolons), then report the rest |
+| `groovyfmt --lint --fix` | fix what can be fixed safely (unused and duplicate imports, imports from the file's own package, unnecessary semicolons), then report the rest |
 | `groovyfmt --syntax` | only parse, and report each place groovyfmt could not parse, exit 1 if any |
 | `groovyfmt --stdin` | format stdin to stdout, for editors |
 | `groovyfmt --rules` | list lint rules and whether each is on |
@@ -203,6 +203,50 @@ The general rules are named after their [CodeNarc](https://codenarc.org/) equiva
 
 A block holding only a comment doesn't count as empty.
 
+#### Imports
+
+| Rule | Default | Flags |
+|---|---|---|
+| UnnecessaryGroovyImport | on | an import from `java.lang`, `java.util`, `java.io`, `java.net`, `groovy.lang` or `groovy.util`, or of `java.math.BigDecimal` or `BigInteger`, which Groovy imports by default; not an aliased or static import, not in a file with another star import or a class of that name (either can be what the import is there to beat), and not in `*.gradle` files, where Gradle's own default imports (`org.gradle.api.tasks.Optional`) can need it |
+| ImportFromSamePackage | on | an import of a class (or `.*`) from the file's own package |
+
+#### Likely bugs
+
+Rules marked off found, on real code, almost only things written that way on purpose (mostly in tests); turn them on where that doesn't apply.
+
+| Rule | Default | Flags |
+|---|---|---|
+| DeadCode | on | a statement after `return`, `throw`, `break` or `continue` in the same block, on a later line; not a method or class declaration (a script's come after its `return`), a labeled statement, or a `break` right after a `return` or `throw` (redundant, not wrong) |
+| EqualsAndHashCode | on | a class defining `equals(Object)` without `hashCode()`; not one with a superclass (which may define it) or an annotation that generates it (`@EqualsAndHashCode`, `@Canonical`, `@Immutable`) |
+| EqualsOverloaded | on | an `equals` method with one parameter typed other than `Object`, which overloads `equals` instead of overriding it |
+| ObjectOverrideMisspelledMethodName | on | `equal(Object)`, `hashcode()`, `toSTring()` and other case misspellings of `equals`, `hashCode` and `toString` |
+| ReturnFromFinallyBlock | on | a `return` in a `finally` block (not in a closure inside it) |
+| EmptySwitchStatement | on | a `switch` with no cases |
+| EmptyStaticInitializer | on | an empty `static { }` |
+| EmptyInstanceInitializer | on | an empty `{ }` instance initializer |
+| BrokenNullCheck | on | `x != null \|\| x.a` and `x == null && x.a`, which dereference `x` exactly when it is null |
+| RemoveAllOnSelf | on | `c.removeAll(c)` instead of `c.clear()` |
+| MissingNewInThrowStatement | on | `throw SomeException(...)` or `throw SomeException` without `new` (a capitalized name ending in `Exception`, `Failure` or `Fault`) |
+| ExceptionNotThrown | on | a `catch` block ending in `new SomeException(...)` that is neither thrown nor the method's or closure's return value |
+| ThrowExceptionFromFinallyBlock | off | a `throw` in a `finally` block, unless a `catch` inside the `finally` may handle it (rethrowing a saved exception after cleanup is a common idiom) |
+| AssertWithinFinallyBlock | off | an `assert` in a `finally` block (tests check state after cleanup this way) |
+| ToStringReturnsNull | off | a `toString()` that returns `null`, ends with `null`, or is empty (found only test fixtures doing it on purpose) |
+| DuplicateSetValue | off | `[...] as Set` (or any type ending in `Set`) with the same constant twice (tests do it to check that a set drops them) |
+| ConstantTernaryExpression | off | a ternary or elvis whose condition is a literal, `Boolean.TRUE` / `FALSE`, or a list or map literal |
+| ConstantAssertExpression | off | an `assert` whose condition is a constant (`assert false` marks unreachable code in tests) |
+| ComparisonOfTwoConstants | off | `==`, `!=`, `<`, `<=`, `>`, `>=`, `<=>`, `equals` or `compareTo` between two constants, or lists and maps of them (tests and `expect: 1 == 1` placeholders) |
+| BrokenOddnessCheck | off | `x % 2 == 1`, false for negative odd numbers (nearly every real case is a count that is never negative) |
+
+#### Unused code
+
+A name counts as used wherever it appears outside comments: as a name, or as a word in any string (`"$x"`, `getProperty('x')`, `@MethodSource('x')`). That can miss an unused one whose name is used elsewhere for something else, but never reports a used one. A member reached through a computed name, `this."groupBy_${kind}"` or `"parse_$kind"()`, counts as used when its name starts with the literal part, and `getProperty(name)`, `invokeMethod(name, args)` or `this[name]` with a computed name count as a use of every private member.
+
+| Rule | Default | Flags |
+|---|---|---|
+| UnusedPrivateField | on | a private field whose name appears nowhere else in the file; not `serialVersionUID`, an annotated field (`@Delegate`, `@Autowired`), or a field of a class whose annotation reads fields (`includeFields`, `@Entity`, `@Builder`) |
+| UnusedPrivateMethod | on | a private method whose name appears nowhere else in the file (for `getX`, `isX` and `setX`, nor the property `x`); not an annotated method, or one called by name: `methodMissing`, `readObject` and the like, Spock's `setup` / `cleanup` / `setupSpec` / `cleanupSpec`, GPars' `afterStart` / `afterStop` / `onException` / `onInterrupt` / `onTimeout` |
+| UnusedVariable | on | a local variable whose name doesn't appear after its declaration in its block, closure or switch; not a script's top-level variable, `_`, an annotated one (`@Field`), or a part of `def (a, b) = ...`. Assigning it counts as a use |
+
 #### Jenkinsfiles
 
 What the Declarative Pipeline plugin rejects when a build starts. They check a top-level `pipeline { }` in a file named `Jenkinsfile`, `Jenkinsfile.*` or `*.jenkinsfile`, or in any file whose first statement it is (after comments and imports); scripted pipelines (`node { }`) are left alone. Directory walks find only files named `Jenkinsfile`, so name other pipeline files on the command line. The section lists follow the [syntax reference](https://www.jenkins.io/doc/book/pipeline/syntax/) and the plugin's own parser where they differ.
@@ -247,7 +291,7 @@ In classes whose superclass is `Specification` or ends in `Spec` or `Specificati
 
 ### Fixing
 
-`groovyfmt --lint --fix` removes, in place, what three rules flag: an `UnusedImport` or `DuplicateImport` line (with its line break, and only when nothing but whitespace or a `;` shares the line) and an `UnnecessarySemicolon` `;`. It then reports the violations that remain and exits 1 if there are any. Plain `--lint` marks these violations with ` (fixable)` (`"fixable": true` in JSON). A rule turned off in the config is neither fixed nor reported.
+`groovyfmt --lint --fix` removes, in place, what four rules flag: an `UnusedImport`, `DuplicateImport` or `ImportFromSamePackage` line (with its line break, and only when nothing but whitespace or a `;` shares the line) and an `UnnecessarySemicolon` `;`. An import from the file's own package is removed only when the file declares no class of the same name; an `UnnecessaryGroovyImport` is never removed, since it can be what beats a same-named class in the package, which one file can't show. It then reports the violations that remain and exits 1 if there are any. Plain `--lint` marks these violations with ` (fixable)` (`"fixable": true` in JSON). A rule turned off in the config is neither fixed nor reported.
 
 ```console
 $ groovyfmt --lint --fix
@@ -452,8 +496,8 @@ After editing a `.groovy`, `.gradle` or `Jenkinsfile`, check it with groovyfmt:
 - `groovyfmt --syntax <file>`: does it parse? Each problem prints as
   `file:line:col: could not parse: <message>`. groovyfmt's grammar is not the Groovy
   compiler, so a few valid files fail; if the code is right, say so instead of rewriting it.
-- `groovyfmt --lint --fix <file>`: removes unused and duplicate imports and stray
-  semicolons, then lists what is left. `groovyfmt --explain <Rule>` explains a rule.
+- `groovyfmt --lint --fix <file>`: removes unused, duplicate and same-package imports and
+  stray semicolons, then lists what is left. `groovyfmt --explain <Rule>` explains a rule.
 - `groovyfmt --check --diff <file>`: shows what formatting would change; `groovyfmt <file>`
   applies it.
 - Add `--output-format json` for a machine-readable report.

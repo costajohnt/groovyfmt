@@ -149,11 +149,43 @@ mod tests {
             "superclass",
             "method_declaration",
             "quoted_identifier",
+            // lint/basic.rs, lint/imports.rs, lint/unused.rs
+            "switch_default",
+            "static_initializer",
+            "instance_initializer",
+            "cast_expression",
+            "ternary_expression",
+            "elvis_expression",
+            "assert_statement",
+            "throw_statement",
+            "return_statement",
+            "break_statement",
+            "continue_statement",
+            "unary_expression",
+            "field_access",
+            "subscript_expression",
+            "field_declaration",
+            "variable_declarator",
+            "formal_parameters",
+            "formal_parameter",
+            "object_creation_expression",
+            "list_literal",
+            "constructor_declaration",
+            "lambda_expression",
+            "spread_arguments",
+            "spread_map_entry",
+            "interface_declaration",
+            "enum_declaration",
+            "trait_declaration",
+            "record_declaration",
+            "annotation_type_declaration",
         ];
         for k in named {
             assert_ne!(lang.id_for_node_kind(k, true), 0, "missing node kind {k}");
         }
-        for k in [";", "=", "==", "{", "}", "|", "||", "<<"] {
+        for k in [
+            ";", "=", "==", "{", "}", "|", "||", "<<", "&&", "!=", "%", "private", "static",
+        ] {
             assert_ne!(lang.id_for_node_kind(k, false), 0, "missing token {k}");
         }
         let fields = [
@@ -176,6 +208,12 @@ mod tests {
             "arguments",
             "closure",
             "statement",
+            "type",
+            "return_type",
+            "parameters",
+            "object",
+            "field",
+            "operand",
         ];
         for f in fields {
             assert!(lang.field_id_for_name(f).is_some(), "missing field {f}");
