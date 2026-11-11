@@ -9,44 +9,17 @@ repository = "https://github.com/costajohnt/groovyfmt"
 readme = "README.md"
 keywords = ["groovy", "gradle", "jenkins", "formatter", "linter"]
 categories = ["command-line-utilities", "development-tools"]
+include = ["/src", "/grammar", "/build.rs", "/tests", "/README.md", "/LICENSE", "/CHANGELOG.md"]
 
 [dependencies]
 tree-sitter = "0.26"
 toml = "1.2"
-# Fork branch groovyfmt-base = upstream main + dekobon PR #49 + our fixes
-# (dekobon/tree-sitter-groovy#56, #57, #60, and the fix/subscript-same-line,
-# fix/final-parameters, fix/trait-implements, fix/script-annotated-declaration,
-# fix/command-args, fix/assert-comma-message, fix/annotated-untyped-field,
-# fix/multi-assignment, fix/annotation-values, fix/array-creation,
-# fix/lambda-expressions, fix/method-declaration-forms, fix/synchronized-statement,
-# fix/attribute-access-forms, fix/method-reference-quoted-name,
-# fix/explicit-type-arguments, fix/list-spread, fix/reserved-keywords,
-# fix/gstring-comment-text, fix/spread-map-argument, fix/annotation-type-modifiers,
-# fix/enum-implements, fix/enum-constant-bodies, fix/switch-case-label-lists,
-# fix/array-type-values, fix/subscript-multiple-indexes,
-# fix/annotation-generic-argument, fix/annotations-after-modifiers,
-# fix/modifier-quoted-method-name, fix/gstring-interpolation-statements,
-# fix/record-contextual-keyword, fix/value-command-calls,
-# fix/closure-parameter-defaults, fix/line-break-statements, fix/cast-generic-type,
-# fix/dotted-command-name-argument, fix/command-named-args-after-line-break,
-# fix/contextual-keywords, fix/instanceof-pattern-variable,
-# fix/command-argument-starts, fix/parenthesized-command,
-# fix/generic-type-values, fix/slashy-leading-whitespace,
-# fix/anonymous-class-body, fix/line-continuation, fix/gstring-escaped-dollar,
-# fix/closure-parameter-forms, fix/final-catch-and-resources,
-# fix/final-multi-assignment, fix/while-empty-body, fix/script-untyped-methods,
-# fix/type-parameter-spacing, fix/spread-map-entry-spacing,
-# fix/dynamic-member-name, fix/untyped-varargs, fix/unicode-identifiers,
-# fix/leading-dot-decimals, fix/annotation-positions,
-# fix/annotated-untyped-methods, fix/default-methods, fix/enum-constant-forms,
-# fix/spaced-type-arguments, fix/try-resource-line-break,
-# fix/slashy-escaped-slash, fix/comparison-less-than, fix/def-type-declarations,
-# fix/keyword-names, fix/command-shapes, fix/groovy5-loops-patterns,
-# fix/spaced-generics-leftovers, fix/array-initializers, fix/declaration-forms,
-# fix/one-offs, fix/command-chain-calls, fix/empty-subscript,
-# fix/reserve-else branches).
-# Back to the crates.io release once those land upstream.
-dekobon-tree-sitter-groovy = { git = "https://github.com/costajohnt/tree-sitter-groovy", rev = "65a9b34b447fa1ab58322c84df55da90c4656af4" }
+# The Groovy grammar is vendored in grammar/ and compiled by build.rs; grammar/README.md
+# says where it comes from and how to update it.
+tree-sitter-language = "0.1.7"
+
+[build-dependencies]
+cc = "1.2"
 
 [profile.release]
 lto = true
