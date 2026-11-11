@@ -342,6 +342,10 @@ struct Ctx<'a> {
     rows: Option<&'a [(usize, usize)]>,
 }
 
+/// A node on the walk, its flags, whether a `where:` label came among its children so far, and
+/// the row the statement before ended on and whether a `;` followed it.
+type Frame<'t> = (Node<'t>, u8, bool, Option<(usize, bool)>);
+
 /// Ancestor flags on the walk.
 const SKIP: u8 = 1; // never break here
 const CMD: u8 = 2; // in a parenthesis-free command call, outside any brackets
@@ -570,7 +574,7 @@ impl Ctx<'_> {
         // children so far, and the row the statement before ended on and whether a `;`
         // followed it
         let mut c = tree.walk();
-        let mut stack: Vec<(Node, u8, bool, Option<(usize, bool)>)> = Vec::new();
+        let mut stack: Vec<Frame> = Vec::new();
         'walk: loop {
             let n = c.node();
             let (sr, er) = (n.start_position().row, n.end_position().row);
@@ -611,10 +615,10 @@ impl Ctx<'_> {
                         }
                     }
                     f.3 = Some((er, false));
-                } else if k == ";" {
-                    if let Some(p) = &mut f.3 {
-                        p.1 = true;
-                    }
+                } else if k == ";"
+                    && let Some(p) = &mut f.3
+                {
+                    p.1 = true;
                 }
             }
             match n.kind() {
