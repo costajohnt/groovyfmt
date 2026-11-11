@@ -313,6 +313,8 @@ fn a_full_session_matches_the_cli() {
         summary(&ds),
         [
             s("UnusedImport", 2, 0, 0, 0, 21),
+            // a rule added after the server: its name is the code too
+            s("UnnecessaryGroovyImport", 2, 0, 0, 0, 21),
             s("UnusedImport", 2, 1, 0, 1, 15),
             s("UnnecessarySemicolon", 2, 4, 14, 4, 15),
             s("UnnecessarySemicolon", 2, 9, 8, 9, 9),
@@ -671,7 +673,7 @@ fn invalid_json_gets_a_parse_error_and_the_session_goes_on() {
     let path = d.0.join("A.groovy");
     assert_eq!(
         srv.open(&uri(&path), MESSY).len(),
-        5,
+        6,
         "with the empty catch"
     );
     for bad in [
@@ -733,7 +735,7 @@ fn invalid_json_gets_a_parse_error_and_the_session_goes_on() {
     );
     assert_eq!(
         srv.diagnostics(&uri(&path)).len(),
-        5,
+        6,
         "with the empty catch"
     );
     let edits = srv.result(
@@ -763,4 +765,93 @@ fn garbage_bytes_end_the_session_cleanly() {
         assert_eq!(code, Some(1), "{err}");
         assert!(!err.contains("panic"), "{err}");
     }
+}
+
+/// A fix-all code action's resulting text, if the server offers one.
+fn fix_all(srv: &mut Server, u: &str, text: &str) -> Option<String> {
+    let range0 = "{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":0}}";
+    let actions = srv.result(
+        "textDocument/codeAction",
+        &format!("{{\"textDocument\":{{\"uri\":{}}},\"range\":{range0},\"context\":{{\"diagnostics\":[],\"only\":[\"source.fixAll\"]}}}}", js(u)),
+    );
+    let a = actions.arr().first()?;
+    Some(apply(
+        text,
+        a.get("edit").get("changes").get(u).arr(),
+        false,
+    ))
+}
+
+#[test]
+fn suppression_comments_apply_to_diagnostics_and_fixes() {
+    let d = Dir::new("suppress");
+    let text = "import a.Kept // groovyfmt-ignore UnusedImport\nimport a.Gone\n@SuppressWarnings('UnnecessarySemicolon')\ndef f() {\n  g();\n}\nx = 1; // codenarc-disable-line\ny = 2;\n";
+    let path = d.write("A.groovy", text);
+    let u = uri(&path);
+    let mut srv = Server::start(&d.0);
+    srv.initialize("[]");
+    let ds = srv.open(&u, text);
+    assert_eq!(
+        summary(&ds),
+        [
+            s("UnusedImport", 2, 1, 0, 1, 13),
+            s("UnnecessarySemicolon", 2, 7, 5, 7, 6),
+        ]
+    );
+    // fix all leaves the suppressed ones alone, as `--lint --fix` does
+    let fixed = fix_all(&mut srv, &u, text).unwrap();
+    assert_eq!(
+        fixed,
+        "import a.Kept // groovyfmt-ignore UnusedImport\n@SuppressWarnings('UnnecessarySemicolon')\ndef f() {\n  g();\n}\nx = 1; // codenarc-disable-line\ny = 2\n"
+    );
+    let copy = d.write("B.groovy", text);
+    let (code, _) = cli(&d.0, &["--lint", "--fix", copy.to_str().unwrap()], "");
+    assert_eq!(code, Some(0));
+    assert_eq!(std::fs::read_to_string(&copy).unwrap(), fixed);
+}
+
+#[test]
+fn the_config_baseline_holds_back_diagnostics_and_fixes() {
+    let d = Dir::new("lspbaseline");
+    let text = "import a.Old\nx = 1;\n";
+    let path = d.write("src/A.groovy", text);
+    let (code, _) = cli(&d.0, &["--lint", "--write-baseline=bl.json"], "");
+    assert_eq!(code, Some(0));
+    d.write(".groovyfmt.toml", "baseline = \"bl.json\"\n");
+    let u = uri(&path);
+    let mut srv = Server::start(&d.0);
+    srv.initialize("[]");
+    assert_eq!(summary(&srv.open(&u, text)), []);
+    assert_eq!(fix_all(&mut srv, &u, text), None, "nothing to fix");
+    // a new violation is reported, and only it is fixed
+    let edited = "import a.Old\nimport b.New\nx = 1;\n";
+    srv.notify(
+        "textDocument/didChange",
+        &format!(
+            "{{\"textDocument\":{{\"uri\":{},\"version\":2}},\"contentChanges\":[{{\"text\":{}}}]}}",
+            js(&u),
+            js(edited)
+        ),
+    );
+    assert_eq!(
+        summary(&srv.diagnostics(&u)),
+        [s("UnusedImport", 2, 1, 0, 1, 12)]
+    );
+    assert_eq!(
+        fix_all(&mut srv, &u, edited).as_deref(),
+        Some("import a.Old\nx = 1;\n")
+    );
+    // a baseline the config points out of its tree is a diagnostic, not a read
+    d.write(".groovyfmt.toml", "baseline = \"../x.json\"\n");
+    srv.notify(
+        "textDocument/didChange",
+        &format!(
+            "{{\"textDocument\":{{\"uri\":{},\"version\":3}},\"contentChanges\":[{{\"text\":{}}}]}}",
+            js(&u),
+            js(text)
+        ),
+    );
+    let ds = srv.diagnostics(&u);
+    assert_eq!(ds.len(), 1);
+    assert_eq!(ds[0].get("code").str(), Some("config"));
 }

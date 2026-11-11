@@ -1,4 +1,5 @@
 use groovyfmt::MAX_FILE_BYTES;
+use groovyfmt::baseline::{self, Baseline};
 use groovyfmt::config::{self, Config, Resolver};
 use groovyfmt::diff;
 use groovyfmt::fix::{self, Fix};
@@ -61,8 +62,13 @@ Options:
       --changed-since <REV>
                            Only the files that differ from git revision REV, or are
                            untracked (in the working directory, whole files)
-      --fix                With --lint: remove unused and duplicate imports and
-                           unnecessary semicolons in place (violations marked
+      --baseline <FILE>    With --lint: report only violations not recorded in FILE
+                           (overrides the config's `baseline`; '' for none)
+      --write-baseline[=FILE]
+                           With --lint: record the current violations in FILE (default:
+                           --baseline, the config's `baseline`, .groovyfmt-baseline.json)
+      --fix                With --lint: remove unused, duplicate and same-package
+                           imports and unnecessary semicolons in place (violations marked
                            \"(fixable)\"), then report what remains
   -v, --verbose            Also report skipped files, where each one failed to parse,
                            and timing
@@ -95,6 +101,10 @@ struct Args {
     changed_since: Option<String>,
     verbose: bool,
     strict: bool,
+    /// `--baseline`: the baseline for every file instead of the config's; empty for none
+    baseline: Option<PathBuf>,
+    /// `--write-baseline`, with the file it names if any
+    write_baseline: Option<Option<PathBuf>>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -211,6 +221,9 @@ fn parse_args() -> Args {
                 }));
             }
             "--changed-since" => a.changed_since = Some(value("--changed-since")),
+            "--baseline" => a.baseline = Some(PathBuf::from(value("--baseline"))),
+            // only `--write-baseline=FILE`: a separate word would read as a path to lint
+            "--write-baseline" => a.write_baseline = Some(inline.take().map(PathBuf::from)),
             "--config" => a.config = Some(PathBuf::from(value("--config"))),
             "--stdin-filepath" => a.stdin_filepath = Some(PathBuf::from(value("--stdin-filepath"))),
             "--indent" => {
@@ -258,6 +271,12 @@ fn parse_args() -> Args {
     }
     if a.fix && a.mode != Mode::Lint {
         die("--fix needs --lint");
+    }
+    if (a.baseline.is_some() || a.write_baseline.is_some()) && a.mode != Mode::Lint {
+        die("--baseline and --write-baseline need --lint");
+    }
+    if a.write_baseline.is_some() && (a.fix || a.machine.is_some() || a.github) {
+        die("--write-baseline can't be combined with --fix or --output-format");
     }
     if a.diff && !(a.mode == Mode::Check || a.fix) {
         die("--diff works with --check and --lint --fix");
@@ -885,6 +904,8 @@ fn lint_diagnostic(v: lint::Violation) -> Diagnostic {
 struct Out {
     machine: Option<Machine>,
     files: Vec<FileReport>,
+    /// More counts for the JSON summary
+    extra: Vec<(&'static str, usize)>,
 }
 
 impl Out {
@@ -892,6 +913,7 @@ impl Out {
         Out {
             machine: a.machine,
             files: Vec::new(),
+            extra: Vec::new(),
         }
     }
 
@@ -925,7 +947,7 @@ impl Out {
     fn summary(self, line: &str) {
         let doc = match self.machine {
             None => return eprintln!("{line}"),
-            Some(Machine::Json) => report::json(&self.files),
+            Some(Machine::Json) => report::json_with(&self.files, &self.extra),
             Some(Machine::Sarif) => report::sarif(&self.files, env!("CARGO_PKG_VERSION")),
         };
         let _ = std::io::stdout().lock().write_all(doc.as_bytes());
@@ -963,9 +985,30 @@ fn main() {
                 report(files.iter().map(|f| &*cfgs[f]));
             }
             match a.mode {
-                Mode::Lint => lint_files(&files, &links, &cfgs, &a, false),
+                Mode::Lint => {
+                    // where --write-baseline writes: its own value, else --baseline, else the
+                    // working directory's config, else the default name
+                    let writing = a.write_baseline.as_ref().map(|w| {
+                        let given = w
+                            .clone()
+                            .or_else(|| a.baseline.clone().filter(|b| !b.as_os_str().is_empty()));
+                        if let Some(f) = given {
+                            return f;
+                        }
+                        // one the config names must stay in the config's directory
+                        let cfg = one_config(&mut res, &a);
+                        match &cfg.baseline {
+                            Some(f) => {
+                                baseline::confined(&cfg.root, f).unwrap_or_else(|e| die(e));
+                                f.clone()
+                            }
+                            None => PathBuf::from(baseline::DEFAULT_FILE),
+                        }
+                    });
+                    lint_files(&files, &links, &cfgs, &a, false, writing.as_deref())
+                }
                 Mode::Syntax => syntax(&files, &a),
-                Mode::LintStats => lint_files(&files, &links, &cfgs, &a, true),
+                Mode::LintStats => lint_files(&files, &links, &cfgs, &a, true, None),
                 Mode::Stats => stats(&files, &cfgs),
                 Mode::SuggestStyle => suggest_style(&files, &cfgs),
                 Mode::Errors => errors(&files),
@@ -1179,6 +1222,30 @@ struct Linted {
     written: std::io::Result<()>,
     /// `--lint --fix --diff`: the patch, instead of writing
     patch: Option<String>,
+    /// Violations the baseline held back, and its entries for this file that matched nothing
+    held: usize,
+    stale: usize,
+    /// `--write-baseline`: the file's baseline path and its violations' keys
+    keys: Option<(String, baseline::Keys)>,
+}
+
+/// The baseline file for a file governed by `cfg`: `--baseline` (`''` for none), else the
+/// config's, which must stay in the config's directory (an error, exit 2, otherwise).
+fn baseline_file(a: &Args, cfg: &Config) -> Option<PathBuf> {
+    match &a.baseline {
+        Some(f) if f.as_os_str().is_empty() => None,
+        Some(f) => Some(f.clone()),
+        None => {
+            let f = cfg.baseline.clone()?;
+            baseline::confined(&cfg.root, &f).unwrap_or_else(|e| die(e));
+            Some(f)
+        }
+    }
+}
+
+/// The text of line `n` (1-based) of `text`.
+fn line_of(text: &str, n: usize) -> &str {
+    text.split('\n').nth(n.saturating_sub(1)).unwrap_or("")
 }
 
 fn lint_files(
@@ -1187,9 +1254,37 @@ fn lint_files(
     cfgs: &Configs,
     a: &Args,
     stats_only: bool,
+    writing: Option<&Path>,
 ) -> i32 {
     let t = Instant::now();
     let mut out = Out::new(a);
+    // each file's baseline and its path in it; each baseline file is read once, and one that
+    // can't be read or isn't a valid baseline is an error
+    let mut loaded: HashMap<PathBuf, Arc<Baseline>> = HashMap::new();
+    let mut load = |f: &Path| {
+        loaded
+            .entry(f.to_path_buf())
+            .or_insert_with(|| Arc::new(Baseline::load(f).unwrap_or_else(|e| die(e))))
+            .clone()
+    };
+    let dir = |f: &Path| f.parent().map(Path::to_path_buf).unwrap_or_default();
+    let bases: HashMap<&Path, (Arc<Baseline>, String)> = match writing {
+        // writing: the whole of every file is recorded, relative to the file written
+        Some(target) => files
+            .iter()
+            .map(|p| {
+                let rel = baseline::relative(p, &dir(target));
+                (p.as_path(), (Arc::new(Baseline::default()), rel))
+            })
+            .collect(),
+        None => files
+            .iter()
+            .filter_map(|p| {
+                let f = baseline_file(a, &cfgs[p])?;
+                Some((p.as_path(), (load(&f), baseline::relative(p, &dir(&f)))))
+            })
+            .collect(),
+    };
     let listed = (a.verbose || a.strict) && out.text();
     let want_diag = listed || !out.text();
     let results = par_map(files, |p| {
@@ -1209,10 +1304,21 @@ fn lint_files(
             refused: None,
             written: Ok(()),
             patch: None,
+            held: 0,
+            stale: 0,
+            keys: None,
         };
+        let mut new_text: Option<String> = None;
         if a.fix {
             let cfg = &cfgs[p];
-            match fix::fix(p, &src, |v| cfg.rule_enabled(v.rule)) {
+            // a violation the baseline has on a line like this one is left alone
+            let base = bases.get(&p);
+            let wanted = |v: &lint::Violation, text: &str| {
+                cfg.rule_enabled(v.rule)
+                    && !base
+                        .is_some_and(|(b, rel)| b.covers_line(rel, v.rule, line_of(text, v.line)))
+            };
+            match fix::fix(p, &src, wanted) {
                 Fix::Nothing => {}
                 Fix::Refused(why) => r.refused = Some(why),
                 Fix::Fixed(text, fixed) => {
@@ -1225,8 +1331,20 @@ fn lint_files(
                         // the fix checked that the fixed text lints
                         r.violations = lint::lint_file(p, &text).unwrap_or_default();
                         r.fixed = fixed;
+                        new_text = Some(text);
                     }
                 }
+            }
+        }
+        let text = new_text.as_deref().unwrap_or(&src);
+        let cfg = &cfgs[p];
+        r.violations.retain(|v| cfg.rule_enabled(v.rule));
+        if let Some((b, rel)) = bases.get(&p) {
+            if writing.is_some() {
+                r.keys = Some((rel.clone(), baseline::keys(text, &r.violations)));
+            } else {
+                let (kept, held, stale) = b.filter(rel, text, std::mem::take(&mut r.violations));
+                (r.violations, r.held, r.stale) = (kept, held, stale);
             }
         }
         Ok(Ok(r))
@@ -1234,6 +1352,9 @@ fn lint_files(
     let (mut skipped, mut total, mut failed) = (0usize, 0usize, false);
     let mut by_rule: BTreeMap<&str, usize> = BTreeMap::new();
     let (mut fixed_files, mut fixed_by_rule) = (0usize, BTreeMap::<&str, usize>::new());
+    let (mut held, mut stale) = (0usize, 0usize);
+    // --write-baseline: the entries, and the files they cover
+    let (mut entries, mut recorded) = (Vec::new(), std::collections::BTreeSet::new());
     for (path, r) in files.iter().zip(results) {
         match r {
             Err(e) => {
@@ -1257,6 +1378,15 @@ fn lint_files(
                     continue;
                 }
                 fixed_files += usize::from(!r.fixed.is_empty());
+                (held, stale) = (held + r.held, stale + r.stale);
+                if let Some((rel, keys)) = r.keys {
+                    entries.extend(
+                        keys.into_iter()
+                            .map(|(rule, fp, i)| (rel.clone(), rule, fp, i)),
+                    );
+                    recorded.insert(rel);
+                    continue;
+                }
                 for v in &r.fixed {
                     *fixed_by_rule.entry(v.rule).or_default() += 1;
                 }
@@ -1332,10 +1462,43 @@ fn lint_files(
         let verb = if a.diff { "would fix" } else { "fixed" };
         eprintln!("{verb} {n} violations in {fixed_files} files{rules}");
     }
+    if let Some(target) = writing {
+        // entries for files this run didn't lint (or couldn't parse) are kept
+        let old = if target.exists() {
+            Baseline::load(target).unwrap_or_else(|e| die(e))
+        } else {
+            Baseline::default()
+        };
+        let n = entries.len();
+        let doc = baseline::write(entries, &old, &recorded);
+        if let Err(e) = write_new(target, &doc) {
+            eprintln!("groovyfmt: {}: {e}", shown(target));
+            return 2;
+        }
+        eprintln!(
+            "wrote {n} violations in {} files to {}",
+            recorded.len(),
+            shown(target)
+        );
+        return if failed {
+            2
+        } else {
+            i32::from(a.strict && skipped > 0)
+        };
+    }
     let mut summary = format!("{total} violations in {} files", files.len());
     if !by_rule.is_empty() {
         let parts: Vec<_> = by_rule.iter().map(|(r, n)| format!("{r} {n}")).collect();
         summary += &format!(" ({})", parts.join(", "));
+    }
+    if held > 0 {
+        summary += &format!(", {held} in the baseline");
+    }
+    if stale > 0 {
+        summary += &format!(", {stale} stale baseline entries (--write-baseline drops them)");
+    }
+    if !bases.is_empty() {
+        out.extra = vec![("baselined", held), ("stale_baseline_entries", stale)];
     }
     if skipped > 0 {
         summary += &format!(", {skipped} skipped (-v shows why)");
@@ -1354,7 +1517,33 @@ fn lint_files(
     if failed {
         2
     } else {
-        i32::from(left > 0 || (a.strict && skipped > 0))
+        // with --strict, a stale baseline fails too, so it can only shrink
+        i32::from(left > 0 || (a.strict && (skipped > 0 || stale > 0)))
+    }
+}
+
+/// Write `contents` to `path`, a new file or one replaced atomically, as formatting does.
+fn write_new(path: &Path, contents: &str) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) => write_atomic(path, contents, file_id(&m)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+            let tmp = path.with_file_name(tmp_name(seq));
+            let mut f = create_tmp(&tmp)?;
+            let result = (|| {
+                f.write_all(contents.as_bytes())?;
+                // a file to commit: readable like any other in the checkout
+                #[cfg(unix)]
+                f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o644))?;
+                f.sync_all()?;
+                std::fs::rename(&tmp, path)
+            })();
+            if result.is_err() {
+                let _ = std::fs::remove_file(&tmp);
+            }
+            result
+        }
+        Err(e) => Err(e),
     }
 }
 

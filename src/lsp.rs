@@ -9,6 +9,7 @@
 //! disk and nothing is run. The config is looked up afresh for every request and every
 //! diagnostics run, so an edited `.groovyfmt.toml` applies from the next one.
 
+use crate::baseline::Baseline;
 use crate::config::{Config, Resolver};
 use crate::fix::{self, Fix};
 use crate::format::{Outcome, format};
@@ -17,7 +18,7 @@ use crate::report::string as js;
 use crate::{MAX_FILE_BYTES, diff, lint, syntax};
 use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// A message body larger than this is skipped unread. A 10 MB document escaped as JSON fits.
@@ -310,6 +311,21 @@ struct Doc {
     version: Option<String>,
 }
 
+/// The config's baseline, read afresh like the config, and the document's path in it.
+fn baseline_of(doc: &Doc, cfg: &Config) -> Result<Option<(Baseline, String)>, String> {
+    let Some(f) = &cfg.baseline else {
+        return Ok(None);
+    };
+    crate::baseline::confined(&cfg.root, f)?;
+    let rel = crate::baseline::relative(&doc.path, f.parent().unwrap_or(Path::new("")));
+    Ok(Some((Baseline::load(f)?, rel)))
+}
+
+/// The text of line `n` (1-based) of `text`.
+fn line_of(text: &str, n: usize) -> &str {
+    text.split('\n').nth(n.saturating_sub(1)).unwrap_or("")
+}
+
 /// What applies to a document.
 enum Setup {
     /// Excluded by the config, or over the size cap: no diagnostics, no edits.
@@ -368,19 +384,32 @@ impl Server {
         let ds: Vec<String> = match self.setup(doc) {
             Setup::Off => Vec::new(),
             Setup::Broken(e) => vec![diag(0, 0, 1, "config", &e)],
-            Setup::Cfg(cfg) => match lint::lint_file(&doc.path, &doc.text) {
-                Ok(vs) => vs
-                    .iter()
-                    .filter(|v| cfg.rule_enabled(v.rule))
-                    .map(|v| {
-                        let (s, e) = (
-                            lines.offset(v.line, v.col),
-                            lines.offset(v.end_line, v.end_col),
-                        );
-                        diag(s, e, 2, v.rule, &v.message)
-                    })
-                    .collect(),
-                Err(_) => syntax::check(&doc.text)
+            Setup::Cfg(cfg) => match (
+                lint::lint_file(&doc.path, &doc.text),
+                baseline_of(doc, &cfg),
+            ) {
+                (_, Err(e)) => vec![diag(0, 0, 1, "baseline", &e)],
+                (Ok(vs), Ok(base)) => {
+                    let vs: Vec<_> = vs
+                        .into_iter()
+                        .filter(|v| cfg.rule_enabled(v.rule))
+                        .collect();
+                    // what the config's baseline holds is not reported, as on the command line
+                    let vs = match &base {
+                        Some((b, rel)) => b.filter(rel, &doc.text, vs).0,
+                        None => vs,
+                    };
+                    vs.iter()
+                        .map(|v| {
+                            let (s, e) = (
+                                lines.offset(v.line, v.col),
+                                lines.offset(v.end_line, v.end_col),
+                            );
+                            diag(s, e, 2, v.rule, &v.message)
+                        })
+                        .collect()
+                }
+                (Err(_), _) => syntax::check(&doc.text)
                     .0
                     .iter()
                     .map(|e| {
@@ -461,8 +490,16 @@ impl Server {
                     .iter()
                     .any(|o| kind == *o || kind.strip_prefix(o).is_some_and(|r| r.starts_with('.')))
         };
-        let Ok(vs) = lint::lint_file(&doc.path, &doc.text) else {
+        let (Ok(vs), Ok(base)) = (
+            lint::lint_file(&doc.path, &doc.text),
+            baseline_of(doc, &cfg),
+        ) else {
             return Ok("[]".into());
+        };
+        // nothing the baseline holds is fixed, as on the command line
+        let held = |v: &lint::Violation, text: &str| {
+            base.as_ref()
+                .is_some_and(|(b, rel)| b.covers_line(rel, v.rule, line_of(text, v.line)))
         };
         let lines = Lines::new(&doc.text, self.utf8);
         let uri = js(params.get("textDocument").get("uri").str().unwrap_or(""));
@@ -485,7 +522,7 @@ impl Server {
             };
             for v in vs
                 .iter()
-                .filter(|v| v.fix.is_some() && cfg.rule_enabled(v.rule))
+                .filter(|v| v.fix.is_some() && cfg.rule_enabled(v.rule) && !held(v, &doc.text))
                 .filter(|v| {
                     let (s, e) = (
                         lines.offset(v.line, v.col),
@@ -498,7 +535,7 @@ impl Server {
                 // ponytail: "this violation" is matched by rule, place and message, so if
                 // fixing it exposes an identical one where it was (a third copy of an
                 // import), that one goes too; fix's checks still apply to the result
-                let this = |w: &lint::Violation| {
+                let this = |w: &lint::Violation, _: &str| {
                     (w.rule, w.line, w.col, &w.message) == (v.rule, v.line, v.col, &v.message)
                 };
                 if let Fix::Fixed(new, _) = fix::fix(&doc.path, &doc.text, this) {
@@ -522,7 +559,9 @@ impl Server {
             }
         }
         if want(FIX_ALL)
-            && let Fix::Fixed(new, _) = fix::fix(&doc.path, &doc.text, |v| cfg.rule_enabled(v.rule))
+            && let Fix::Fixed(new, _) = fix::fix(&doc.path, &doc.text, |v, text| {
+                cfg.rule_enabled(v.rule) && !held(v, text)
+            })
         {
             out.push(action("Fix all auto-fixable problems", FIX_ALL, &new, ""));
         }

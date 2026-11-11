@@ -157,6 +157,7 @@ pub fn unified(path: &str, old: &str, new: &str) -> String {
 /// With `max_line_length`, only lines in the ranges are wrapped, and a wrapped line's pieces
 /// all take its place.
 pub fn format_lines(src: &str, style: &Style, ranges: &[(usize, usize)]) -> Outcome {
+    let ranges = &without(ranges, &off_lines(src));
     let out = match format_rows(src, style, ranges) {
         Outcome::Formatted(out) => out,
         other => return other,
@@ -176,6 +177,63 @@ pub fn format_lines(src: &str, style: &Style, ranges: &[(usize, usize)]) -> Outc
         return Outcome::Skipped("token mismatch after formatting");
     }
     Outcome::Formatted(kept)
+}
+
+/// The lines formatting leaves alone: from a `// groovyfmt: off` comment to the next
+/// `// groovyfmt: on` (or the end of the file), both comment lines included, 1-based. Either
+/// comment form works; the comment must hold nothing else.
+pub fn off_lines(src: &str) -> Vec<(usize, usize)> {
+    // most files have none: skip the parse
+    if !src.contains("groovyfmt: off") {
+        return Vec::new();
+    }
+    let tree = crate::parse(src);
+    let (mut out, mut from) = (Vec::new(), None);
+    crate::preorder(tree.root_node(), |n| {
+        if !n.kind().ends_with("comment") {
+            return true;
+        }
+        let t = crate::text(n, src);
+        let body = t
+            .strip_prefix("//")
+            .or_else(|| t.strip_prefix("/*").and_then(|b| b.strip_suffix("*/")))
+            .unwrap_or("")
+            .trim();
+        match (body, from) {
+            ("groovyfmt: off", None) => from = Some(n.start_position().row + 1),
+            ("groovyfmt: on", Some(f)) => {
+                out.push((f, n.end_position().row + 1));
+                from = None;
+            }
+            _ => {}
+        }
+        false
+    });
+    if let Some(f) = from {
+        out.push((f, usize::MAX));
+    }
+    out
+}
+
+/// `ranges` with the lines in `off` taken out.
+fn without(ranges: &[(usize, usize)], off: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut out = ranges.to_vec();
+    for &(a, b) in off {
+        out = out
+            .into_iter()
+            .flat_map(|(s, e)| {
+                let mut parts = Vec::new();
+                if s < a {
+                    parts.push((s, e.min(a - 1)));
+                }
+                if e > b {
+                    parts.push((s.max(b.saturating_add(1)), e));
+                }
+                parts
+            })
+            .collect();
+    }
+    out
 }
 
 /// Whether two lines hold the same text apart from spaces and tabs (and line ending).
@@ -257,6 +315,47 @@ mod tests {
         assert_eq!(
             unified("x", "a\n", ""),
             "--- a/x\n+++ b/x\n@@ -1,1 +0,0 @@\n-a\n"
+        );
+    }
+
+    #[test]
+    fn off_comments_keep_their_lines_byte_for_byte() {
+        let src = "class A {\ndef f() {\n// groovyfmt: off\nint[][] m = [[1,0],\n             [0,1]]   \n/* groovyfmt: on */\nprintln 1   \n}\n\n\n}\n";
+        for spacing in [false, true] {
+            let style = Style {
+                normalize_spacing: spacing,
+                ..Style::default()
+            };
+            let Outcome::Formatted(out) = crate::format::format(src, &style) else {
+                panic!()
+            };
+            assert_eq!(
+                out,
+                "class A {\n    def f() {\n// groovyfmt: off\nint[][] m = [[1,0],\n             [0,1]]   \n/* groovyfmt: on */\n        println 1\n    }\n\n\n}\n",
+                "{spacing}"
+            );
+            assert_eq!(
+                crate::format::format(&out, &style),
+                Outcome::Unchanged,
+                "idempotent"
+            );
+        }
+        // an `off` without an `on` runs to the end; one in a string is text
+        let src = "def f() {\n  // groovyfmt: off\n      x()\n}\n";
+        assert_eq!(
+            crate::format::format(src, &Style::default()),
+            Outcome::Unchanged
+        );
+        let src = "def s = '// groovyfmt: off'\n    x()\n";
+        assert_eq!(
+            crate::format::format(src, &Style::default()),
+            Outcome::Formatted("def s = '// groovyfmt: off'\nx()\n".into())
+        );
+        // --lines inside an off region changes nothing there
+        let src = "x()\n// groovyfmt: off\n    y()\n";
+        assert_eq!(
+            format_lines(src, &Style::default(), &[(3, 3)]),
+            Outcome::Unchanged
         );
     }
 

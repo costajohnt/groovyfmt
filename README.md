@@ -99,7 +99,7 @@ With no paths it works on the current directory. Directories are searched for `*
 | `groovyfmt --check` | list files that would be reformatted, exit 1 if any |
 | `groovyfmt --check --diff` | print a unified diff of what formatting would change, exit 1 if any |
 | `groovyfmt --lint` | report lint violations, exit 1 if any |
-| `groovyfmt --lint --fix` | fix what can be fixed safely (unused and duplicate imports, unnecessary semicolons), then report the rest |
+| `groovyfmt --lint --fix` | fix what can be fixed safely (unused and duplicate imports, imports from the file's own package, unnecessary semicolons), then report the rest |
 | `groovyfmt --syntax` | only parse, and report each place groovyfmt could not parse, exit 1 if any |
 | `groovyfmt --stdin` | format stdin to stdout, for editors |
 | `groovyfmt --rules` | list lint rules and whether each is on |
@@ -145,7 +145,7 @@ The schema is versioned: `version` changes whenever a field is removed or change
 | `rule`, `severity`, `message` | the rule name, `warning`, and the message text (the same as the text output, unescaped) |
 | `line`, `column`, `end_line`, `end_column` | 1-based; columns count characters; the end is just past the flagged code |
 | `fixable` | whether `--lint --fix` would fix it |
-| `summary` | counts of files by status (`errors` counts `error`) and of diagnostics |
+| `summary` | counts of files by status (`errors` counts `error`) and of diagnostics; with a baseline in use, also `baselined` (violations it held back) and `stale_baseline_entries` |
 
 Strings are standard JSON. Every control character is escaped, and so is a `[` after `##` (as `\u005b`), so file names and quoted source can't act as terminal escapes or GitHub Actions workflow commands when the document is printed in a log; a JSON parser reads back the original text.
 
@@ -222,7 +222,7 @@ Never broken, because Groovy or the grammar might read the result differently, o
 - a line holding two statements (`a(x, y); b(z)`) or an `if`, `else`, `while` or `for` body without braces (`if (c) x = f(a, b)`), and a line of a list written over several lines that holds two or more of its items (laid out by hand)
 - a line whose overflow is only a trailing comment, or that holds a string too long to fit on a continuation line anyway
 
-A line that is still too long after every safe break stays as it is. Each pass parses the result again and must find the same tree shape, and the final text must have the same tokens and tree shape as the input, or the file is formatted without wrapping instead. Formatting the output again changes nothing, for any combination of the other settings. Wrapping goes at most 16 constructs deep on one line, and isn't tried on a file nested more than 1,000 levels deep; such files are formatted without wrapping. With `--lines`, only lines in the ranges are wrapped, and a wrapped line's pieces take its place, so the lines after it move down. `--suggest-style` formats with the config's other settings, `max_line_length` included.
+A line that is still too long after every safe break stays as it is. Each pass parses the result again and must find the same tree shape, and the final text must have the same tokens and tree shape as the input, or the file is formatted without wrapping instead. Formatting the output again changes nothing, for any combination of the other settings. Wrapping goes at most 16 constructs deep on one line, and isn't tried on a file nested more than 1,000 levels deep; such files are formatted without wrapping. Lines between `// groovyfmt: off` and `// groovyfmt: on` are never wrapped. With `--lines`, only lines in the ranges are wrapped, and a wrapped line's pieces take its place, so the lines after it move down. `--suggest-style` formats with the config's other settings, `max_line_length` included.
 
 ### Lint rules
 
@@ -247,9 +247,54 @@ The general rules are named after their [CodeNarc](https://codenarc.org/) equiva
 | AssignmentInConditional | on | `if (x = 1)`, where `==` was probably meant; `while (x = next())` is a common idiom and is exempt, and so is an assignment in extra parentheses, `if ((m = re.matcher(s)))` |
 | ConstantIfExpression | on | an `if` whose condition is a literal, so one branch never runs |
 | UnnecessaryGString | off | a double-quoted string with nothing to interpolate (noisy where double quotes are the house style) |
+| UnusedSuppression | off | a `groovyfmt-ignore` comment that suppresses nothing (or names no rule), or a CodeNarc comment or `@SuppressWarnings` naming a groovyfmt rule it doesn't suppress (see [Suppressing reports](#suppressing-reports)) |
 | ComparisonWithSelf | off | a variable compared with itself (Spock equality checks do this on purpose); not inside a GORM where query (`Book.where { title == title }`, `@Where`), where the left side is the domain property |
 
 A block holding only a comment doesn't count as empty.
+
+#### Imports
+
+| Rule | Default | Flags |
+|---|---|---|
+| UnnecessaryGroovyImport | on | an import from `java.lang`, `java.util`, `java.io`, `java.net`, `groovy.lang` or `groovy.util`, or of `java.math.BigDecimal` or `BigInteger`, which Groovy imports by default; not an aliased or static import, not in a file with another star import or a class of that name (either can be what the import is there to beat), and not in `*.gradle` files, where Gradle's own default imports (`org.gradle.api.tasks.Optional`) can need it |
+| ImportFromSamePackage | on | an import of a class (or `.*`) from the file's own package |
+
+#### Likely bugs
+
+Rules marked off found, on real code, almost only things written that way on purpose (mostly in tests); turn them on where that doesn't apply.
+
+| Rule | Default | Flags |
+|---|---|---|
+| DeadCode | on | a statement after `return`, `throw`, `break` or `continue` in the same block, on a later line; not a method or class declaration (a script's come after its `return`), a labeled statement, or a `break` right after a `return` or `throw` (redundant, not wrong) |
+| EqualsAndHashCode | on | a class defining `equals(Object)` without `hashCode()`; not one with a superclass (which may define it) or an annotation that generates it (`@EqualsAndHashCode`, `@Canonical`, `@Immutable`) |
+| EqualsOverloaded | on | an `equals` method with one parameter typed other than `Object`, which overloads `equals` instead of overriding it |
+| ObjectOverrideMisspelledMethodName | on | `equal(Object)`, `hashcode()`, `toSTring()` and other case misspellings of `equals`, `hashCode` and `toString` |
+| ReturnFromFinallyBlock | on | a `return` in a `finally` block (not in a closure inside it) |
+| EmptySwitchStatement | on | a `switch` with no cases |
+| EmptyStaticInitializer | on | an empty `static { }` |
+| EmptyInstanceInitializer | on | an empty `{ }` instance initializer |
+| BrokenNullCheck | on | `x != null \|\| x.a` and `x == null && x.a`, which dereference `x` exactly when it is null |
+| RemoveAllOnSelf | on | `c.removeAll(c)` instead of `c.clear()` |
+| MissingNewInThrowStatement | on | `throw SomeException(...)` or `throw SomeException` without `new` (a capitalized name ending in `Exception`, `Failure` or `Fault`) |
+| ExceptionNotThrown | on | a `catch` block ending in `new SomeException(...)` that is neither thrown nor the method's or closure's return value |
+| ThrowExceptionFromFinallyBlock | off | a `throw` in a `finally` block, unless a `catch` inside the `finally` may handle it (rethrowing a saved exception after cleanup is a common idiom) |
+| AssertWithinFinallyBlock | off | an `assert` in a `finally` block (tests check state after cleanup this way) |
+| ToStringReturnsNull | off | a `toString()` that returns `null`, ends with `null`, or is empty (found only test fixtures doing it on purpose) |
+| DuplicateSetValue | off | `[...] as Set` (or any type ending in `Set`) with the same constant twice (tests do it to check that a set drops them) |
+| ConstantTernaryExpression | off | a ternary or elvis whose condition is a literal, `Boolean.TRUE` / `FALSE`, or a list or map literal |
+| ConstantAssertExpression | off | an `assert` whose condition is a constant (`assert false` marks unreachable code in tests) |
+| ComparisonOfTwoConstants | off | `==`, `!=`, `<`, `<=`, `>`, `>=`, `<=>`, `equals` or `compareTo` between two constants, or lists and maps of them (tests and `expect: 1 == 1` placeholders) |
+| BrokenOddnessCheck | off | `x % 2 == 1`, false for negative odd numbers (nearly every real case is a count that is never negative) |
+
+#### Unused code
+
+A name counts as used wherever it appears outside comments: as a name, or as a word in any string (`"$x"`, `getProperty('x')`, `@MethodSource('x')`). That can miss an unused one whose name is used elsewhere for something else, but never reports a used one. A member reached through a computed name, `this."groupBy_${kind}"` or `"parse_$kind"()`, counts as used when its name starts with the literal part, and `getProperty(name)`, `invokeMethod(name, args)` or `this[name]` with a computed name count as a use of every private member, as does any mention of `metaClass`. A declaration the grammar misreads, `final ClassNode name` without a value (read as a variable named `ClassNode`), is left alone.
+
+| Rule | Default | Flags |
+|---|---|---|
+| UnusedPrivateField | on | a private field whose name appears nowhere else in the file; not `serialVersionUID`, an annotated field (`@Delegate`, `@Autowired`; `@SuppressWarnings` and `@Deprecated` don't count), or a field of a class whose annotation reads fields (`includeFields`, `@Entity`, `@Builder`) |
+| UnusedPrivateMethod | on | a private method whose name appears nowhere else in the file (for `getX`, `isX` and `setX`, nor the property `x`); not an annotated method, or one called by name: `methodMissing`, `readObject` and the like, Spock's `setup` / `cleanup` / `setupSpec` / `cleanupSpec`, GPars' `afterStart` / `afterStop` / `onException` / `onInterrupt` / `onTimeout` |
+| UnusedVariable | on | a local variable whose name doesn't appear after its declaration in its block, closure or switch; not a script's top-level variable, `_`, an annotated one (`@Field`), or a part of `def (a, b) = ...`. Assigning it counts as a use |
 
 #### Jenkinsfiles
 
@@ -295,7 +340,7 @@ In classes whose superclass is `Specification` or ends in `Spec` or `Specificati
 
 ### Fixing
 
-`groovyfmt --lint --fix` removes, in place, what three rules flag: an `UnusedImport` or `DuplicateImport` line (with its line break, and only when nothing but whitespace or a `;` shares the line) and an `UnnecessarySemicolon` `;`. It then reports the violations that remain and exits 1 if there are any. Plain `--lint` marks these violations with ` (fixable)` (`"fixable": true` in JSON). A rule turned off in the config is neither fixed nor reported.
+`groovyfmt --lint --fix` removes, in place, what four rules flag: an `UnusedImport`, `DuplicateImport` or `ImportFromSamePackage` line (with its line break, and only when nothing but whitespace or a `;` shares the line) and an `UnnecessarySemicolon` `;`. An import from the file's own package is removed only when the file declares no class of the same name; an `UnnecessaryGroovyImport` is never removed, since it can be what beats a same-named class in the package, which one file can't show. It then reports the violations that remain and exits 1 if there are any. Plain `--lint` marks these violations with ` (fixable)` (`"fixable": true` in JSON). A rule turned off in the config is neither fixed nor reported.
 
 ```console
 $ groovyfmt --lint --fix
@@ -305,6 +350,66 @@ fixed 4 violations in 1 files (DuplicateImport 1, UnnecessarySemicolon 2, Unused
 ```
 
 As with formatting, each fix is checked before the file is written: the fixed file must parse cleanly, its tokens must be the original's minus exactly the removed ones, its parse tree must keep the original's shape (so removing a `;` can't join two statements or turn one into another's body), and linting it must find the original's other violations and nothing new. A file that fails a check is left as it was and listed as `path not fixed: <why>` on stderr. A file that doesn't parse is never fixed. Writes go through the same path as formatting: symlinks, permissions, owners, hard links and `exclude` are handled the same way. Running it again changes nothing.
+
+### Suppressing reports
+
+A comment can turn rules off for part of a file. Without a rule list it covers every rule; rule names are separated by commas or spaces, and `//` and `/* */` comments both work.
+
+| Comment | Covers |
+|---|---|
+| `// groovyfmt-ignore [Rule, ...]` | its own line when it follows code there; the next line when it stands alone |
+| `// groovyfmt-ignore-start [Rule, ...]` ... `// groovyfmt-ignore-end` | every line from the start comment to the end comment (or to the end of the file) |
+
+CodeNarc's own forms work unchanged, so a project moving from CodeNarc keeps its suppressions:
+
+| Form | Covers |
+|---|---|
+| `// codenarc-disable [Rule, ...]` ... `// codenarc-enable [Rule, ...]` | from the disable comment to an enable comment for the same rules (or the end of the file); a bare `codenarc-enable` ends them all |
+| `// codenarc-disable-line [Rule, ...]` | its own line |
+| `@SuppressWarnings('Rule')`, `@SuppressWarnings(['A', 'B'])` | the class, method, constructor, field or variable it annotates; on an import, the whole file. `'all'` and `'CodeNarc'` mean every rule |
+
+A report is suppressed by the line it starts on. Suppressed reports are left out everywhere: the text, `github`, JSON and SARIF output, the exit status, `--lint --fix` (which doesn't fix them) and the language server. The off-by-default rule `UnusedSuppression` reports a groovyfmt comment that suppresses nothing, and a CodeNarc comment or `@SuppressWarnings` naming a groovyfmt rule that it doesn't suppress (other names, such as `unchecked` or CodeNarc-only rules, are left to their tools). It judges every rule, including ones turned off in the config.
+
+Formatting has its own pair: the lines from `// groovyfmt: off` to `// groovyfmt: on` (both comments included, or to the end of the file) come out byte for byte as they were. The rest of the file is formatted as with `--lines`, so in a file with an `off` comment no line is added or removed.
+
+### Baseline
+
+A baseline records the violations a repository has today, so the linter can be turned on for new code without fixing the old first:
+
+```console
+$ groovyfmt --lint --write-baseline
+wrote 1204 violations in 312 files to .groovyfmt-baseline.json
+```
+
+With `baseline = ".groovyfmt-baseline.json"` in `.groovyfmt.toml`, or `--baseline FILE` on the command line, `--lint` then reports only violations that aren't in it, and exits 0 when those are all there is. The summary counts the ones the baseline held back and its stale entries (recorded violations that are gone):
+
+```console
+$ groovyfmt --lint
+src/Build.groovy:12:5: DeadCode: This code can never run: ...
+1 violations in 312 files (DeadCode 1), 1180 in the baseline, 24 stale baseline entries (--write-baseline drops them)
+```
+
+`--write-baseline` writes to `--write-baseline=FILE` (with `=`: a separate word would be a path to lint), else the `--baseline` file, else the config's `baseline`, else `.groovyfmt-baseline.json` in the working directory. Run it again to drop stale entries; entries for files the run didn't lint are kept. With `--strict`, stale entries fail the run (exit 1), so the baseline can only shrink: fix a violation, then rewrite the baseline. `--lint --fix` leaves baselined violations alone (any violation of the same rule on a line the baseline recorded); pass `--baseline ''` to ignore the baseline and fix them too. JSON and SARIF output leave baselined violations out, as they do suppressed ones; SARIF doesn't list them as suppressed results.
+
+Each entry is the file's path relative to the baseline file's directory (with `/`), the rule, a fingerprint of the text of the line the violation starts on (whitespace runs collapsed, so re-indenting doesn't matter), and its index among same-fingerprint violations of that rule in that file. Line numbers aren't recorded, so edits above a violation don't disturb it; editing the line itself (beyond its spacing or its final `;`), or renaming or moving the file, makes its violations new. The file is sorted JSON, the same on every machine, so it diffs cleanly in review:
+
+```json
+{"version":1,"entries":[
+{"path":"src/Build.groovy","rule":"UnusedImport","fingerprint":"5f1c0d4a7b2e9c13","index":0}
+]}
+```
+
+A baseline that isn't valid JSON, has another `version`, isn't a regular file or is over 10 MB is an error (exit 2), never silently ignored; the message names the file and the problem, never its content. Paths inside it are only compared as text, never opened.
+
+A config can come from an untrusted pull request, so its `baseline` must be a relative path inside the config's own directory, without `..` (anything else is a config error), and groovyfmt neither reads nor writes it through a symbolic link that leads out of that directory. A file named on the command line (`--baseline FILE`, `--write-baseline=FILE`) is your own choice and can be anywhere. The language server honors the config's baseline too: what it holds isn't published, and its fixes leave it alone.
+
+Adopting groovyfmt lint in an existing repository:
+
+1. `groovyfmt --lint --rules` and turn off, in `.groovyfmt.toml`, any rule the project doesn't want.
+2. `groovyfmt --lint --fix` to remove what can be removed safely.
+3. `groovyfmt --lint --write-baseline` and commit `.groovyfmt-baseline.json`.
+4. Add `baseline = ".groovyfmt-baseline.json"` to `.groovyfmt.toml`.
+5. Run `groovyfmt --lint --strict` in CI, and rewrite the baseline whenever a fix leaves stale entries.
 
 ## Configuration
 
@@ -318,6 +423,7 @@ indent_after_labels = false # true: indent Spock when:/then: blocks under their 
 normalize_spacing = false   # true: also fix the spaces between tokens within a line
 max_line_length = 120       # wrap longer lines where that is safe, 40 to 400 (default: no wrapping)
 exclude = ["generated/**", "**/*.gsh"] # skip these files and directories
+baseline = ".groovyfmt-baseline.json"   # lint reports only what isn't in it (see Baseline)
 
 [lint]                      # rule = true/false; unlisted rules keep their default
 UnnecessaryGString = true
@@ -502,8 +608,11 @@ After editing a `.groovy`, `.gradle` or `Jenkinsfile`, check it with groovyfmt:
 - `groovyfmt --syntax <file>`: does it parse? Each problem prints as
   `file:line:col: could not parse: <message>`. groovyfmt's grammar is not the Groovy
   compiler, so a few valid files fail; if the code is right, say so instead of rewriting it.
-- `groovyfmt --lint --fix <file>`: removes unused and duplicate imports and stray
-  semicolons, then lists what is left. `groovyfmt --explain <Rule>` explains a rule.
+- `groovyfmt --lint --fix <file>`: removes unused, duplicate and same-package imports and
+  stray semicolons, then lists what is left. `groovyfmt --explain <Rule>` explains a rule.
+- Fix the violations your change introduces. Don't add `groovyfmt-ignore` comments,
+  `@SuppressWarnings` or baseline entries to silence them unless you are asked to; a
+  baseline (`.groovyfmt-baseline.json`) already holds the old ones, so don't rewrite it.
 - `groovyfmt --check --diff <file>`: shows what formatting would change; `groovyfmt <file>`
   applies it.
 - Add `--output-format json` for a machine-readable report.

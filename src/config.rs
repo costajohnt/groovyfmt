@@ -12,6 +12,7 @@
 //! normalize_spacing = false   # also fix the spaces between tokens within a line
 //! max_line_length = 120       # wrap longer lines where that is safe, 40..=400 (default: none)
 //! exclude = ["generated/**"]  # globs relative to this file's directory
+//! baseline = ".groovyfmt-baseline.json" # lint reports only what this file doesn't hold
 //!
 //! [lint]                      # rule name = on/off; omitted rules use their default
 //! UnnecessaryGString = true
@@ -37,6 +38,8 @@ pub struct Config {
     pub root: PathBuf,
     /// The file this was loaded from, as given to `load`; `None` for the defaults.
     pub file: Option<PathBuf>,
+    /// The lint baseline, relative to `root` until `load` makes it absolute.
+    pub baseline: Option<PathBuf>,
 }
 
 impl Config {
@@ -111,9 +114,28 @@ impl Config {
                 ("exclude", _) => {
                     return Err("`exclude` must be a list of glob strings".into());
                 }
+                // a pull request can set this, so it may only name a file in the config's own
+                // directory tree: relative, and no `..`
+                ("baseline", toml::Value::String(f))
+                    if !f.is_empty()
+                        && Path::new(f).components().all(|c| {
+                            matches!(
+                                c,
+                                std::path::Component::Normal(_) | std::path::Component::CurDir
+                            )
+                        }) =>
+                {
+                    cfg.baseline = Some(PathBuf::from(f))
+                }
+                ("baseline", _) => {
+                    return Err(
+                        "`baseline` must be a relative path inside the config's directory, without `..`"
+                            .into(),
+                    );
+                }
                 (other, _) => {
                     return Err(format!(
-                        "unknown key `{other}` (expected `indent`, `continuation_indent`, `use_tabs`, `indent_after_labels`, `normalize_spacing`, `max_line_length`, `exclude` or `[lint]`)"
+                        "unknown key `{other}` (expected `indent`, `continuation_indent`, `use_tabs`, `indent_after_labels`, `normalize_spacing`, `max_line_length`, `exclude`, `baseline` or `[lint]`)"
                     ));
                 }
             }
@@ -127,6 +149,7 @@ impl Config {
         let abs = normalize(&std::env::current_dir().unwrap_or_default().join(path));
         cfg.root = abs.parent().map(Path::to_path_buf).unwrap_or_default();
         cfg.file = Some(path.to_path_buf());
+        cfg.baseline = cfg.baseline.map(|b| cfg.root.join(b));
         Ok(cfg)
     }
 
@@ -400,6 +423,35 @@ mod tests {
     }
 
     #[test]
+    fn baseline_paths_stay_inside_the_config_directory() {
+        for ok in ["b.json", "./ci/b.json", "a/b/c.json"] {
+            let cfg = Config::parse(&format!("baseline = \"{ok}\"")).unwrap();
+            assert_eq!(cfg.baseline, Some(PathBuf::from(ok)));
+        }
+        for bad in [
+            "..",
+            "../b.json",
+            "a/../../b.json",
+            "a/../b.json",
+            "/etc/passwd",
+            "../../.github/workflows/x.yml",
+            "",
+        ] {
+            let e = Config::parse(&format!("baseline = \"{bad}\"")).unwrap_err();
+            assert!(e.contains("relative path inside"), "{bad}: {e}");
+        }
+        assert!(Config::parse("baseline = 1").is_err());
+        // loaded: resolved against the config's own directory
+        let dir = std::env::temp_dir().join(format!("groovyfmt-bl-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/.groovyfmt.toml"), "baseline = \"b.json\"\n").unwrap();
+        let cfg = Config::load(&dir.join("sub/.groovyfmt.toml")).unwrap();
+        assert_eq!(cfg.baseline, Some(cfg.root.join("b.json")));
+        assert!(cfg.root.ends_with("sub"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn rejects_typos_and_bad_values() {
         assert!(
             Config::parse("indnet = 2")
@@ -455,21 +507,23 @@ mod tests {
 
     #[test]
     fn stacked_double_stars_stay_polynomial() {
-        // exponential backtracking took minutes on this; a config from a fork PR could hang CI
-        let pat: Vec<&str> = std::iter::repeat_n(["**", "a"], 22)
-            .flatten()
-            .chain(["zz"])
-            .collect();
-        let path = vec!["a"; 44];
-        let t = std::time::Instant::now();
-        assert!(!glob(&pat, &path));
-        let cfg = Config {
-            exclude: vec![pat.join("/")],
-            root: PathBuf::from("/p"),
-            ..Config::default()
+        // exponential backtracking took minutes on 22 stars; a config from a fork PR could
+        // hang CI. Twice the stars may cost at most 8 times as much (it is quadratic: 4x).
+        let run = |stars: usize| {
+            let pat: Vec<&str> = std::iter::repeat_n(["**", "a"], stars)
+                .flatten()
+                .chain(["zz"])
+                .collect();
+            let path = vec!["a"; 2 * stars];
+            assert!(!glob(&pat, &path));
+            let cfg = Config {
+                exclude: vec![pat.join("/")],
+                root: PathBuf::from("/p"),
+                ..Config::default()
+            };
+            assert!(!cfg.excluded(&Path::new("/p").join(path.join("/"))));
         };
-        assert!(!cfg.excluded(&Path::new("/p").join(path.join("/"))));
-        assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
+        crate::scaling::assert_scales("stacked **", run, 11, 2, 8);
         assert!(
             segment("*b", "*xb"),
             "a literal * in a name doesn't stop a star"
