@@ -7,6 +7,19 @@
 - pre-commit hooks in the repository (`repo: https://github.com/costajohnt/groovyfmt`): `groovyfmt`, `groovyfmt-check` and `groovyfmt-lint` run the binary on `PATH`, and `groovyfmt-source`, `groovyfmt-check-source` and `groovyfmt-lint-source` build it from source with cargo.
 - A GitHub Action (`uses: costajohnt/groovyfmt@<ref>`): installs the release binary for the runner (Linux or macOS, x64 or arm64) after checking its `.sha256`, puts it on `PATH`, and runs it with `args` (default `--check --output-format github`).
 - Packaging for npm (`npm/`, the `groovyfmt` package with one `@groovyfmt/<os>-<arch>` package per platform), Homebrew (`packaging/homebrew/`, a formula rendered from a release's checksums) and a Docker image (`Dockerfile`, `scratch` plus the static binary). None of these is published yet: the release workflow's `publish-npm` and `publish-image` jobs stay off until the repository variables `PUBLISH_NPM` and `PUBLISH_IMAGE` are set (`docs/releasing.md`). CI builds and runs each against the latest release.
+- `--strict`: with `--check`, `--lint` or when formatting in place, list the files that were skipped (they don't parse, aren't UTF-8, are over 10 MB or nest too deeply) and exit 1 if there are any. Without it a skipped file never affects the exit status, so CI can pass on files nothing checked.
+- `--` ends the options: every argument after it is a path, even one starting with `-`.
+
+### Changed
+
+- Each thread reuses one parser instead of creating one per parse (two to four per file): about 2% less CPU time on the 23,766-file corpus (`--stats`, 44.4 s user against 45.2 s, mean of 5 runs each).
+
+### Fixed
+
+- A line starting with a map key or named argument called `else`, `catch` or `finally` (`[` then `else: 1,`) keeps its indent instead of moving to the level of the line holding the `[` or `(`. Across the corpus and the 34 trial repositories no file has that shape; one GPars file changes because the grammar reads its `else` (after `if (follower) follower value`) as a name, and that `else` block now lines up with its `if` instead of sitting one level left of it.
+- Formatting a file whose name is close to the 255-byte limit no longer fails with `File name too long`: the temporary file beside it now has a short name of its own instead of one built from the file's name.
+- A worker thread that dies outside the per-file panic guard now turns each of its files into an `internal error, please report` error. Before, its results were dropped, the list came back short and later results could be reported against the wrong files.
+- Command-line parsing: a flag that takes no value rejects one (`--check=false` used to turn check on), and `--stdin` with path arguments is an error instead of ignoring the paths (name the buffer with `--stdin-filepath`).
 
 ## 0.8.0 (2026-11-10)
 
