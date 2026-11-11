@@ -76,7 +76,7 @@ pub fn format(src: &str, style: &Style) -> Outcome {
 fn format_with(
     src: &str,
     style: &Style,
-    reindent: impl Fn(&str, &Tree, &Style) -> Option<String>,
+    reindent: impl Fn(&str, &Tree, &Style) -> Result<String, &'static str>,
 ) -> Outcome {
     // nothing but whitespace: the file becomes empty, as with rustfmt and prettier
     if src.trim().is_empty() {
@@ -90,8 +90,9 @@ fn format_with(
     if tree.root_node().has_error() {
         return Outcome::Skipped("parse error");
     }
-    let Some(out) = reindent(src, &tree, style) else {
-        return Outcome::Skipped("nesting too deep to format");
+    let out = match reindent(src, &tree, style) {
+        Ok(out) => out,
+        Err(why) => return Outcome::Skipped(why),
     };
     if out == src {
         return Outcome::Unchanged;
@@ -129,8 +130,8 @@ fn shape(tree: &Tree) -> Vec<(u16, usize)> {
 /// Giving up keeps output linear in the input instead of growing with depth squared.
 const MAX_INDENT: usize = 200;
 
-/// `None` when nesting exceeds `MAX_INDENT`.
-fn reindent(src: &str, tree: &Tree, style: &Style) -> Option<String> {
+/// An error when nesting exceeds `MAX_INDENT`, or when spacing doesn't settle (see `spacing`).
+fn reindent(src: &str, tree: &Tree, style: &Style) -> Result<String, &'static str> {
     let root = tree.root_node();
     // each output line keeps its own terminator, so mixed line endings (and line breaks
     // inside multi-line strings) survive unchanged
@@ -180,7 +181,7 @@ fn reindent(src: &str, tree: &Tree, style: &Style) -> Option<String> {
                 indent_for(&path, src, &row_indent, style, &mut labels)
             };
             if indent > MAX_INDENT {
-                return None;
+                return Err("nesting too deep to format");
             }
             let keep_trailing = line_end < src.len() && inside_token(&mut walk, line_end, src);
             let text = if keep_trailing { body } else { body.trim_end() };
@@ -191,8 +192,8 @@ fn reindent(src: &str, tree: &Tree, style: &Style) -> Option<String> {
         }
         line_start = line_end + 1;
     }
-    if style.normalize_spacing {
-        crate::spacing::respace(src, tree, &mut out, &bodies);
+    if style.normalize_spacing && !crate::spacing::respace(src, tree, &mut out, &bodies) {
+        return Err("spacing did not settle");
     }
     while out.last().is_some_and(|(l, _)| l.is_empty()) {
         out.pop();
@@ -202,7 +203,7 @@ fn reindent(src: &str, tree: &Tree, style: &Style) -> Option<String> {
         s.push_str(&line);
         s.push_str(eol);
     }
-    Some(s)
+    Ok(s)
 }
 
 /// Spock's block labels. Other labels (`outer:` before a loop) don't open a block.
@@ -551,7 +552,7 @@ mod tests {
         ];
         for out in wrong {
             assert_eq!(
-                format_with(src, &style, |_, _, _| Some(out.to_string())),
+                format_with(src, &style, |_, _, _| Ok(out.to_string())),
                 Outcome::Skipped("token mismatch after formatting"),
                 "{out:?}"
             );
@@ -563,7 +564,7 @@ mod tests {
         // `foo (1)` has the tokens of `foo` then `(1)` on the next line, which is two
         // statements: only the tree tells them apart
         let src = "foo\n(1)\n";
-        let joined = || Some("foo (1)\n".to_string());
+        let joined = || Ok("foo (1)\n".to_string());
         assert_eq!(
             format_with(src, &Style::default(), |_, _, _| joined()),
             Outcome::Formatted("foo (1)\n".into()),

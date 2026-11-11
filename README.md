@@ -131,6 +131,8 @@ Alignment is kept. A run of two or more spaces, or a tab, stays when the token a
 
 Besides the token check, spacing output must parse to the same tree shape as the input; if it doesn't, the file is formatted without spacing changes instead.
 
+Limits, so a hostile file can't make it slow: a line longer than 1,000 bytes keeps its spacing (it is still re-indented), and alignment is looked up only in the first 2,000 characters of a line. Lines whose alignment depends on each other are settled in repeated passes over the file, each linear in its size; two or three are typical, and a file that hasn't settled after 64 is skipped (`-v` lists it as `spacing did not settle`) rather than written half-respaced.
+
 ### Lint rules
 
 Named after their [CodeNarc](https://codenarc.org/) equivalents so existing configurations map across. Files that don't parse are not linted, which keeps false positives out.
