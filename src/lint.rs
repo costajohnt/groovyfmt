@@ -570,6 +570,9 @@ pub struct Violation {
     /// The bytes `--fix` deletes to fix it, for the rules it fixes: the `;`, or the import's
     /// whole lines when nothing else is on them.
     pub fix: Option<std::ops::Range<usize>>,
+    /// The bytes of the flagged code, so `--fix` can tell a report that goes with a deleted
+    /// line (an unused import that is also unnecessary) from one that changed.
+    pub span: std::ops::Range<usize>,
 }
 
 pub fn lint(src: &str) -> Result<Vec<Violation>, &'static str> {
@@ -710,6 +713,7 @@ fn at(n: Node, rule: &'static str, message: String) -> Violation {
         rule,
         message,
         fix: None,
+        span: n.byte_range(),
     }
 }
 

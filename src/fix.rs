@@ -106,16 +106,13 @@ fn check(
     if shape(&before, removed) != shape(&after, &[]) {
         return Err("the parse tree would change shape");
     }
-    // the other violations stay, except one inside a removed line (a `;` whose rule is off);
-    // new fixable ones are left for the next round
+    // the other violations stay, except one inside a removed line (a `;` whose rule is off,
+    // an unused import that is also unnecessary); new fixable ones are left for the next round
     let key = |v: &Violation| (v.rule, v.message.clone());
+    let within = |x: &Range<usize>| removed.iter().any(|r| r.start <= x.start && x.end <= r.end);
     let mut want: Vec<_> = keep
         .iter()
-        .filter(|v| {
-            !v.fix
-                .as_ref()
-                .is_some_and(|f| removed.iter().any(|r| r.start <= f.start && f.end <= r.end))
-        })
+        .filter(|v| !within(&v.span) && !v.fix.as_ref().is_some_and(within))
         .map(key)
         .collect();
     let mut got: Vec<_> = lint_file(path, out)
@@ -231,6 +228,16 @@ mod tests {
             "package a\nimport a.C\nimport java.util.Date\nclass C { B b; Date d }\n"
         );
         assert_eq!(fixed(&text(src)), Fix::Nothing, "idempotent");
+    }
+
+    #[test]
+    fn a_line_removed_takes_its_other_reports_along() {
+        // `java.util.List` is unused (fixable) and unnecessary (not fixable): removing the
+        // line for the first removes the second too, which is not a change to refuse
+        assert_eq!(
+            text("import java.util.List\nimport a.B\nB.go();\n"),
+            "import a.B\nB.go()\n"
+        );
     }
 
     #[test]
