@@ -523,6 +523,11 @@ struct Layout {
     anchor: Option<usize>,
 }
 
+/// A nearby line for `lay`: its text by column, and the columns of its tokens that stay put
+/// when it is respaced with every gap as its rule wants (all of them, for a line that isn't
+/// respaced).
+type Near<'a> = (&'a [char], &'a [bool]);
+
 /// What `lay` needs to know about each gap besides its rule.
 struct GapInfo {
     tab: bool,
@@ -535,17 +540,19 @@ struct GapInfo {
 /// Lay out `row` from its gaps' widths in `base`: the first `freeze` gaps stay as they are;
 /// each other gap becomes what its rule wants unless it is kept because what follows it lines
 /// up with something in `near` (a run of two or more spaces; a single space before a key's
-/// `:`, against the `:` of a key of another length). A run that stays absorbs the shift of
-/// the changes before it on the line, so what it lines up keeps its column. With `forced`, a
-/// gap changed once stays changed (and is recorded as such); without it, nothing is
-/// remembered.
+/// `:`, against the `:` of a key of another length). A run kept for alignment absorbs the
+/// shift of the changes before it on the line, so what it lines up keeps its column; a run
+/// the rules leave as written (before a trailing comment) absorbs it only when what follows
+/// lines up with a token on a nearby line that stays where it is, and otherwise moves with
+/// the line, as the lines around it do. With `forced`, a gap changed once stays changed (and
+/// is recorded as such); without it, nothing is remembered.
 fn lay(
     row: &Row,
     here: (&[Gap], &[GapInfo]),
     base: &[usize],
     freeze: usize,
     forced: Option<&[Cell<bool>]>,
-    near: &[&[char]],
+    near: &[Near],
 ) -> Layout {
     let (gs, info) = here;
     let mut col = row.pad.chars().count();
@@ -576,9 +583,23 @@ fn lay(
             && ((w == 1
                 && ruled == 0
                 && x.rule == "colon"
-                && near.iter().any(|n| colon_column(n, col + 1, row.seg_cols[k])))
-                || (kept >= 2 && near.iter().any(|n| token_at(n, col + kept, ch))));
-        let to = if ruled == w || aligned { kept } else { ruled };
+                && near.iter().any(|n| colon_column(n.0, col + 1, row.seg_cols[k])))
+                || (kept >= 2 && near.iter().any(|n| token_at(n.0, col + kept, ch))));
+        let stays = |c: usize| {
+            near.iter()
+                .any(|n| token_at(n.0, c, ch) && n.1.get(c).copied().unwrap_or(false))
+        };
+        let to = if ruled == w {
+            if kept == w || stays(col + kept) {
+                kept
+            } else {
+                w
+            }
+        } else if aligned {
+            kept
+        } else {
+            ruled
+        };
         if ruled != w
             && !aligned
             && let Some(f) = forced
@@ -732,9 +753,6 @@ fn respace_capped(
             .zip(&needed)
             .map(|(l, &n)| if n { cols(&l.0) } else { Vec::new() })
             .collect();
-        let near_of = |k: usize| -> Vec<&[char]> {
-            near[k].iter().map(|&j| grid[j].as_slice()).collect()
-        };
         let here = |k: usize| {
             let r = rows[k].gaps.clone();
             (&gaps[r.clone()], &info[r])
@@ -743,6 +761,33 @@ fn respace_capped(
         let now: Vec<Layout> = (0..rows.len())
             .map(|k| lay(&rows[k], here(k), &current[k], usize::MAX, None, &[]))
             .collect();
+        // the columns where a token stays put with every gap of its line as its rule wants
+        let fixed: Vec<Vec<bool>> = grid
+            .iter()
+            .enumerate()
+            .map(|(j, g)| match of_line[j] {
+                Some(k) if !g.is_empty() => {
+                    let ruled = lay(&rows[k], here(k), &current[k], 0, None, &[]);
+                    let mut f = vec![false; g.len()];
+                    let first = rows[k].pad.chars().count();
+                    let stay = std::iter::once((first, first))
+                        .chain(now[k].cols.iter().copied().zip(ruled.cols.iter().copied()));
+                    for (at, to) in stay {
+                        if at == to && at < f.len() {
+                            f[at] = true;
+                        }
+                    }
+                    f
+                }
+                _ => vec![true; g.len()],
+            })
+            .collect();
+        let near_of = |k: usize| -> Vec<Near> {
+            near[k]
+                .iter()
+                .map(|&j| (grid[j].as_slice(), fixed[j].as_slice()))
+                .collect()
+        };
         let free: Vec<Layout> = (0..rows.len())
             .map(|k| lay(&rows[k], here(k), &current[k], 0, None, &near_of(k)))
             .collect();
@@ -1069,10 +1114,17 @@ mod tests {
         }
         // a lone run isn't alignment
         assert_eq!(fmt("def z  = 3\n"), "def z = 3\n");
-        // lines that change the same way keep their columns lined up
+        // lines that change the same way keep their columns lined up: the comments move
+        // together, since neither has a comment that stays to line up with
         assert_eq!(
             fmt("def fooAB(a,b) {2}   //-> case A\ndef fooAD(a,c) {2}   //-> case D\n"),
-            "def fooAB(a, b) { 2 } //-> case A\ndef fooAD(a, c) { 2 } //-> case D\n"
+            "def fooAB(a, b) { 2 }   //-> case A\ndef fooAD(a, c) { 2 }   //-> case D\n"
+        );
+        // the same, where the last row's comment has more room (no comma): every row
+        // changes, and the comments stay in one column
+        assert_eq!(
+            fmt("m = [\n    0 : 1, // a\n    1 : 1, // b\n    5 : 2  // c\n]\n"),
+            "m = [\n    0: 1, // a\n    1: 1, // b\n    5: 2  // c\n]\n"
         );
         // a change before an aligned comment keeps the comment's column
         assert_eq!(
@@ -1149,29 +1201,36 @@ mod tests {
 
     #[test]
     fn long_lines_and_many_aligned_runs_stay_linear() {
-        // alignment is looked up by column; walking each line from its start per lookup was
-        // quadratic in the line, times the sweeps
-        let row = |pad: usize| {
-            let r: String = (0..90)
+        use crate::scaling::assert_scales_up_to;
+        // `runs` assignments on a line, each run of spaces lining up with the line above
+        let row = |runs: usize, pad: usize| {
+            let r: String = (0..runs)
                 .map(|i| format!("v{i}{}  = {i}; ", "x".repeat(pad)))
                 .collect();
             r.trim_end().to_string() + "\n"
         };
-        let run = |n: usize| {
-            // over the line limit: left as re-indented
-            let long = format!("x = [{}a:b]\n", "a:b,".repeat(n * 50));
-            assert_eq!(fmt(&long), long);
-            // every run lines up with the rows around it: kept
-            let aligned = row(0).repeat(n / 3);
+        // rows whose runs all line up (kept), then rows that line up only here and there
+        // (sweeps settle: `fmt` checks a second pass changes nothing)
+        let rows = |rows: usize, runs: usize| {
+            let aligned = row(runs, 0).repeat(rows);
             assert_eq!(fmt(&aligned), aligned);
-            // rows that line up only here and there: sweeps settle (`fmt` checks a second
-            // pass changes nothing)
-            let ragged: String = (0..n / 3).map(|i| row(i % 3)).collect();
+            let ragged: String = (0..rows).map(|i| row(runs, i % 3)).collect();
             fmt(&ragged);
         };
-        // up to about 10 MB, the largest file formatted; each row stays under `MAX_LINE`, so
-        // the input grows in rows
-        crate::scaling::assert_scales_up_to("long lines and aligned runs", run, 250, 20_000, 4, 8);
+        // more rows: linear, up to about 10 MB, the largest file formatted. From 2,000 rows,
+        // where a pass over the whole file per row is a fair part of the cost, not from the
+        // size that first costs `MIN_COST`, where it hides behind respacing the rows
+        assert_scales_up_to("rows of aligned runs", |n| rows(n, 10), 2_000, 80_000, 4, 8);
+        // longer rows: alignment is looked up by column, and walking each line from its start
+        // per lookup was quadratic in the line, times the sweeps. A line over `MAX_LINE`
+        // keeps its spacing, so a row can't grow past 64 runs: the calls repeat instead
+        assert_scales_up_to("runs per row", |n| rows(20, n), 4, 64, 4, 8);
+        // a line over the limit: left as re-indented, in time linear in its length
+        let long = |n: usize| {
+            let long = format!("x = [{}a:b]\n", "a:b,".repeat(n));
+            assert_eq!(fmt(&long), long);
+        };
+        assert_scales_up_to("a line over the limit", long, 1_000, 2_000_000, 4, 8);
     }
 
     #[test]
