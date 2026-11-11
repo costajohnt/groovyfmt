@@ -1,11 +1,12 @@
 name: CI
 
+# Not run on pushes or pull requests, to save Actions minutes: run
+# scripts/ci-local.sh before merging instead. This workflow runs for a release
+# and when started by hand (gh workflow run ci.yml --ref <branch>).
 on:
-  push:
-    branches: [main]
-  pull_request:
   # release.yml calls this workflow, so a tag publishes only if every job here passes.
   workflow_call:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -52,7 +53,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo +1.90.0 test --locked
 
-  # The release targets, built and run on every push and pull request. On a tag,
+  # The release targets, built and run on every run of this workflow. On a tag,
   # release.yml publishes the archives this job uploads.
   build:
     name: build (${{ matrix.target }})
