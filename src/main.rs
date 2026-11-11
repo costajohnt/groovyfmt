@@ -831,7 +831,7 @@ fn lint_files(files: &[PathBuf], cfgs: &Configs, a: &Args, stats_only: bool) -> 
     let results = par_map(files, |p| {
         read(p).map(|src| {
             let src = src.map_err(|why| (why, Diag::default()))?;
-            lint::lint(&src).map_err(|why| (why, diag_if(listed, &src)))
+            lint::lint_file(p, &src).map_err(|why| (why, diag_if(listed, &src)))
         })
     });
     let (mut skipped, mut total, mut failed) = (0usize, 0usize, false);

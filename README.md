@@ -128,7 +128,9 @@ Formatting is safe by construction. The output is parsed again and its token str
 
 ### Lint rules
 
-Named after their [CodeNarc](https://codenarc.org/) equivalents so existing configurations map across. Files that don't parse are not linted, which keeps false positives out.
+The general rules are named after their [CodeNarc](https://codenarc.org/) equivalents so existing configurations map across; the Jenkins, Gradle and Spock rules catch, in milliseconds, mistakes those tools otherwise report only when a build runs. Files that don't parse are not linted, which keeps false positives out.
+
+#### General
 
 | Rule | Default | Flags |
 |---|---|---|
@@ -151,6 +153,46 @@ Named after their [CodeNarc](https://codenarc.org/) equivalents so existing conf
 
 A block holding only a comment doesn't count as empty.
 
+#### Jenkinsfiles
+
+What the Declarative Pipeline plugin rejects when a build starts. They check a top-level `pipeline { }` in a file named `Jenkinsfile`, `Jenkinsfile.*` or `*.jenkinsfile`, or in any file whose first statement it is (after comments and imports); scripted pipelines (`node { }`) are left alone. Directory walks find only files named `Jenkinsfile`, so name other pipeline files on the command line. The section lists follow the [syntax reference](https://www.jenkins.io/doc/book/pipeline/syntax/) and the plugin's own parser where they differ.
+
+| Rule | Default | Flags |
+|---|---|---|
+| JenkinsMissingSection | on | a `pipeline` without `agent` or `stages`; `stages`, `parallel` or `matrix` without a stage; a stage with none of `steps`, `stages`, `parallel`, `matrix`; an empty `steps`, `post`, `when`, `environment`, `options`, `parameters`, `triggers` or `libraries` |
+| JenkinsConflictingSections | on | a section twice in the same block, or a stage with more than one of `steps`, `stages`, `parallel`, `matrix` |
+| JenkinsUnknownSection | on | a name that isn't a section where it stands (`steps` directly in `pipeline`, `parameters` in a stage, a misspelled `post` condition, the pre-0.8 `properties` or `notifications`), anything but `stage` in `stages`, and `stage`, `properties` or a `parallel` beside other steps in `steps` |
+| JenkinsStatementOutsideSection | on | Groovy code (`def x = 1`, `if`, an expression) directly in `pipeline`, `stages`, a stage, `matrix`, `post` or `when` |
+| JenkinsScriptRequired | on | `if`, `for`, `while`, `try`, `switch`, `def` or an assignment in `steps` (or in a block step inside it) without `script { }` |
+| JenkinsUnknownWhenCondition | on | a `when` condition that isn't built in (`branch`, `expression`, `allOf` and so on) |
+| JenkinsMisplacedOption | on | `parameters` or `triggers` inside `options`, or a pipeline-wide option (`buildDiscarder`, `disableConcurrentBuilds`, `skipStagesAfterUnstable`, ...) in a stage's `options` |
+| JenkinsDuplicateStageName | on | two stages with the same name in one `stages` or `parallel` |
+| JenkinsStageName | on | a stage with no name, or a name that isn't a plain string (`stage("Deploy ${env}")` is rejected) |
+| JenkinsAgentForm | on | `agent` with no value, a bare `agent` other than `any` or `none`, or an `agent { }` block that is empty or names more than one agent type |
+
+Option names and agent types aren't checked against a list: plugins add their own, and any block-scoped step is a valid option.
+
+#### Gradle build scripts
+
+In `*.gradle` files.
+
+| Rule | Default | Flags |
+|---|---|---|
+| GradleRemovedConfiguration | on | `compile`, `runtime`, `testCompile` or `testRuntime` dependencies, removed in Gradle 7.0 (the message names the replacement); not when the build declares a configuration of that name itself |
+| GradleJcenter | on | `jcenter()`, deprecated in Gradle 7.0 and removed in 9.0 |
+| GradleLeftShiftTask | on | `task name << { }`, removed in Gradle 5.0 |
+| GradleDynamicVersion | off | a `+` or `latest.*` dependency version (off by default: whether to pin is a policy choice) |
+
+#### Spock specifications
+
+In classes whose superclass is `Specification` or ends in `Spec` or `Specification` (a project's base spec). The fixture methods `setup`, `cleanup`, `setupSpec` and `cleanupSpec` are skipped, as Spock ignores labels there.
+
+| Rule | Default | Flags |
+|---|---|---|
+| SpockBlockOrder | on | blocks in an order Spock refuses to compile (`then:` without `when:`, `when:` not followed by `then:`, `given:` after another block, anything but `and:`, `combined:` or `filter:` after `where:`), and labels that aren't Spock blocks |
+| SpockDataTableColumns | on | a `where:` data table row with a different number of columns than the row above |
+| SpockEmptyBlock | off | a `then:` or `expect:` block with no conditions, only a description (off by default: Spock accepts it, and Spock's own tests use empty blocks on purpose) |
+
 ## Configuration
 
 Each file is governed by the nearest `.groovyfmt.toml` or `groovyfmt.toml` found by walking up from that file's own directory (with `--stdin-filepath`, from that path's directory), wherever groovyfmt runs from. `groovyfmt --check ../proj` uses `proj`'s config, and one run from a repository root formats a subproject with its own config by that config. A nested config replaces its parent's completely: nothing is merged, so repeat any settings the subproject should keep. The walk doesn't stop at the repository root, so a config in a directory above the checkout (a shared workspace directory, your home directory) applies too; `-v` shows which one is used. Files with no config above them use the defaults. `--config <file>` skips discovery and applies that one file to everything; `--indent` overrides the indent of whichever config applies. `--rules` and `--stdin` without `--stdin-filepath` use the config for the current directory. Everything is optional:
@@ -171,7 +213,7 @@ UnusedImport = false
 
 Unknown keys and misspelled rule names are errors, so a typo can't silently do nothing; a config file can only fail the run when groovyfmt reaches a file or directory it governs. `-v` prints each config in use.
 
-`continuation_indent = 8` matches IntelliJ's default and most Grails projects written in it. On OpenBoxes it cuts the first-run diff from 723 files to 454, and what remains is mostly trailing whitespace and runs of blank lines.
+`continuation_indent = 8` matches IntelliJ's default and most Grails projects written in it. On OpenBoxes it cuts the first-run diff from 723 files to 453, and what remains is mostly trailing whitespace and runs of blank lines.
 
 `use_tabs = true` writes leading indentation as tabs. Indents are worked out in columns as usual, with a tab `indent` columns wide, and each full tab width becomes a tab. So with the default `continuation_indent` (the same as `indent`) a continued line gets one more tab than the line it continues, and `continuation_indent = 8` with `indent = 4` gives it two. A `continuation_indent` that isn't a multiple of `indent` leaves the remainder as spaces after the tabs. On spring-boot, which indents with tabs, `use_tabs = true` cuts the first-run diff from 762 files to 95, and what remains is mostly missing final newlines, runs of blank lines and a few files that are indented with spaces.
 
@@ -330,7 +372,7 @@ Add `--stdin-filepath <path>` (it requires `--stdin`) to tell groovyfmt which fi
 
 ## Coverage
 
-groovyfmt only touches files it can parse. On a corpus of 23,766 files from grails-core, groovy, gradle, spock, CodeNarc, nextflow and Jenkins pipeline repositories, 99.5% parse cleanly. On [OpenBoxes](https://github.com/openboxes/openboxes), a production Grails application that isn't in the corpus, 99.5% of its 1,327 files do.
+groovyfmt only touches files it can parse. On a corpus of 23,766 files from grails-core, groovy, gradle, spock, CodeNarc, nextflow and Jenkins pipeline repositories, 99.6% parse cleanly. On [OpenBoxes](https://github.com/openboxes/openboxes), a production Grails application that isn't in the corpus, 99.5% of its 1,327 files do.
 
 The grammar is [dekobon/tree-sitter-groovy](https://github.com/dekobon/tree-sitter-groovy), currently pinned to the fork branch [`costajohnt/tree-sitter-groovy@groovyfmt-base`](https://github.com/costajohnt/tree-sitter-groovy/tree/groovyfmt-base), which adds upstream PR #49 plus our fixes to the 0.3.0 release:
 
@@ -344,8 +386,9 @@ The grammar is [dekobon/tree-sitter-groovy](https://github.com/dekobon/tree-sitt
 | + annotated script and field declarations (`@Field`, `@Shared`); command calls with several arguments, quoted keys or a dotted receiver; array creation; lambdas; nested annotations; multiple assignment; `def static`, `def <T>`, `synchronized` and smaller forms | 96.1% |
 | + array types as values (`String[].class`); command calls as declaration and assignment values (`def r = sh returnStdout: true, script: 'x'`); a name or `(` on a new line starts a statement; `record` as a name; annotations after modifiers; statements in GString interpolations; `//` inside GStrings; closure parameter defaults and smaller forms | 98.7% |
 | + `var`, `pipeline` and `trait` as names; generic types as values (`Mock(Supplier<Long>)`); command calls with `new`, `null`, `!` or dotted first arguments and in parentheses (`(el x).click()`); anonymous class bodies; `instanceof` pattern variables; slashy strings starting with a space; `\` line continuations; annotated and `final` closure parameters, `default` methods and smaller forms | 99.5% |
+| + Groovy 5 and 6 forms (`for await`, `case Integer i when`, indexed `for (i, x in xs)`, `??`); `\\/` in slashy strings; a comparison right after a name (`i<n ? a : b`); quoted command names (`'x:title' lang: 'en'`) and calls chained onto calls; `new`, `switch`, `in` and `static` as names; nested array initializers and `{a, b}` annotation arrays; spaced and annotated type arguments and smaller forms | 99.6% |
 
-Of the 117 corpus files still skipped, 80 aren't Groovy source: 70 Grails, Gradle and CodeNarc templates with `@artifact.package@`, `<% %>` or `${className}` placeholders, 9 Spock AST snapshots and one deliberately broken groovydoc fixture. The other 37 use forms the grammar doesn't parse yet, among them Groovy 5 syntax (`for await`, `case Integer i when`, indexed `for (i, x in xs)`, `??`), slashy strings containing `\\/`, and one-off forms such as nested array initializers and `{a, b}` annotation arrays.
+Of the 85 corpus files still skipped, 80 aren't Groovy source: 70 Grails, Gradle and CodeNarc templates with `@artifact.package@`, `<% %>` or `${className}` placeholders, 9 Spock AST snapshots and one deliberately broken groovydoc fixture. The other 5 use forms the grammar doesn't parse yet: Groovy 5 list patterns (`case [var only] ->`) and map destructuring (`def (from: a, to: b) = r`), a guard whose last operand is a bare name before `->`, a multiple assignment and comma-separated updates in a `for` header, and a spread first command argument (`bridgedClasses *list, 'x'`).
 
 ## Development
 
