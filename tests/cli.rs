@@ -867,6 +867,48 @@ fn changed_since_limits_the_run_to_files_git_sees_as_changed() {
 }
 
 #[test]
+fn explain_describes_one_rule() {
+    let d = Dir::new("explain");
+    let o = run(&d.0, &["--explain", "UnnecessarySemicolon"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(
+        stdout(&o),
+        "UnnecessarySemicolon: `;` at the end of a line\n\n\
+         On by default: yes. Here: on. `groovyfmt --lint --fix` fixes it.\n\n\
+         Why: Groovy ends a statement at the line break, so a `;` there is Java habit and clutter.\n\n\
+         Flagged:\n    def name = 'x';\n    println name;\n\n\
+         Instead:\n    def name = 'x'\n    println name\n\n\
+         Turn it off in .groovyfmt.toml:\n    [lint]\n    UnnecessarySemicolon = false\n"
+    );
+    // any case; the config decides "Here"
+    d.write(".groovyfmt.toml", "[lint]\nUnnecessaryGString = true\n");
+    let o = run(&d.0, &["--explain=unnecessarygstring"], None);
+    assert!(
+        stdout(&o).contains("On by default: no. Here: on. Not fixed automatically.")
+            && stdout(&o).ends_with(
+                "Turn it off in .groovyfmt.toml:\n    [lint]\n    UnnecessaryGString = false\n"
+            ),
+        "{}",
+        stdout(&o)
+    );
+    let o = run(&d.0, &["--explain", "Nope"], None);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(
+        stderr(&o).contains("unknown rule `Nope` (known: UnusedImport, "),
+        "{}",
+        stderr(&o)
+    );
+    // --rules keeps its format
+    let o = run(&d.0, &["--rules"], None);
+    assert!(
+        stdout(&o).starts_with("on   UnusedImport           import whose name"),
+        "{}",
+        stdout(&o)
+    );
+    assert_eq!(stdout(&o).lines().count(), groovyfmt::lint::RULES.len());
+}
+
+#[test]
 fn option_parsing_edge_cases() {
     let d = Dir::new("args");
     d.write("A.groovy", UGLY);

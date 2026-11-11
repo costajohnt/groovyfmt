@@ -47,6 +47,8 @@ Options:
                            (--check, --lint, --syntax, in place: one JSON document on
                            stdout, schema in the README) or sarif (--lint, --syntax)
       --rules              List lint rules and whether each is on, then exit
+      --explain <RULE>     Explain a lint rule: why it matters, an example, whether
+                           --fix fixes it and how to turn it off
       --strict             List skipped files (unparseable, not UTF-8, too large) and
                            exit 1 if there are any, so CI can't pass on unchecked files
       --diff               With --check, or --lint --fix: print a unified diff of the
@@ -106,6 +108,7 @@ enum Mode {
     Syntax,
     Stdin,
     Rules,
+    Explain(String),
     SuggestStyle,
     // development diagnostics, not in --help
     Stats,
@@ -181,6 +184,10 @@ fn parse_args() -> Args {
             "--syntax" => set_mode(&mut a, Mode::Syntax),
             "--stdin" => set_mode(&mut a, Mode::Stdin),
             "--rules" => set_mode(&mut a, Mode::Rules),
+            "--explain" => {
+                let rule = value("--explain");
+                set_mode(&mut a, Mode::Explain(rule));
+            }
             "--suggest-style" => set_mode(&mut a, Mode::SuggestStyle),
             "--stats" => set_mode(&mut a, Mode::Stats),
             "--errors" => set_mode(&mut a, Mode::Errors),
@@ -930,6 +937,7 @@ fn main() {
     let mut res = resolver(&a);
     let code = match a.mode {
         Mode::Rules => rules(&one_config(&mut res, &a)),
+        Mode::Explain(ref rule) => explain(rule, &one_config(&mut res, &a)),
         Mode::Stdin => stdin(&mut res, &a),
         _ => {
             // only write mode and --fix rewrite; reading through a named link is reading its target
@@ -959,6 +967,48 @@ fn main() {
     } else {
         code
     });
+}
+
+/// `--explain`: one rule in full, from the rule table.
+fn explain(name: &str, cfg: &Config) -> i32 {
+    let Some(r) = RULES.iter().find(|r| r.name.eq_ignore_ascii_case(name)) else {
+        let known: Vec<_> = RULES.iter().map(|r| r.name).collect();
+        die(format!(
+            "unknown rule `{name}` (known: {})",
+            known.join(", ")
+        ))
+    };
+    let indent = |code: &str| {
+        code.lines()
+            .map(|l| format!("    {l}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let here = if cfg.rule_enabled(r.name) {
+        "on"
+    } else {
+        "off"
+    };
+    let fix = if r.fixable {
+        "`groovyfmt --lint --fix` fixes it."
+    } else {
+        "Not fixed automatically."
+    };
+    let (other, setting) = if cfg.rule_enabled(r.name) {
+        ("Turn it off", "false")
+    } else {
+        ("Turn it on", "true")
+    };
+    print_raw(&format!(
+        "{name}: {description}\n\nOn by default: {d}. Here: {here}. {fix}\n\nWhy: {why}\n\nFlagged:\n{bad}\n\nInstead:\n{good}\n\n{other} in .groovyfmt.toml:\n    [lint]\n    {name} = {setting}\n",
+        name = r.name,
+        description = r.description,
+        d = if r.default { "yes" } else { "no" },
+        why = r.why,
+        bad = indent(r.bad),
+        good = indent(r.good),
+    ));
+    0
 }
 
 fn rules(cfg: &Config) -> i32 {

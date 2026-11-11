@@ -10,6 +10,13 @@ pub struct Rule {
     pub name: &'static str,
     pub default: bool,
     pub description: &'static str,
+    /// Why it matters, for `--explain`.
+    pub why: &'static str,
+    /// Code it flags, and the same code without the problem.
+    pub bad: &'static str,
+    pub good: &'static str,
+    /// Whether `--lint --fix` fixes it.
+    pub fixable: bool,
 }
 
 /// Every rule, named after its CodeNarc equivalent so existing configs map across.
@@ -18,169 +25,301 @@ pub const RULES: &[Rule] = &[
         name: "UnusedImport",
         default: true,
         description: "import whose name (or alias) never appears in code or as a word in a comment",
+        why: "An import nothing uses is noise: it suggests a dependency the file doesn't have, and it can hide a rename or a deleted class that would otherwise show up.",
+        bad: "import java.util.concurrent.TimeUnit\nimport groovy.json.JsonSlurper\n\ndef data = new JsonSlurper().parseText(text)",
+        good: "import groovy.json.JsonSlurper\n\ndef data = new JsonSlurper().parseText(text)",
+        fixable: true,
     },
     Rule {
         name: "DuplicateImport",
         default: true,
         description: "the same import twice",
+        why: "The second copy does nothing and usually comes from a merge; it makes the import list harder to read.",
+        bad: "import groovy.json.JsonSlurper\nimport groovy.json.JsonSlurper",
+        good: "import groovy.json.JsonSlurper",
+        fixable: true,
     },
     Rule {
         name: "UnnecessarySemicolon",
         default: true,
         description: "`;` at the end of a line",
+        why: "Groovy ends a statement at the line break, so a `;` there is Java habit and clutter.",
+        bad: "def name = 'x';\nprintln name;",
+        good: "def name = 'x'\nprintln name",
+        fixable: true,
     },
     Rule {
         name: "EmptyCatchBlock",
         default: true,
         description: "empty catch, unless the parameter is named ignore / ignored",
+        why: "Swallowing an exception hides failures. Handle or log it, or name the parameter `ignored` to say the silence is deliberate.",
+        bad: "try {\n    sh 'make'\n} catch (Exception e) {\n}",
+        good: "try {\n    sh 'make'\n} catch (Exception ignored) {\n    // the build step is optional\n}",
+        fixable: false,
     },
     Rule {
         name: "EmptyIfStatement",
         default: true,
         description: "if statement with an empty block",
+        why: "An `if` that does nothing is dead code or an unfinished edit.",
+        bad: "if (isRelease) {\n}",
+        good: "if (isRelease) {\n    publish()\n}",
+        fixable: false,
     },
     Rule {
         name: "EmptyElseBlock",
         default: true,
         description: "else with an empty block",
+        why: "An empty `else` adds nothing and usually marks an unfinished edit.",
+        bad: "if (ok) {\n    deploy()\n} else {\n}",
+        good: "if (ok) {\n    deploy()\n}",
+        fixable: false,
     },
     Rule {
         name: "EmptyTryBlock",
         default: true,
         description: "try with an empty block",
+        why: "A `try` with nothing in it guards nothing; its `catch` and `finally` are dead or misplaced.",
+        bad: "try {\n} finally {\n    cleanup()\n}",
+        good: "cleanup()",
+        fixable: false,
     },
     Rule {
         name: "EmptyFinallyBlock",
         default: true,
         description: "finally with an empty block",
+        why: "An empty `finally` does nothing and usually marks forgotten cleanup.",
+        bad: "try {\n    run()\n} finally {\n}",
+        good: "try {\n    run()\n} finally {\n    cleanup()\n}",
+        fixable: false,
     },
     Rule {
         name: "EmptyWhileStatement",
         default: true,
         description: "while loop with an empty block",
+        why: "A `while` loop with an empty block spins doing nothing, or is an unfinished edit.",
+        bad: "while (queue.poll()) {\n}",
+        good: "while (queue.poll()) {\n    handled++\n}",
+        fixable: false,
     },
     Rule {
         name: "EmptyForStatement",
         default: true,
         description: "for loop with an empty block",
+        why: "A `for` loop with an empty block does nothing.",
+        bad: "for (f in files) {\n}",
+        good: "for (f in files) {\n    check(f)\n}",
+        fixable: false,
     },
     Rule {
         name: "DuplicateMapKey",
         default: true,
         description: "a map literal with the same constant key twice; the later entry wins",
+        why: "A map literal keeps only the last value for a key, so the earlier entry is silently lost. `a:`, `'a':` and `\"a\":` are the same key.",
+        bad: "def env = [STAGE: 'dev', REGION: 'eu', STAGE: 'prod']",
+        good: "def env = [STAGE: 'prod', REGION: 'eu']",
+        fixable: false,
     },
     Rule {
         name: "DuplicateCaseStatement",
         default: true,
         description: "a switch with two case labels for the same constant",
+        why: "The second `case` for the same value can never run.",
+        bad: "switch (env) {\n    case 'prod': deploy(); break\n    case 'prod': notify(); break\n}",
+        good: "switch (env) {\n    case 'prod': deploy(); notify(); break\n}",
+        fixable: false,
     },
     Rule {
         name: "AssignmentInConditional",
         default: true,
         description: "`=` where `==` was probably meant, in an if condition (`while (x = next())` is a common idiom, so loops are exempt, and so is an assignment in extra parentheses)",
+        why: "`if (x = 1)` assigns, and the condition is the assigned value; `==` was almost always meant. Wrap it in extra parentheses if the assignment is deliberate.",
+        bad: "if (status = 'FAILED') {\n    alert()\n}",
+        good: "if (status == 'FAILED') {\n    alert()\n}",
+        fixable: false,
     },
     Rule {
         name: "ComparisonWithSelf",
         default: false,
         description: "a variable compared with itself (off by default: Spock equality checks do this on purpose; GORM `where { title == title }` is exempt)",
+        why: "Comparing a variable with itself always gives the same answer, so the check is a typo for another variable.",
+        bad: "if (expected == expected) {\n    pass()\n}",
+        good: "if (actual == expected) {\n    pass()\n}",
+        fixable: false,
     },
     Rule {
         name: "ConstantIfExpression",
         default: true,
         description: "an if condition that is a literal, so one branch never runs",
+        why: "A literal condition means one branch never runs: a debugging leftover or dead code.",
+        bad: "if (true) {\n    deploy()\n}",
+        good: "deploy()",
+        fixable: false,
     },
     Rule {
         name: "UnnecessaryGString",
         default: false,
         description: "double-quoted string with nothing to interpolate (off by default: noisy where double quotes are the house style)",
+        why: "A double-quoted string without `$` reads as if something were interpolated; a single-quoted String says it isn't.",
+        bad: "def stage = \"build\"",
+        good: "def stage = 'build'",
+        fixable: false,
     },
     // Declarative Jenkins pipelines (src/lint/jenkins.rs)
     Rule {
         name: "JenkinsMissingSection",
         default: true,
         description: "pipeline without agent or stages, stages without a stage, a stage with none of steps, stages, parallel, matrix",
+        why: "A declarative pipeline needs `agent` and `stages`, each `stages` needs a stage, and each stage needs `steps`, `stages`, `parallel` or `matrix`; Jenkins rejects the file when the build starts, after the push.",
+        bad: "pipeline {\n    stages {\n        stage('Build') {\n            steps {\n                sh 'make'\n            }\n        }\n    }\n}",
+        good: "pipeline {\n    agent any\n    stages {\n        stage('Build') {\n            steps {\n                sh 'make'\n            }\n        }\n    }\n}",
+        fixable: false,
     },
     Rule {
         name: "JenkinsConflictingSections",
         default: true,
         description: "a section twice in one block, or a stage with more than one of steps, stages, parallel, matrix",
+        why: "Jenkins rejects a section given twice in one block, and a stage with more than one of `steps`, `stages`, `parallel` and `matrix`, when the build starts.",
+        bad: "pipeline {\n    agent any\n    stages {\n        stage('Build') {\n            steps {\n                sh 'make'\n            }\n            steps {\n                sh 'make test'\n            }\n        }\n    }\n}",
+        good: "pipeline {\n    agent any\n    stages {\n        stage('Build') {\n            steps {\n                sh 'make'\n                sh 'make test'\n            }\n        }\n    }\n}",
+        fixable: false,
     },
     Rule {
         name: "JenkinsUnknownSection",
         default: true,
         description: "a section that doesn't belong where it is in pipeline, stage, matrix, post or stages",
+        why: "A section in the wrong place (`steps` directly in `pipeline`, `parameters` in a stage) or a misspelled one fails validation when the build starts.",
+        bad: "pipeline {\n    agent any\n    steps {\n        sh 'make'\n    }\n}",
+        good: "pipeline {\n    agent any\n    stages {\n        stage('Build') {\n            steps {\n                sh 'make'\n            }\n        }\n    }\n}",
+        fixable: false,
     },
     Rule {
         name: "JenkinsStatementOutsideSection",
         default: true,
         description: "Groovy code directly in pipeline, stages, stage, matrix, post or when instead of in steps",
+        why: "Declarative pipelines only allow sections where Groovy code would otherwise go; code belongs in `steps` (inside `script { }` when it isn't a step) or in `environment`.",
+        bad: "pipeline {\n    agent any\n    stages {\n        stage('Build') {\n            def target = 'all'\n            steps {\n                sh 'make'\n            }\n        }\n    }\n}",
+        good: "pipeline {\n    agent any\n    stages {\n        stage('Build') {\n            steps {\n                sh 'make'\n            }\n        }\n    }\n}",
+        fixable: false,
     },
     Rule {
         name: "JenkinsScriptRequired",
         default: true,
         description: "if, for, while, try, switch, def or an assignment directly in steps without script { }",
+        why: "`steps` takes steps only: `if`, loops, `try`, `def` and assignments must be wrapped in `script { }`, or the build fails to start.",
+        bad: "pipeline {\n    agent any\n    stages {\n        stage('Deploy') {\n            steps {\n                if (env.BRANCH_NAME == 'main') {\n                    sh 'make deploy'\n                }\n            }\n        }\n    }\n}",
+        good: "pipeline {\n    agent any\n    stages {\n        stage('Deploy') {\n            steps {\n                script {\n                    if (env.BRANCH_NAME == 'main') {\n                        sh 'make deploy'\n                    }\n                }\n            }\n        }\n    }\n}",
+        fixable: false,
     },
     Rule {
         name: "JenkinsUnknownWhenCondition",
         default: true,
         description: "a when condition that isn't built in",
+        why: "A `when` condition that isn't built in (a typo such as `branchName`) fails validation when the build starts.",
+        bad: "pipeline {\n    agent any\n    stages {\n        stage('Deploy') {\n            when {\n                branchName 'main'\n            }\n            steps {\n                sh 'make deploy'\n            }\n        }\n    }\n}",
+        good: "pipeline {\n    agent any\n    stages {\n        stage('Deploy') {\n            when {\n                branch 'main'\n            }\n            steps {\n                sh 'make deploy'\n            }\n        }\n    }\n}",
+        fixable: false,
     },
     Rule {
         name: "JenkinsMisplacedOption",
         default: true,
         description: "parameters or triggers in options, or a pipeline-wide option in a stage's options",
+        why: "`parameters` and `triggers` are sections of their own, not options, and some options apply only to the whole pipeline; Jenkins rejects them in the wrong place.",
+        bad: "pipeline {\n    agent any\n    options {\n        triggers {\n            cron('H 2 * * *')\n        }\n    }\n    stages {\n        stage('Build') {\n            steps {\n                sh 'make'\n            }\n        }\n    }\n}",
+        good: "pipeline {\n    agent any\n    triggers {\n        cron('H 2 * * *')\n    }\n    stages {\n        stage('Build') {\n            steps {\n                sh 'make'\n            }\n        }\n    }\n}",
+        fixable: false,
     },
     Rule {
         name: "JenkinsDuplicateStageName",
         default: true,
         description: "two stages with the same name in one stages or parallel block",
+        why: "Stage names must be unique within their block; Jenkins rejects duplicates, and the stage view can't tell them apart.",
+        bad: "pipeline {\n    agent any\n    stages {\n        stage('Build') {\n            steps {\n                sh 'make'\n            }\n        }\n        stage('Build') {\n            steps {\n                sh 'make test'\n            }\n        }\n    }\n}",
+        good: "pipeline {\n    agent any\n    stages {\n        stage('Build') {\n            steps {\n                sh 'make'\n            }\n        }\n        stage('Test') {\n            steps {\n                sh 'make test'\n            }\n        }\n    }\n}",
+        fixable: false,
     },
     Rule {
         name: "JenkinsStageName",
         default: true,
         description: "a stage with no name, or a name that isn't a plain string",
+        why: "A declarative stage needs a name that is a plain string; an interpolated name (`\"Deploy ${env}\"`) is rejected.",
+        bad: "pipeline {\n    agent any\n    stages {\n        stage(\"Deploy ${params.TARGET}\") {\n            steps {\n                sh 'make deploy'\n            }\n        }\n    }\n}",
+        good: "pipeline {\n    agent any\n    stages {\n        stage('Deploy') {\n            steps {\n                sh \"make deploy TARGET=${params.TARGET}\"\n            }\n        }\n    }\n}",
+        fixable: false,
     },
     Rule {
         name: "JenkinsAgentForm",
         default: true,
         description: "agent with no value, an empty or multi-type block, or a bare type other than any and none",
+        why: "`agent` takes `any`, `none` or a block naming one agent type; anything else fails validation when the build starts.",
+        bad: "pipeline {\n    agent docker\n    stages {\n        stage('Build') {\n            steps {\n                sh 'make'\n            }\n        }\n    }\n}",
+        good: "pipeline {\n    agent {\n        docker {\n            image 'gcc:13'\n        }\n    }\n    stages {\n        stage('Build') {\n            steps {\n                sh 'make'\n            }\n        }\n    }\n}",
+        fixable: false,
     },
     // Gradle build scripts (src/lint/gradle.rs)
     Rule {
         name: "GradleRemovedConfiguration",
         default: true,
         description: "compile, runtime, testCompile or testRuntime dependencies (removed in Gradle 7.0)",
+        why: "`compile`, `runtime`, `testCompile` and `testRuntime` were removed in Gradle 7.0; the build fails on a current Gradle.",
+        bad: "dependencies {\n    compile 'org.slf4j:slf4j-api:2.0.9'\n}",
+        good: "dependencies {\n    implementation 'org.slf4j:slf4j-api:2.0.9'\n}",
+        fixable: false,
     },
     Rule {
         name: "GradleJcenter",
         default: true,
         description: "the jcenter() repository (removed in Gradle 9.0)",
+        why: "JCenter is read-only and `jcenter()` was removed in Gradle 9.0.",
+        bad: "repositories {\n    jcenter()\n}",
+        good: "repositories {\n    mavenCentral()\n}",
+        fixable: false,
     },
     Rule {
         name: "GradleLeftShiftTask",
         default: true,
         description: "task name << { } (removed in Gradle 5.0)",
+        why: "`task name << { }` was removed in Gradle 5.0; the build fails on a current Gradle.",
+        bad: "task hello << {\n    println 'hello'\n}",
+        good: "tasks.register('hello') {\n    doLast {\n        println 'hello'\n    }\n}",
+        fixable: false,
     },
     Rule {
         name: "GradleDynamicVersion",
         default: false,
         description: "a + or latest.* dependency version (off by default: a policy choice)",
+        why: "A `+` or `latest.*` version resolves to whatever is newest at build time, so the same commit can build differently tomorrow.",
+        bad: "dependencies {\n    implementation 'org.slf4j:slf4j-api:2.+'\n}",
+        good: "dependencies {\n    implementation 'org.slf4j:slf4j-api:2.0.9'\n}",
+        fixable: false,
     },
     // Spock specifications (src/lint/spock.rs)
     Rule {
         name: "SpockBlockOrder",
         default: true,
         description: "feature method blocks in an order Spock rejects, or a label Spock doesn't know",
+        why: "Spock refuses to compile feature blocks out of order (`then:` without a `when:` before it), so the spec fails to build.",
+        bad: "class MathSpec extends Specification {\n    def 'adds'() {\n        then:\n        1 + 1 == 2\n    }\n}",
+        good: "class MathSpec extends Specification {\n    def 'adds'() {\n        expect:\n        1 + 1 == 2\n    }\n}",
+        fixable: false,
     },
     Rule {
         name: "SpockEmptyBlock",
         default: false,
         description: "an empty then: or expect: block (off by default: Spock allows it, and its own tests use empty blocks on purpose)",
+        why: "A `then:` or `expect:` block with only a description checks nothing, so the feature passes whatever happens.",
+        bad: "class MathSpec extends Specification {\n    def 'runs'() {\n        when:\n        run()\n        then: 'it does not throw'\n    }\n}",
+        good: "class MathSpec extends Specification {\n    def 'runs'() {\n        when:\n        run()\n        then: 'it does not throw'\n        noExceptionThrown()\n    }\n}",
+        fixable: false,
     },
     Rule {
         name: "SpockDataTableColumns",
         default: true,
         description: "a data table row with a different number of columns than the row above",
+        why: "A data table row with a missing or extra cell is a compile error, or shifts the values into the wrong variables.",
+        bad: "class MathSpec extends Specification {\n    def 'max'() {\n        expect:\n        Math.max(a, b) == c\n        where:\n        a | b | c\n        1 | 2\n    }\n}",
+        good: "class MathSpec extends Specification {\n    def 'max'() {\n        expect:\n        Math.max(a, b) == c\n        where:\n        a | b | c\n        1 | 2 | 2\n    }\n}",
+        fixable: false,
     },
 ];
 
@@ -913,6 +1052,30 @@ mod tests {
                 ("ComparisonWithSelf", 3)
             ]
         );
+    }
+
+    #[test]
+    fn explain_examples_show_their_rule_and_fixable_matches_the_fixes() {
+        for r in RULES {
+            // the domain rules look at the file name
+            let path = match &r.name[..r.name.len().min(6)] {
+                "Jenkin" => "Jenkinsfile",
+                "Gradle" => "build.gradle",
+                _ => "MathSpec.groovy",
+            };
+            let fired = |src: &str| {
+                lint_file(Path::new(path), src)
+                    .expect(src)
+                    .into_iter()
+                    .filter(|v| v.rule == r.name)
+                    .collect::<Vec<_>>()
+            };
+            let bad = fired(r.bad);
+            assert!(!bad.is_empty(), "{}: bad example doesn't fire", r.name);
+            assert!(fired(r.good).is_empty(), "{}: good example fires", r.name);
+            assert_eq!(bad.iter().all(|v| v.fix.is_some()), r.fixable, "{}", r.name);
+            assert!(!r.why.is_empty(), "{}", r.name);
+        }
     }
 
     #[test]
