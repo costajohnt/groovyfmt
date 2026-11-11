@@ -4,6 +4,9 @@
 
 ### Added
 
+- pre-commit hooks in the repository (`repo: https://github.com/costajohnt/groovyfmt`): `groovyfmt`, `groovyfmt-check` and `groovyfmt-lint` run the binary on `PATH`, and `groovyfmt-source`, `groovyfmt-check-source` and `groovyfmt-lint-source` build it from source with cargo.
+- A GitHub Action (`uses: costajohnt/groovyfmt@<ref>`): installs the release binary for the runner (Linux or macOS, x64 or arm64) after checking its `.sha256`, puts it on `PATH`, and runs it with `args` (default `--check --output-format github`).
+- Packaging for npm (`npm/`, the `groovyfmt` package with one `@groovyfmt/<os>-<arch>` package per platform), Homebrew (`packaging/homebrew/`, a formula rendered from a release's checksums) and a Docker image (`Dockerfile`, `scratch` plus the static binary). None of these is published yet: the release workflow's `publish-npm` and `publish-image` jobs stay off until the repository variables `PUBLISH_NPM` and `PUBLISH_IMAGE` are set (`docs/releasing.md`). CI builds and runs each against the latest release.
 - `--strict`: with `--check`, `--lint` or when formatting in place, list the files that were skipped (they don't parse, aren't UTF-8, are over 10 MB or nest too deeply) and exit 1 if there are any. Without it a skipped file never affects the exit status, so CI can pass on files nothing checked.
 - `--` ends the options: every argument after it is a path, even one starting with `-`.
 

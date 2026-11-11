@@ -34,17 +34,52 @@ The comparison flatters groovyfmt somewhat. It skips the 9 spock files it can't 
 
 ## Install
 
-Prebuilt binaries for Linux (x86_64 and arm64, both static musl builds that need no glibc) and macOS (Apple Silicon, Intel) are attached to each [release](https://github.com/costajohnt/groovyfmt/releases):
+| Channel | Status |
+|---|---|
+| [Release binaries](#release-binaries) | available |
+| [Build from source](#build-from-source) | available |
+| [pre-commit](#pre-commit) | available from `main`, and in releases after 0.8.0 |
+| [GitHub Action](#github-actions) | available from `main`, and in releases after 0.8.0; while the repository is private, only with a token that can read it |
+| [npm](#npm) (`npx groovyfmt`) | not published yet; comes once the repository is public |
+| [Homebrew](#homebrew) | not published yet; comes once the repository is public |
+| [Docker image](#docker) | not published yet; comes once the repository is public |
+
+### Release binaries
+
+Prebuilt binaries for Linux (x86_64 and arm64, both static musl builds that need no glibc) and macOS (Apple Silicon, Intel) are attached to each [release](https://github.com/costajohnt/groovyfmt/releases), each with a `.sha256` file:
 
 ```sh
-gh release download --repo costajohnt/groovyfmt --pattern '*aarch64-apple-darwin.tar.gz'
+gh release download --repo costajohnt/groovyfmt --pattern '*aarch64-apple-darwin.tar.gz*'
+shasum -a 256 -c groovyfmt-*.tar.gz.sha256
 tar -xzf groovyfmt-*.tar.gz && mv groovyfmt-*/groovyfmt /usr/local/bin/
 ```
 
-Or build from source (Rust 1.90+, a C compiler):
+### Build from source
+
+Rust 1.90+ and a C compiler:
 
 ```sh
 cargo install --locked --git https://github.com/costajohnt/groovyfmt
+```
+
+### npm
+
+Not published yet. Once it is, `npx groovyfmt` runs it without installing, and `npm install --save-dev groovyfmt` adds it to a project. The package downloads only the binary for your platform (Linux or macOS, x64 or arm64).
+
+### Homebrew
+
+Not published yet. Once the tap exists:
+
+```sh
+brew install costajohnt/tap/groovyfmt
+```
+
+### Docker
+
+Not published yet. Once it is, the image holds only the static binary and works on the mounted directory:
+
+```sh
+docker run --rm -v "$PWD:/work" ghcr.io/costajohnt/groovyfmt --check
 ```
 
 ## Usage
@@ -147,20 +182,37 @@ Spock specs come in two styles. By default the statements of a `given:` / `when:
 
 ### GitHub Actions
 
+The action installs the release binary for the runner (Linux or macOS, x64 or arm64), checks it against its `.sha256`, puts it on `PATH` and runs it with `args`:
+
+```yaml
+- uses: actions/checkout@v5
+- uses: costajohnt/groovyfmt@main  # or a release tag after v0.8.0
+  # with:
+  #   args: --check --output-format github   # the default; "" only installs
+  #   version: 0.8.0                         # default: the release of the action ref used
+  #   token: ${{ github.token }}             # the default
+- run: groovyfmt --lint --output-format github
+```
+
+`--output-format github` turns findings into annotations on the pull request diff. While the repository is private, `token` must be able to read it, which `github.token` can only do in workflows of this repository. Without `version`, the action installs the release named by the `Cargo.toml` at the ref you use, so a release tag installs that release and `main` the latest one.
+
+Without the action:
+
 ```yaml
 - name: groovyfmt
   env:
     GH_TOKEN: ${{ github.token }}
   run: |
-    gh release download --repo costajohnt/groovyfmt --pattern '*x86_64-unknown-linux-musl.tar.gz' --output groovyfmt.tgz
-    tar -xzf groovyfmt.tgz --strip-components=1
+    gh release download --repo costajohnt/groovyfmt --pattern '*x86_64-unknown-linux-musl.tar.gz*'
+    shasum -a 256 -c groovyfmt-*.tar.gz.sha256
+    tar -xzf groovyfmt-*.tar.gz && mv groovyfmt-*/groovyfmt .
     ./groovyfmt --check --output-format github
     ./groovyfmt --lint --output-format github
 ```
 
-`--output-format github` turns findings into annotations on the pull request diff. Add `--strict` to fail the job when a file was skipped (it doesn't parse, isn't UTF-8 or is over 10 MB), which otherwise passes unchecked.
+This snippet has the same token limit: outside this repository, set `GH_TOKEN` to a token that can read `costajohnt/groovyfmt` (for example a fine-grained personal access token with read access to its contents, stored as a secret).
 
-The snippet downloads from `costajohnt/groovyfmt`, which is private. `github.token` can only read the repository the workflow runs in, so elsewhere it fails until `GH_TOKEN` is set to a token that can read `costajohnt/groovyfmt` (for example a fine-grained personal access token with read access to its contents, stored as a secret).
+Add `--strict` to `--check` or `--lint` to fail the job when a file was skipped (it doesn't parse, isn't UTF-8 or is over 10 MB), which otherwise passes unchecked.
 
 ### Gradle
 
@@ -180,13 +232,24 @@ check.dependsOn 'groovyfmtCheck', 'groovyfmtLint'
 
 ```yaml
 repos:
+  - repo: https://github.com/costajohnt/groovyfmt
+    rev: main  # or a release tag after v0.8.0, which pre-commit prefers
+    hooks:
+      - id: groovyfmt        # format in place; or groovyfmt-check to only report
+      - id: groovyfmt-lint
+```
+
+These hooks run the `groovyfmt` on `PATH`. To have pre-commit build it from source instead (Rust 1.90+ and a C compiler, compiled once per `rev`), use `groovyfmt-source`, `groovyfmt-check-source` and `groovyfmt-lint-source`. While the repository is private, pre-commit needs git credentials that can clone it. Or point a local hook at the binary on `PATH`:
+
+```yaml
+repos:
   - repo: local
     hooks:
       - id: groovyfmt
         name: groovyfmt
         entry: groovyfmt
         language: system
-        files: (\.(groovy|gradle|gvy|gy|gsh)|Jenkinsfile)$
+        files: (\.(groovy|gradle|gvy|gy|gsh)|(^|/)Jenkinsfile)$
 ```
 
 pre-commit passes the staged files by name, and `exclude` in `.groovyfmt.toml` still applies to them, so generated code stays untouched without repeating the patterns in the hook.

@@ -1,0 +1,43 @@
+# Hooks for https://pre-commit.com. The first three run a groovyfmt already on
+# PATH (a release binary, brew, npm, cargo install). The -source variants build
+# groovyfmt from this repository with cargo instead (Rust 1.90+ and a C
+# compiler; the first run compiles it, later runs reuse the build).
+- id: groovyfmt
+  name: groovyfmt
+  description: Format Groovy, Gradle and Jenkinsfile sources in place
+  entry: groovyfmt
+  language: system
+  files: (\.(groovy|gradle|gvy|gy|gsh)|(^|/)Jenkinsfile)$
+- id: groovyfmt-check
+  name: groovyfmt --check
+  description: Fail if Groovy, Gradle or Jenkinsfile sources need formatting
+  entry: groovyfmt --check
+  language: system
+  files: (\.(groovy|gradle|gvy|gy|gsh)|(^|/)Jenkinsfile)$
+- id: groovyfmt-lint
+  name: groovyfmt --lint
+  description: Report lint violations in Groovy, Gradle and Jenkinsfile sources
+  entry: groovyfmt --lint
+  language: system
+  files: (\.(groovy|gradle|gvy|gy|gsh)|(^|/)Jenkinsfile)$
+- id: groovyfmt-source
+  name: groovyfmt
+  description: Format Groovy, Gradle and Jenkinsfile sources in place (built from source)
+  entry: groovyfmt
+  language: rust
+  minimum_pre_commit_version: 2.21.0
+  files: (\.(groovy|gradle|gvy|gy|gsh)|(^|/)Jenkinsfile)$
+- id: groovyfmt-check-source
+  name: groovyfmt --check
+  description: Fail if Groovy, Gradle or Jenkinsfile sources need formatting (built from source)
+  entry: groovyfmt --check
+  language: rust
+  minimum_pre_commit_version: 2.21.0
+  files: (\.(groovy|gradle|gvy|gy|gsh)|(^|/)Jenkinsfile)$
+- id: groovyfmt-lint-source
+  name: groovyfmt --lint
+  description: Report lint violations in Groovy, Gradle and Jenkinsfile sources (built from source)
+  entry: groovyfmt --lint
+  language: rust
+  minimum_pre_commit_version: 2.21.0
+  files: (\.(groovy|gradle|gvy|gy|gsh)|(^|/)Jenkinsfile)$
