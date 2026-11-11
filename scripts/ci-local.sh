@@ -27,6 +27,13 @@ else
   echo "skipped: static musl build (needs musl-gcc and the x86_64-unknown-linux-musl target)"
 fi
 
+if [ -n "${JAVA_HOME:-}" ] || command -v java > /dev/null; then
+  # Unit and TestKit tests, on the wrapper's Gradle and the oldest supported one. Needs JDK 17+.
+  (cd gradle-plugin && ./gradlew --no-daemon check)
+else
+  echo "skipped: Gradle plugin tests (need a JDK 17 or later, on PATH or in JAVA_HOME)"
+fi
+
 # Formatting a real corpus must stay idempotent; --stats exits 1 if any file is not.
 if [ $# -gt 0 ]; then "$bin" --stats "$1" | tail -n 1; fi
 echo "ci-local: ok"
