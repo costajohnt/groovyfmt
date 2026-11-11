@@ -587,23 +587,26 @@ pub fn lint_file(path: &Path, src: &str) -> Result<Vec<Violation>, &'static str>
     jenkins::check(path, src, tree.root_node(), &mut v);
     gradle::check(path, src, tree.root_node(), &mut v);
     let mut nodes = Vec::new();
-    // the nodes each of basic, unused and imports looks at, in preorder
-    let table = picked(&tree.language());
-    let mut by_module: [Vec<Node>; 5] = Default::default();
     crate::preorder(tree.root_node(), |n| {
         nodes.push(n);
-        let m = table.get(usize::from(n.kind_id())).copied().unwrap_or(0);
+        true
+    });
+    // the nodes each of basic, unused and imports looks at, in preorder
+    let table = kinds(&tree.language());
+    let mut by_module: [Vec<Node>; 5] = Default::default();
+    for (i, &n) in nodes.iter().enumerate() {
+        let (kind, m) = table
+            .get(usize::from(n.kind_id()))
+            .copied()
+            .unwrap_or(("", 0));
         if m != 0 {
-            for (i, list) in by_module.iter_mut().enumerate() {
-                if m & (1 << i) != 0 {
+            for (j, list) in by_module.iter_mut().enumerate() {
+                if m & (1 << j) != 0 {
                     list.push(n);
                 }
             }
         }
-        true
-    });
-    for (i, &n) in nodes.iter().enumerate() {
-        match n.kind() {
+        match kind {
             "string_literal" => unnecessary_gstring(src, n, &mut v),
             ";" => unnecessary_semicolon(n, nodes.get(i + 1..).unwrap_or(&[]), &mut v),
             "catch_clause" => empty_catch(src, n, &mut v),
@@ -667,12 +670,12 @@ pub fn lint_file(path: &Path, src: &str) -> Result<Vec<Violation>, &'static str>
     Ok(v)
 }
 
-/// By node kind id, a bit for each list in [basic, unused, imports, unused's name leaves,
-/// unused's dynamic member access]
-/// whose kinds include it, so each module sees only its nodes (a pass over every node per
-/// module cost 25% of `--lint`).
-fn picked(lang: &tree_sitter::Language) -> &'static [u8] {
-    static TABLE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+/// By node kind id: the kind's name, and a bit for each list in [basic, unused, imports,
+/// unused's name leaves, unused's dynamic member access] whose kinds include it. Looking the
+/// name up here costs one call into tree-sitter per node instead of two, and each module
+/// sees only its own nodes: a pass over every node per module cost 25% of `--lint`.
+fn kinds(lang: &tree_sitter::Language) -> &'static [(&'static str, u8)] {
+    static TABLE: std::sync::OnceLock<Vec<(&'static str, u8)>> = std::sync::OnceLock::new();
     TABLE.get_or_init(|| {
         let modules = [
             basic::KINDS,
@@ -686,11 +689,12 @@ fn picked(lang: &tree_sitter::Language) -> &'static [u8] {
                 let id = u16::try_from(id).unwrap_or(u16::MAX);
                 let kind = lang.node_kind_for_id(id).unwrap_or("");
                 let named = lang.node_kind_is_named(id);
-                modules
+                let bits = modules
                     .iter()
                     .enumerate()
                     .filter(|(_, ks)| named && ks.contains(&kind))
-                    .fold(0, |m, (i, _)| m | 1 << i)
+                    .fold(0, |m, (i, _)| m | 1 << i);
+                (kind, bits)
             })
             .collect()
     })

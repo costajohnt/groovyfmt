@@ -10,11 +10,10 @@ use tree_sitter::Node;
 
 /// The node kinds `check` looks at.
 pub(super) const KINDS: &[&str] = &[
-    "block",
-    "closure",
-    "switch_case",
-    "switch_default",
-    "source_file",
+    "return_statement",
+    "throw_statement",
+    "break_statement",
+    "continue_statement",
     "finally_clause",
     "switch_block",
     "static_initializer",
@@ -58,11 +57,12 @@ fn fields(n: Node) -> &'static Fields {
 pub(super) fn check(src: &str, nodes: &[Node], v: &mut Vec<Violation>) {
     let Some(&first) = nodes.first() else { return };
     let f = fields(first);
-    let mut cursor = first.walk();
     for &n in nodes {
         match n.kind() {
-            "block" | "closure" | "switch_case" | "switch_default" | "source_file" => {
-                dead_code(n, &mut cursor, v)
+            "return_statement" | "break_statement" | "continue_statement" => dead_code(n, v),
+            "throw_statement" => {
+                dead_code(n, v);
+                missing_new(src, n, v);
             }
             "finally_clause" => finally(n, v),
             "switch_block" if n.named_child_count() == 0 => v.push(at(
@@ -117,7 +117,6 @@ pub(super) fn check(src: &str, nodes: &[Node], v: &mut Vec<Violation>) {
             "class_declaration" => equals_and_hash_code(src, n, v),
             "method_declaration" => method(src, n, v),
             "constructor_declaration" if is_method(src, n) => method(src, n, v),
-            "throw_statement" => missing_new(src, n, v),
             "catch_clause" => exception_not_thrown(src, n, v),
             _ => {}
         }
@@ -144,50 +143,66 @@ fn is_comment(n: Node) -> bool {
 /// `return` or `throw` (the switch-case habit) is redundant but harmless, so it is left
 /// alone. So is code on the jump's own line: the grammar splits some one-line returns in
 /// two (`return pipeline { ... }`, `return o instanceof T t && ...`).
-/// `c` is any cursor, reused across blocks.
-fn dead_code<'a>(n: Node<'a>, c: &mut tree_sitter::TreeCursor<'a>, v: &mut Vec<Violation>) {
-    c.reset(n);
-    if !c.goto_first_child() {
+///
+/// Driven by the jumps, which are few, instead of by every block's statements.
+fn dead_code(jump: Node, v: &mut Vec<Violation>) {
+    let in_block = jump.parent().is_some_and(|p| {
+        matches!(
+            p.kind(),
+            "block" | "closure" | "switch_case" | "switch_default" | "source_file"
+        )
+    });
+    let Some(s) = next_statement(jump).filter(|_| in_block) else {
+        return;
+    };
+    // after two jumps in a row, the first one reports
+    if prev_statement(jump).is_some_and(is_jump) {
         return;
     }
-    let mut ended: Option<Node> = None;
-    loop {
-        let s = c.node();
-        let k = if s.is_named() { s.kind() } else { "" };
-        if let Some(jump) = ended
-            && !k.is_empty()
-            && !k.ends_with("comment")
-        {
-            let declaration = k.ends_with("_declaration")
-                && !matches!(
-                    k,
-                    "local_variable_declaration" | "multi_assignment_declaration"
-                );
-            let habit = k == "break_statement"
-                && matches!(jump.kind(), "return_statement" | "throw_statement");
-            if !declaration
-                && !habit
-                && k != "labeled_statement"
-                && s.start_position().row > jump.end_position().row
-            {
-                v.push(at(
-                    s,
-                    "DeadCode",
-                    "This code can never run: it follows a return, throw, break or continue; remove it or move it before".into(),
-                ));
-            }
-            return;
-        }
-        if matches!(
+    let k = s.kind();
+    let declaration = k.ends_with("_declaration")
+        && !matches!(
             k,
-            "return_statement" | "throw_statement" | "break_statement" | "continue_statement"
-        ) {
-            ended = Some(s);
-        }
-        if !c.goto_next_sibling() {
-            return;
-        }
+            "local_variable_declaration" | "multi_assignment_declaration"
+        );
+    let habit =
+        k == "break_statement" && matches!(jump.kind(), "return_statement" | "throw_statement");
+    if !declaration
+        && !habit
+        && k != "labeled_statement"
+        && s.start_position().row > jump.end_position().row
+    {
+        v.push(at(
+            s,
+            "DeadCode",
+            "This code can never run: it follows a return, throw, break or continue; remove it or move it before".into(),
+        ));
     }
+}
+
+fn is_jump(n: Node) -> bool {
+    matches!(
+        n.kind(),
+        "return_statement" | "throw_statement" | "break_statement" | "continue_statement"
+    )
+}
+
+/// The statement after `n` in its block, skipping comments.
+fn next_statement(n: Node) -> Option<Node> {
+    let mut s = n.next_named_sibling()?;
+    while is_comment(s) {
+        s = s.next_named_sibling()?;
+    }
+    Some(s)
+}
+
+/// The statement before `n` in its block, skipping comments.
+fn prev_statement(n: Node) -> Option<Node> {
+    let mut s = n.prev_named_sibling()?;
+    while is_comment(s) {
+        s = s.prev_named_sibling()?;
+    }
+    Some(s)
 }
 
 /// Whether `n` sits in the code of `top` itself, not in a closure, lambda, method or class
