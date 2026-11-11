@@ -117,7 +117,7 @@ fn format_with(
 
 /// Every node's kind and number of children, in document order: equal for two trees of
 /// the same shape. Spacing can keep the tokens and still change the parse (`a [1]`).
-fn shape(tree: &Tree) -> Vec<(u16, usize)> {
+pub(crate) fn shape(tree: &Tree) -> Vec<(u16, usize)> {
     let mut v = Vec::new();
     crate::preorder(tree.root_node(), |n| {
         v.push((n.kind_id(), n.child_count()));
