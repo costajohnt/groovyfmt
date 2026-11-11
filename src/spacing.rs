@@ -583,7 +583,9 @@ fn lay(
             && ((w == 1
                 && ruled == 0
                 && x.rule == "colon"
-                && near.iter().any(|n| colon_column(n.0, col + 1, row.seg_cols[k])))
+                && near
+                    .iter()
+                    .any(|n| colon_column(n.0, col + 1, row.seg_cols[k])))
                 || (kept >= 2 && near.iter().any(|n| token_at(n.0, col + kept, ch))));
         let stays = |c: usize| {
             near.iter()
@@ -728,7 +730,12 @@ fn respace_capped(
     let original: Vec<String> = rows.iter().map(|r| lines[r.line].0.clone()).collect();
     let source: Vec<Vec<usize>> = rows
         .iter()
-        .map(|r| gaps[r.gaps.clone()].iter().map(|x| x.end - x.start).collect())
+        .map(|r| {
+            gaps[r.gaps.clone()]
+                .iter()
+                .map(|x| x.end - x.start)
+                .collect()
+        })
         .collect();
     // indents don't change, so neither do the lines each line is compared with
     let near: Vec<Vec<usize>> = rows
@@ -849,7 +856,10 @@ fn candidates(
     grid: &[Vec<char>],
     of_line: &[Option<usize>],
 ) -> Vec<Vec<usize>> {
-    let mut out: Vec<Vec<usize>> = free.iter().map(|f| f.anchor.into_iter().collect()).collect();
+    let mut out: Vec<Vec<usize>> = free
+        .iter()
+        .map(|f| f.anchor.into_iter().collect())
+        .collect();
     // (row, gap) pairs frozen so far, and those waiting on another pair
     let mut queue: Vec<(usize, usize)> = Vec::new();
     let mut waiting: std::collections::HashMap<(usize, usize), Vec<(usize, usize)>> =

@@ -1981,7 +1981,11 @@ fn failed_write_runs(dir: &Path) -> [Output; 4] {
         run(dir, &["A.groovy"], None),
         run(dir, &["--output-format", "json", "A.groovy"], None),
         run(dir, &["--lint", "--fix", "B.groovy"], None),
-        run(dir, &["--lint", "--fix", "--output-format", "json", "B.groovy"], None),
+        run(
+            dir,
+            &["--lint", "--fix", "--output-format", "json", "B.groovy"],
+            None,
+        ),
     ]
 }
 
@@ -2043,7 +2047,10 @@ fn failed_writes_are_errors_not_counted() {
 #[test]
 fn failed_writes_are_errors_not_counted_on_windows() {
     let d = Dir::new("winro");
-    let files = [d.write("A.groovy", UGLY), d.write("B.groovy", UNUSED_IMPORT)];
+    let files = [
+        d.write("A.groovy", UGLY),
+        d.write("B.groovy", UNUSED_IMPORT),
+    ];
     let writable = std::fs::metadata(&files[0]).unwrap().permissions();
     let mut read_only = writable.clone();
     read_only.set_readonly(true);

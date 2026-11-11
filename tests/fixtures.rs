@@ -51,9 +51,8 @@ fn mutants(text: &str, n: usize) -> Vec<String> {
         v.dedup();
         v
     };
-    let edit = |at: usize, del: usize, ins: &str| {
-        format!("{}{ins}{}", &text[..at], &text[at + del..])
-    };
+    let edit =
+        |at: usize, del: usize, ins: &str| format!("{}{ins}{}", &text[..at], &text[at + del..]);
     let mut out = Vec::new();
     let bytes = text.as_bytes();
     let spaces: Vec<usize> = (0..bytes.len()).filter(|&i| bytes[i] == b' ').collect();
