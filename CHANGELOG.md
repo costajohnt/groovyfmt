@@ -15,6 +15,8 @@
 - `--diff` with `--check` (and `--lint --fix`): print a unified diff of the changes instead of the file names, writing nothing, for `git apply` or `patch -p1`. A file whose name or diff would print a control character, `##[` or a line starting `::` gets a `# groovyfmt: ... diff not shown` line instead.
 - `--lines <start>-<end>` (repeatable) for one file or `--stdin`: change only those lines; every other line stays byte for byte, and the result passes the same token check as formatting.
 - `--changed-since <rev>`: limit a run to the files that differ from a git revision, plus untracked files, under the working directory.
+- `--explain <Rule>`: a rule's description, why it matters, flagged code and a fixed version, whether `--lint --fix` fixes it, whether it is on for the current directory, and the config lines to turn it off or on. `--rules` is unchanged.
+- README: "Using groovyfmt with coding agents", with a Claude Code PostToolUse hook that formats and lints each Groovy file Claude edits and reports problems back to it, and an `AGENTS.md` / `CLAUDE.md` snippet.
 
 ### Changed
 

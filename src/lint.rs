@@ -9,6 +9,13 @@ pub struct Rule {
     pub name: &'static str,
     pub default: bool,
     pub description: &'static str,
+    /// Why it matters, for `--explain`.
+    pub why: &'static str,
+    /// Code it flags, and the same code without the problem.
+    pub bad: &'static str,
+    pub good: &'static str,
+    /// Whether `--lint --fix` fixes it.
+    pub fixable: bool,
 }
 
 /// Every rule, named after its CodeNarc equivalent so existing configs map across.
@@ -17,81 +24,145 @@ pub const RULES: &[Rule] = &[
         name: "UnusedImport",
         default: true,
         description: "import whose name (or alias) never appears in code or as a word in a comment",
+        why: "An import nothing uses is noise: it suggests a dependency the file doesn't have, and it can hide a rename or a deleted class that would otherwise show up.",
+        bad: "import java.util.concurrent.TimeUnit\nimport groovy.json.JsonSlurper\n\ndef data = new JsonSlurper().parseText(text)",
+        good: "import groovy.json.JsonSlurper\n\ndef data = new JsonSlurper().parseText(text)",
+        fixable: true,
     },
     Rule {
         name: "DuplicateImport",
         default: true,
         description: "the same import twice",
+        why: "The second copy does nothing and usually comes from a merge; it makes the import list harder to read.",
+        bad: "import groovy.json.JsonSlurper\nimport groovy.json.JsonSlurper",
+        good: "import groovy.json.JsonSlurper",
+        fixable: true,
     },
     Rule {
         name: "UnnecessarySemicolon",
         default: true,
         description: "`;` at the end of a line",
+        why: "Groovy ends a statement at the line break, so a `;` there is Java habit and clutter.",
+        bad: "def name = 'x';\nprintln name;",
+        good: "def name = 'x'\nprintln name",
+        fixable: true,
     },
     Rule {
         name: "EmptyCatchBlock",
         default: true,
         description: "empty catch, unless the parameter is named ignore / ignored",
+        why: "Swallowing an exception hides failures. Handle or log it, or name the parameter `ignored` to say the silence is deliberate.",
+        bad: "try {\n    sh 'make'\n} catch (Exception e) {\n}",
+        good: "try {\n    sh 'make'\n} catch (Exception ignored) {\n    // the build step is optional\n}",
+        fixable: false,
     },
     Rule {
         name: "EmptyIfStatement",
         default: true,
         description: "if statement with an empty block",
+        why: "An `if` that does nothing is dead code or an unfinished edit.",
+        bad: "if (isRelease) {\n}",
+        good: "if (isRelease) {\n    publish()\n}",
+        fixable: false,
     },
     Rule {
         name: "EmptyElseBlock",
         default: true,
         description: "else with an empty block",
+        why: "An empty `else` adds nothing and usually marks an unfinished edit.",
+        bad: "if (ok) {\n    deploy()\n} else {\n}",
+        good: "if (ok) {\n    deploy()\n}",
+        fixable: false,
     },
     Rule {
         name: "EmptyTryBlock",
         default: true,
         description: "try with an empty block",
+        why: "A `try` with nothing in it guards nothing; its `catch` and `finally` are dead or misplaced.",
+        bad: "try {\n} finally {\n    cleanup()\n}",
+        good: "cleanup()",
+        fixable: false,
     },
     Rule {
         name: "EmptyFinallyBlock",
         default: true,
         description: "finally with an empty block",
+        why: "An empty `finally` does nothing and usually marks forgotten cleanup.",
+        bad: "try {\n    run()\n} finally {\n}",
+        good: "try {\n    run()\n} finally {\n    cleanup()\n}",
+        fixable: false,
     },
     Rule {
         name: "EmptyWhileStatement",
         default: true,
         description: "while loop with an empty block",
+        why: "A `while` loop with an empty block spins doing nothing, or is an unfinished edit.",
+        bad: "while (queue.poll()) {\n}",
+        good: "while (queue.poll()) {\n    handled++\n}",
+        fixable: false,
     },
     Rule {
         name: "EmptyForStatement",
         default: true,
         description: "for loop with an empty block",
+        why: "A `for` loop with an empty block does nothing.",
+        bad: "for (f in files) {\n}",
+        good: "for (f in files) {\n    check(f)\n}",
+        fixable: false,
     },
     Rule {
         name: "DuplicateMapKey",
         default: true,
         description: "a map literal with the same constant key twice; the later entry wins",
+        why: "A map literal keeps only the last value for a key, so the earlier entry is silently lost. `a:`, `'a':` and `\"a\":` are the same key.",
+        bad: "def env = [STAGE: 'dev', REGION: 'eu', STAGE: 'prod']",
+        good: "def env = [STAGE: 'prod', REGION: 'eu']",
+        fixable: false,
     },
     Rule {
         name: "DuplicateCaseStatement",
         default: true,
         description: "a switch with two case labels for the same constant",
+        why: "The second `case` for the same value can never run.",
+        bad: "switch (env) {\n    case 'prod': deploy(); break\n    case 'prod': notify(); break\n}",
+        good: "switch (env) {\n    case 'prod': deploy(); notify(); break\n}",
+        fixable: false,
     },
     Rule {
         name: "AssignmentInConditional",
         default: true,
         description: "`=` where `==` was probably meant, in an if condition (`while (x = next())` is a common idiom, so loops are exempt, and so is an assignment in extra parentheses)",
+        why: "`if (x = 1)` assigns, and the condition is the assigned value; `==` was almost always meant. Wrap it in extra parentheses if the assignment is deliberate.",
+        bad: "if (status = 'FAILED') {\n    alert()\n}",
+        good: "if (status == 'FAILED') {\n    alert()\n}",
+        fixable: false,
     },
     Rule {
         name: "ComparisonWithSelf",
         default: false,
         description: "a variable compared with itself (off by default: Spock equality checks do this on purpose; GORM `where { title == title }` is exempt)",
+        why: "Comparing a variable with itself always gives the same answer, so the check is a typo for another variable.",
+        bad: "if (expected == expected) {\n    pass()\n}",
+        good: "if (actual == expected) {\n    pass()\n}",
+        fixable: false,
     },
     Rule {
         name: "ConstantIfExpression",
         default: true,
         description: "an if condition that is a literal, so one branch never runs",
+        why: "A literal condition means one branch never runs: a debugging leftover or dead code.",
+        bad: "if (true) {\n    deploy()\n}",
+        good: "deploy()",
+        fixable: false,
     },
     Rule {
         name: "UnnecessaryGString",
         default: false,
         description: "double-quoted string with nothing to interpolate (off by default: noisy where double quotes are the house style)",
+        why: "A double-quoted string without `$` reads as if something were interpolated; a single-quoted String says it isn't.",
+        bad: "def stage = \"build\"",
+        good: "def stage = 'build'",
+        fixable: false,
     },
 ];
 
@@ -795,6 +866,24 @@ mod tests {
                 ("ComparisonWithSelf", 3)
             ]
         );
+    }
+
+    #[test]
+    fn explain_examples_show_their_rule_and_fixable_matches_the_fixes() {
+        for r in RULES {
+            let fired = |src: &str| {
+                lint(src)
+                    .expect(src)
+                    .into_iter()
+                    .filter(|v| v.rule == r.name)
+                    .collect::<Vec<_>>()
+            };
+            let bad = fired(r.bad);
+            assert!(!bad.is_empty(), "{}: bad example doesn't fire", r.name);
+            assert!(fired(r.good).is_empty(), "{}: good example fires", r.name);
+            assert_eq!(bad.iter().all(|v| v.fix.is_some()), r.fixable, "{}", r.name);
+            assert!(!r.why.is_empty(), "{}", r.name);
+        }
     }
 
     #[test]

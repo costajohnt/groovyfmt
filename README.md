@@ -100,6 +100,7 @@ With no paths it works on the current directory. Directories are searched for `*
 | `groovyfmt --syntax` | only parse, and report each place groovyfmt could not parse, exit 1 if any |
 | `groovyfmt --stdin` | format stdin to stdout, for editors |
 | `groovyfmt --rules` | list lint rules and whether each is on |
+| `groovyfmt --explain <Rule>` | explain a lint rule: why it matters, an example, whether `--fix` fixes it, how to turn it off |
 | `groovyfmt --suggest-style` | suggest the indent settings that fit the code, writing nothing (see [Configuration](#configuration)) |
 
 Options: `--config <file>`, `--indent <n>`, `--stdin-filepath <path>` (see [Editors](#editors)), `--output-format text|github|json|sarif` (see [Machine-readable output](#machine-readable-output)), `--strict` (list skipped files and exit 1 if there are any, with `--check`, `--lint` or in place), `--lines <start>-<end>` and `--changed-since <rev>` (see [Changing less](#changing-less)), `-v` (also list skipped files and timing), and `--` to treat every later argument as a path. Exit status is 0 when clean, 1 when files need formatting or lint found something (or, with `--strict`, files were skipped), and 2 on errors (bad arguments, bad config, unreadable files, or `--stdin` input that can't be formatted).
@@ -196,6 +197,8 @@ Named after their [CodeNarc](https://codenarc.org/) equivalents so existing conf
 | ComparisonWithSelf | off | a variable compared with itself (Spock equality checks do this on purpose); not inside a GORM where query (`Book.where { title == title }`, `@Where`), where the left side is the domain property |
 
 A block holding only a comment doesn't count as empty.
+
+`groovyfmt --explain <Rule>` prints a rule's description, why it matters, flagged code and a fixed version, whether `--lint --fix` fixes it, and the `.groovyfmt.toml` lines to turn it off (or on).
 
 ### Fixing
 
@@ -327,6 +330,60 @@ repos:
 ```
 
 pre-commit passes the staged files by name, and `exclude` in `.groovyfmt.toml` still applies to them, so generated code stays untouched without repeating the patterns in the hook.
+
+## Using groovyfmt with coding agents
+
+A coding agent that edits a Jenkinsfile or a Gradle script has no compiler to tell it whether the file still reads as Groovy. groovyfmt answers in milliseconds, in a form an agent can act on: exit codes, `path:line:col` messages, and JSON.
+
+### Claude Code hook
+
+This [PostToolUse hook](https://code.claude.com/docs/en/hooks) formats every Groovy file Claude writes or edits, then lints it. It goes in `.claude/settings.json` (or `~/.claude/settings.json`) and needs `jq` and `groovyfmt` on `PATH`:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(jq -r '.tool_input.file_path // empty'); case \"$f\" in *.groovy|*.gradle|*.gvy|*.gy|*.gsh|*/Jenkinsfile|Jenkinsfile) groovyfmt -- \"$f\" >/dev/null 2>&1; groovyfmt --lint --strict --output-format json -- \"$f\" >&2 || exit 2;; esac"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The hook reads the edited path from the `tool_input.file_path` field of its JSON input and does nothing for other files. It formats the file in place, which changes nothing when the file doesn't parse. Then it lints with `--strict`, so a file groovyfmt couldn't parse fails too. When anything is found, the JSON report (lint violations, or `ParseError` diagnostics with line and column) goes to stderr and the hook exits 2; for PostToolUse, Claude Code then shows that stderr to Claude next to the tool result. A clean file prints nothing to Claude. `exclude` in `.groovyfmt.toml` still applies, since the file is named on the command line.
+
+### Instructions for the agent
+
+Put this in `AGENTS.md` or `CLAUDE.md`:
+
+```markdown
+## Groovy, Gradle and Jenkinsfiles
+
+After editing a `.groovy`, `.gradle` or `Jenkinsfile`, check it with groovyfmt:
+
+- `groovyfmt --syntax <file>`: does it parse? Each problem prints as
+  `file:line:col: could not parse: <message>`. groovyfmt's grammar is not the Groovy
+  compiler, so a few valid files fail; if the code is right, say so instead of rewriting it.
+- `groovyfmt --lint --fix <file>`: removes unused and duplicate imports and stray
+  semicolons, then lists what is left. `groovyfmt --explain <Rule>` explains a rule.
+- `groovyfmt --check --diff <file>`: shows what formatting would change; `groovyfmt <file>`
+  applies it.
+- Add `--output-format json` for a machine-readable report.
+
+Exit codes: 0 clean, 1 something to fix (parse error, lint violation, or formatting),
+2 a usage or I/O error.
+```
+
+### pre-commit
+
+To check the same things before each commit, use the hooks in [pre-commit](#pre-commit).
 
 ## Editors
 
