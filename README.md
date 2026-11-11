@@ -63,6 +63,8 @@ Rust 1.90+ and a C compiler:
 cargo install --locked --git https://github.com/costajohnt/groovyfmt
 ```
 
+The Groovy grammar is vendored in the repository (`grammar/`), so this fetches only groovyfmt and its crates.io dependencies.
+
 ### npm
 
 Not published yet. Once it is, `npx groovyfmt` runs it without installing, and `npm install --save-dev groovyfmt` adds it to a project. The package downloads only the binary for your platform (Linux or macOS, x64 or arm64).
@@ -491,7 +493,7 @@ Add `--stdin-filepath <path>` (it requires `--stdin`) to tell groovyfmt which fi
 
 groovyfmt only touches files it can parse. On a corpus of 23,766 files from grails-core, groovy, gradle, spock, CodeNarc, nextflow and Jenkins pipeline repositories, 99.6% parse cleanly. On [OpenBoxes](https://github.com/openboxes/openboxes), a production Grails application that isn't in the corpus, 99.5% of its 1,327 files do.
 
-The grammar is [dekobon/tree-sitter-groovy](https://github.com/dekobon/tree-sitter-groovy), currently pinned to the fork branch [`costajohnt/tree-sitter-groovy@groovyfmt-base`](https://github.com/costajohnt/tree-sitter-groovy/tree/groovyfmt-base), which adds upstream PR #49 plus our fixes to the 0.3.0 release:
+The grammar is [dekobon/tree-sitter-groovy](https://github.com/dekobon/tree-sitter-groovy) as extended on the fork branch [`costajohnt/tree-sitter-groovy@groovyfmt-base`](https://github.com/costajohnt/tree-sitter-groovy/tree/groovyfmt-base), which adds upstream PR #49 plus our fixes to the 0.3.0 release. Its generated parser is vendored in [`grammar/`](grammar/README.md), which records the fork commit it was copied from:
 
 | grammar | files parsing cleanly |
 |---|---|
@@ -517,6 +519,8 @@ groovyfmt --stats <dir>                  # corpus report, including an idempoten
 groovyfmt --errors <dir>                 # first parse error per failing file, for grammar work
 groovyfmt --tree <file>                  # dump the parse tree
 ```
+
+The grammar in `grammar/` is a copy; don't edit it here. To change it, fix `grammar.js` or `src/scanner.c` in a [tree-sitter-groovy](https://github.com/costajohnt/tree-sitter-groovy) checkout, run `tree-sitter generate` and its tests there and commit, then run `scripts/update-grammar.sh <checkout> [rev]` here (the checkout must be clean; `rev` defaults to its HEAD) and compare `--stats` and `--lint` on the corpus before and after.
 
 Releases: push a `v*` tag on `main` matching the Cargo.toml version and with a CHANGELOG heading; the release workflow publishes only after those checks, fmt, clippy, the tests on stable and Rust 1.90, and a build and smoke test of all four binaries pass.
 
