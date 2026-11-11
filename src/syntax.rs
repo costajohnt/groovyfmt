@@ -277,7 +277,7 @@ mod tests {
         );
         assert_eq!(
             msgs("f(a b 'x')\n"),
-            ["1:5: unexpected `b 'x'` in an argument list"]
+            ["1:7: unexpected `'x'` in an argument list"]
         );
         assert_eq!(snippet("abc\ndef"), "`abc…`");
         assert_eq!(snippet(&"é".repeat(40)), format!("`{}…`", "é".repeat(30)));
