@@ -145,7 +145,7 @@ The schema is versioned: `version` changes whenever a field is removed or change
 | `rule`, `severity`, `message` | the rule name, `warning`, and the message text (the same as the text output, unescaped) |
 | `line`, `column`, `end_line`, `end_column` | 1-based; columns count characters; the end is just past the flagged code |
 | `fixable` | whether `--lint --fix` would fix it |
-| `summary` | counts of files by status (`errors` counts `error`) and of diagnostics |
+| `summary` | counts of files by status (`errors` counts `error`) and of diagnostics; with a baseline in use, also `baselined` (violations it held back) and `stale_baseline_entries` |
 
 Strings are standard JSON. Every control character is escaped, and so is a `[` after `##` (as `\u005b`), so file names and quoted source can't act as terminal escapes or GitHub Actions workflow commands when the document is printed in a log; a JSON parser reads back the original text.
 
@@ -220,6 +220,7 @@ The general rules are named after their [CodeNarc](https://codenarc.org/) equiva
 | AssignmentInConditional | on | `if (x = 1)`, where `==` was probably meant; `while (x = next())` is a common idiom and is exempt, and so is an assignment in extra parentheses, `if ((m = re.matcher(s)))` |
 | ConstantIfExpression | on | an `if` whose condition is a literal, so one branch never runs |
 | UnnecessaryGString | off | a double-quoted string with nothing to interpolate (noisy where double quotes are the house style) |
+| UnusedSuppression | off | a `groovyfmt-ignore` comment that suppresses nothing (or names no rule), or a CodeNarc comment or `@SuppressWarnings` naming a groovyfmt rule it doesn't suppress (see [Suppressing reports](#suppressing-reports)) |
 | ComparisonWithSelf | off | a variable compared with itself (Spock equality checks do this on purpose); not inside a GORM where query (`Book.where { title == title }`, `@Where`), where the left side is the domain property |
 
 A block holding only a comment doesn't count as empty.
@@ -264,7 +265,7 @@ A name counts as used wherever it appears outside comments: as a name, or as a w
 
 | Rule | Default | Flags |
 |---|---|---|
-| UnusedPrivateField | on | a private field whose name appears nowhere else in the file; not `serialVersionUID`, an annotated field (`@Delegate`, `@Autowired`), or a field of a class whose annotation reads fields (`includeFields`, `@Entity`, `@Builder`) |
+| UnusedPrivateField | on | a private field whose name appears nowhere else in the file; not `serialVersionUID`, an annotated field (`@Delegate`, `@Autowired`; `@SuppressWarnings` and `@Deprecated` don't count), or a field of a class whose annotation reads fields (`includeFields`, `@Entity`, `@Builder`) |
 | UnusedPrivateMethod | on | a private method whose name appears nowhere else in the file (for `getX`, `isX` and `setX`, nor the property `x`); not an annotated method, or one called by name: `methodMissing`, `readObject` and the like, Spock's `setup` / `cleanup` / `setupSpec` / `cleanupSpec`, GPars' `afterStart` / `afterStop` / `onException` / `onInterrupt` / `onTimeout` |
 | UnusedVariable | on | a local variable whose name doesn't appear after its declaration in its block, closure or switch; not a script's top-level variable, `_`, an annotated one (`@Field`), or a part of `def (a, b) = ...`. Assigning it counts as a use |
 
@@ -323,6 +324,66 @@ fixed 4 violations in 1 files (DuplicateImport 1, UnnecessarySemicolon 2, Unused
 
 As with formatting, each fix is checked before the file is written: the fixed file must parse cleanly, its tokens must be the original's minus exactly the removed ones, its parse tree must keep the original's shape (so removing a `;` can't join two statements or turn one into another's body), and linting it must find the original's other violations and nothing new. A file that fails a check is left as it was and listed as `path not fixed: <why>` on stderr. A file that doesn't parse is never fixed. Writes go through the same path as formatting: symlinks, permissions, owners, hard links and `exclude` are handled the same way. Running it again changes nothing.
 
+### Suppressing reports
+
+A comment can turn rules off for part of a file. Without a rule list it covers every rule; rule names are separated by commas or spaces, and `//` and `/* */` comments both work.
+
+| Comment | Covers |
+|---|---|
+| `// groovyfmt-ignore [Rule, ...]` | its own line when it follows code there; the next line when it stands alone |
+| `// groovyfmt-ignore-start [Rule, ...]` ... `// groovyfmt-ignore-end` | every line from the start comment to the end comment (or to the end of the file) |
+
+CodeNarc's own forms work unchanged, so a project moving from CodeNarc keeps its suppressions:
+
+| Form | Covers |
+|---|---|
+| `// codenarc-disable [Rule, ...]` ... `// codenarc-enable [Rule, ...]` | from the disable comment to an enable comment for the same rules (or the end of the file); a bare `codenarc-enable` ends them all |
+| `// codenarc-disable-line [Rule, ...]` | its own line |
+| `@SuppressWarnings('Rule')`, `@SuppressWarnings(['A', 'B'])` | the class, method, constructor, field or variable it annotates; on an import, the whole file. `'all'` and `'CodeNarc'` mean every rule |
+
+A report is suppressed by the line it starts on. Suppressed reports are left out everywhere: the text, `github`, JSON and SARIF output, the exit status, `--lint --fix` (which doesn't fix them) and the language server. The off-by-default rule `UnusedSuppression` reports a groovyfmt comment that suppresses nothing, and a CodeNarc comment or `@SuppressWarnings` naming a groovyfmt rule that it doesn't suppress (other names, such as `unchecked` or CodeNarc-only rules, are left to their tools). It judges every rule, including ones turned off in the config.
+
+Formatting has its own pair: the lines from `// groovyfmt: off` to `// groovyfmt: on` (both comments included, or to the end of the file) come out byte for byte as they were. The rest of the file is formatted as with `--lines`, so in a file with an `off` comment no line is added or removed.
+
+### Baseline
+
+A baseline records the violations a repository has today, so the linter can be turned on for new code without fixing the old first:
+
+```console
+$ groovyfmt --lint --write-baseline
+wrote 1204 violations in 312 files to .groovyfmt-baseline.json
+```
+
+With `baseline = ".groovyfmt-baseline.json"` in `.groovyfmt.toml`, or `--baseline FILE` on the command line, `--lint` then reports only violations that aren't in it, and exits 0 when those are all there is. The summary counts the ones the baseline held back and its stale entries (recorded violations that are gone):
+
+```console
+$ groovyfmt --lint
+src/Build.groovy:12:5: DeadCode: This code can never run: ...
+1 violations in 312 files (DeadCode 1), 1180 in the baseline, 24 stale baseline entries (--write-baseline drops them)
+```
+
+`--write-baseline` writes to `--write-baseline=FILE` (with `=`: a separate word would be a path to lint), else the `--baseline` file, else the config's `baseline`, else `.groovyfmt-baseline.json` in the working directory. Run it again to drop stale entries; entries for files the run didn't lint are kept. With `--strict`, stale entries fail the run (exit 1), so the baseline can only shrink: fix a violation, then rewrite the baseline. `--lint --fix` leaves baselined violations alone (any violation of the same rule on a line the baseline recorded); pass `--baseline ''` to ignore the baseline and fix them too. JSON and SARIF output leave baselined violations out, as they do suppressed ones; SARIF doesn't list them as suppressed results.
+
+Each entry is the file's path relative to the baseline file's directory (with `/`), the rule, a fingerprint of the text of the line the violation starts on (whitespace runs collapsed, so re-indenting doesn't matter), and its index among same-fingerprint violations of that rule in that file. Line numbers aren't recorded, so edits above a violation don't disturb it; renaming or moving a file makes its violations new. The file is sorted JSON, the same on every machine, so it diffs cleanly in review:
+
+```json
+{"version":1,"entries":[
+{"path":"src/Build.groovy","rule":"UnusedImport","fingerprint":"5f1c0d4a7b2e9c13","index":0}
+]}
+```
+
+A baseline that isn't valid JSON, has another `version`, isn't a regular file or is over 10 MB is an error (exit 2), never silently ignored; the message names the file and the problem, never its content. Paths inside it are only compared as text, never opened.
+
+A config can come from an untrusted pull request, so its `baseline` must be a relative path inside the config's own directory, without `..` (anything else is a config error), and groovyfmt neither reads nor writes it through a symbolic link that leads out of that directory. A file named on the command line (`--baseline FILE`, `--write-baseline=FILE`) is your own choice and can be anywhere. The language server honors the config's baseline too: what it holds isn't published, and its fixes leave it alone.
+
+Adopting groovyfmt lint in an existing repository:
+
+1. `groovyfmt --lint --rules` and turn off, in `.groovyfmt.toml`, any rule the project doesn't want.
+2. `groovyfmt --lint --fix` to remove what can be removed safely.
+3. `groovyfmt --lint --write-baseline` and commit `.groovyfmt-baseline.json`.
+4. Add `baseline = ".groovyfmt-baseline.json"` to `.groovyfmt.toml`.
+5. Run `groovyfmt --lint --strict` in CI, and rewrite the baseline whenever a fix leaves stale entries.
+
 ## Configuration
 
 Each file is governed by the nearest `.groovyfmt.toml` or `groovyfmt.toml` found by walking up from that file's own directory (with `--stdin-filepath`, from that path's directory), wherever groovyfmt runs from. `groovyfmt --check ../proj` uses `proj`'s config, and one run from a repository root formats a subproject with its own config by that config. A nested config replaces its parent's completely: nothing is merged, so repeat any settings the subproject should keep. The walk doesn't stop at the repository root, so a config in a directory above the checkout (a shared workspace directory, your home directory) applies too; `-v` shows which one is used. Files with no config above them use the defaults. `--config <file>` skips discovery and applies that one file to everything; `--indent` overrides the indent of whichever config applies. `--rules` and `--stdin` without `--stdin-filepath` use the config for the current directory. Everything is optional:
@@ -334,6 +395,7 @@ use_tabs = false            # true: indent with tabs, one per indent level
 indent_after_labels = false # true: indent Spock when:/then: blocks under their label
 normalize_spacing = false   # true: also fix the spaces between tokens within a line
 exclude = ["generated/**", "**/*.gsh"] # skip these files and directories
+baseline = ".groovyfmt-baseline.json"   # lint reports only what isn't in it (see Baseline)
 
 [lint]                      # rule = true/false; unlisted rules keep their default
 UnnecessaryGString = true
@@ -520,6 +582,9 @@ After editing a `.groovy`, `.gradle` or `Jenkinsfile`, check it with groovyfmt:
   compiler, so a few valid files fail; if the code is right, say so instead of rewriting it.
 - `groovyfmt --lint --fix <file>`: removes unused, duplicate and same-package imports and
   stray semicolons, then lists what is left. `groovyfmt --explain <Rule>` explains a rule.
+- Fix the violations your change introduces. Don't add `groovyfmt-ignore` comments,
+  `@SuppressWarnings` or baseline entries to silence them unless you are asked to; a
+  baseline (`.groovyfmt-baseline.json`) already holds the old ones, so don't rewrite it.
 - `groovyfmt --check --diff <file>`: shows what formatting would change; `groovyfmt <file>`
   applies it.
 - Add `--output-format json` for a machine-readable report.

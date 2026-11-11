@@ -79,6 +79,13 @@ struct Directive<'a> {
 }
 
 pub(super) fn apply(src: &str, nodes: &[Node], v: &mut Vec<Violation>) {
+    // most files have none: one scan of the text instead of a look at every comment
+    if !["groovyfmt-ignore", "codenarc-", "SuppressWarnings"]
+        .iter()
+        .any(|w| src.contains(w))
+    {
+        return;
+    }
     let mut ds = directives(src, nodes);
     if ds.is_empty() {
         return;
@@ -103,9 +110,7 @@ pub(super) fn apply(src: &str, nodes: &[Node], v: &mut Vec<Violation>) {
             Rules::Some(names) => names
                 .iter()
                 .filter(|(n, used)| {
-                    !used
-                        && (d.family == Family::Groovyfmt
-                            || RULES.iter().any(|r| r.name == n))
+                    !used && (d.family == Family::Groovyfmt || RULES.iter().any(|r| r.name == n))
                 })
                 .map(|(n, _)| n.as_str())
                 .collect(),
@@ -127,13 +132,16 @@ pub(super) fn apply(src: &str, nodes: &[Node], v: &mut Vec<Violation>) {
 fn body<'a>(n: Node, src: &'a str) -> &'a str {
     let t = text(n, src);
     t.strip_prefix("//")
-        .or_else(|| t.strip_prefix("/*").map(|b| b.strip_suffix("*/").unwrap_or(b)))
+        .or_else(|| {
+            t.strip_prefix("/*")
+                .map(|b| b.strip_suffix("*/").unwrap_or(b))
+        })
         .unwrap_or(t)
         .trim()
 }
 
 /// The directive word a comment starts with, and the rest.
-fn directive<'a>(b: &'a str) -> Option<(&'a str, &'a str)> {
+fn directive(b: &str) -> Option<(&str, &str)> {
     const WORDS: &[&str] = &[
         "groovyfmt-ignore-start",
         "groovyfmt-ignore-end",
@@ -191,9 +199,9 @@ fn directives<'a>(src: &str, nodes: &[Node<'a>]) -> Vec<Directive<'a>> {
                     let closes = d.family == family
                         && match (&rules, &d.rules) {
                             (Rules::All(_), _) => true,
-                            (Rules::Some(names), Rules::Some(theirs)) => {
-                                names.iter().any(|(n, _)| theirs.iter().any(|(t, _)| t == n))
-                            }
+                            (Rules::Some(names), Rules::Some(theirs)) => names
+                                .iter()
+                                .any(|(n, _)| theirs.iter().any(|(t, _)| t == n)),
                             (Rules::Some(_), Rules::All(_)) => false,
                         };
                     if closes {
@@ -328,7 +336,15 @@ mod tests {
                 ("UnusedSuppression", 5)
             ]
         );
-        assert!(v[1].message.contains("UnusedImport, NoSuchRule"), "{}", v[1].message);
-        assert!(v[2].message.contains("of UnusedImport matches"), "{}", v[2].message);
+        assert!(
+            v[1].message.contains("UnusedImport, NoSuchRule"),
+            "{}",
+            v[1].message
+        );
+        assert!(
+            v[2].message.contains("of UnusedImport matches"),
+            "{}",
+            v[2].message
+        );
     }
 }

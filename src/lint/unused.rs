@@ -464,10 +464,11 @@ mod tests {
             rules("def f(x) {\n  g(x)\n  def y = 1\n}\n", "UnusedVariable"),
             vec![3]
         );
-        // a script's top-level variables, and annotated ones (`@Field`), are left alone
+        // a script's top-level variables and annotated ones (`@Field`) are left alone, and
+        // a suppression is a suppression
         assert_eq!(
             rules(
-                "def x = 1\n@Field def y = 1\ndef f() {\n  @SuppressWarnings('x') def z = 1\n}\n",
+                "def x = 1\n@Field def y = 1\ndef f() {\n  @SuppressWarnings('UnusedVariable') def z = 1\n}\n",
                 "UnusedVariable"
             ),
             vec![] as Vec<usize>

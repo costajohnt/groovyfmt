@@ -105,11 +105,24 @@ impl Config {
                 ("exclude", _) => {
                     return Err("`exclude` must be a list of glob strings".into());
                 }
-                ("baseline", toml::Value::String(f)) if !f.is_empty() => {
+                // a pull request can set this, so it may only name a file in the config's own
+                // directory tree: relative, and no `..`
+                ("baseline", toml::Value::String(f))
+                    if !f.is_empty()
+                        && Path::new(f).components().all(|c| {
+                            matches!(
+                                c,
+                                std::path::Component::Normal(_) | std::path::Component::CurDir
+                            )
+                        }) =>
+                {
                     cfg.baseline = Some(PathBuf::from(f))
                 }
                 ("baseline", _) => {
-                    return Err("`baseline` must be the path of a baseline file".into());
+                    return Err(
+                        "`baseline` must be a relative path inside the config's directory, without `..`"
+                            .into(),
+                    );
                 }
                 (other, _) => {
                     return Err(format!(
@@ -382,6 +395,35 @@ mod tests {
             !Config::default().rule_enabled("UnnecessaryGString"),
             "off by default"
         );
+    }
+
+    #[test]
+    fn baseline_paths_stay_inside_the_config_directory() {
+        for ok in ["b.json", "./ci/b.json", "a/b/c.json"] {
+            let cfg = Config::parse(&format!("baseline = \"{ok}\"")).unwrap();
+            assert_eq!(cfg.baseline, Some(PathBuf::from(ok)));
+        }
+        for bad in [
+            "..",
+            "../b.json",
+            "a/../../b.json",
+            "a/../b.json",
+            "/etc/passwd",
+            "../../.github/workflows/x.yml",
+            "",
+        ] {
+            let e = Config::parse(&format!("baseline = \"{bad}\"")).unwrap_err();
+            assert!(e.contains("relative path inside"), "{bad}: {e}");
+        }
+        assert!(Config::parse("baseline = 1").is_err());
+        // loaded: resolved against the config's own directory
+        let dir = std::env::temp_dir().join(format!("groovyfmt-bl-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/.groovyfmt.toml"), "baseline = \"b.json\"\n").unwrap();
+        let cfg = Config::load(&dir.join("sub/.groovyfmt.toml")).unwrap();
+        assert_eq!(cfg.baseline, Some(cfg.root.join("b.json")));
+        assert!(cfg.root.ends_with("sub"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

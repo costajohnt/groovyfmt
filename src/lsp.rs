@@ -316,6 +316,7 @@ fn baseline_of(doc: &Doc, cfg: &Config) -> Result<Option<(Baseline, String)>, St
     let Some(f) = &cfg.baseline else {
         return Ok(None);
     };
+    crate::baseline::confined(&cfg.root, f)?;
     let rel = crate::baseline::relative(&doc.path, f.parent().unwrap_or(Path::new("")));
     Ok(Some((Baseline::load(f)?, rel)))
 }
@@ -383,24 +384,30 @@ impl Server {
         let ds: Vec<String> = match self.setup(doc) {
             Setup::Off => Vec::new(),
             Setup::Broken(e) => vec![diag(0, 0, 1, "config", &e)],
-            Setup::Cfg(cfg) => match (lint::lint_file(&doc.path, &doc.text), baseline_of(doc, &cfg)) {
+            Setup::Cfg(cfg) => match (
+                lint::lint_file(&doc.path, &doc.text),
+                baseline_of(doc, &cfg),
+            ) {
                 (_, Err(e)) => vec![diag(0, 0, 1, "baseline", &e)],
                 (Ok(vs), Ok(base)) => {
-                    let vs: Vec<_> = vs.into_iter().filter(|v| cfg.rule_enabled(v.rule)).collect();
+                    let vs: Vec<_> = vs
+                        .into_iter()
+                        .filter(|v| cfg.rule_enabled(v.rule))
+                        .collect();
                     // what the config's baseline holds is not reported, as on the command line
                     let vs = match &base {
                         Some((b, rel)) => b.filter(rel, &doc.text, vs).0,
                         None => vs,
                     };
                     vs.iter()
-                    .map(|v| {
-                        let (s, e) = (
-                            lines.offset(v.line, v.col),
-                            lines.offset(v.end_line, v.end_col),
-                        );
-                        diag(s, e, 2, v.rule, &v.message)
-                    })
-                    .collect()
+                        .map(|v| {
+                            let (s, e) = (
+                                lines.offset(v.line, v.col),
+                                lines.offset(v.end_line, v.end_col),
+                            );
+                            diag(s, e, 2, v.rule, &v.message)
+                        })
+                        .collect()
                 }
                 (Err(_), _) => syntax::check(&doc.text)
                     .0
@@ -483,8 +490,10 @@ impl Server {
                     .iter()
                     .any(|o| kind == *o || kind.strip_prefix(o).is_some_and(|r| r.starts_with('.')))
         };
-        let (Ok(vs), Ok(base)) = (lint::lint_file(&doc.path, &doc.text), baseline_of(doc, &cfg))
-        else {
+        let (Ok(vs), Ok(base)) = (
+            lint::lint_file(&doc.path, &doc.text),
+            baseline_of(doc, &cfg),
+        ) else {
             return Ok("[]".into());
         };
         // nothing the baseline holds is fixed, as on the command line
@@ -550,8 +559,9 @@ impl Server {
             }
         }
         if want(FIX_ALL)
-            && let Fix::Fixed(new, _) =
-                fix::fix(&doc.path, &doc.text, |v, text| cfg.rule_enabled(v.rule) && !held(v, text))
+            && let Fix::Fixed(new, _) = fix::fix(&doc.path, &doc.text, |v, text| {
+                cfg.rule_enabled(v.rule) && !held(v, text)
+            })
         {
             out.push(action("Fix all auto-fixable problems", FIX_ALL, &new, ""));
         }

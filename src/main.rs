@@ -989,10 +989,21 @@ fn main() {
                     // where --write-baseline writes: its own value, else --baseline, else the
                     // working directory's config, else the default name
                     let writing = a.write_baseline.as_ref().map(|w| {
-                        w.clone()
-                            .or_else(|| a.baseline.clone().filter(|b| !b.as_os_str().is_empty()))
-                            .or_else(|| one_config(&mut res, &a).baseline.clone())
-                            .unwrap_or_else(|| PathBuf::from(baseline::DEFAULT_FILE))
+                        let given = w
+                            .clone()
+                            .or_else(|| a.baseline.clone().filter(|b| !b.as_os_str().is_empty()));
+                        if let Some(f) = given {
+                            return f;
+                        }
+                        // one the config names must stay in the config's directory
+                        let cfg = one_config(&mut res, &a);
+                        match &cfg.baseline {
+                            Some(f) => {
+                                baseline::confined(&cfg.root, f).unwrap_or_else(|e| die(e));
+                                f.clone()
+                            }
+                            None => PathBuf::from(baseline::DEFAULT_FILE),
+                        }
                     });
                     lint_files(&files, &links, &cfgs, &a, false, writing.as_deref())
                 }
@@ -1215,16 +1226,20 @@ struct Linted {
     held: usize,
     stale: usize,
     /// `--write-baseline`: the file's baseline path and its violations' keys
-    keys: Option<(String, Vec<(String, String, usize)>)>,
+    keys: Option<(String, baseline::Keys)>,
 }
 
 /// The baseline file for a file governed by `cfg`: `--baseline` (`''` for none), else the
-/// config's.
+/// config's, which must stay in the config's directory (an error, exit 2, otherwise).
 fn baseline_file(a: &Args, cfg: &Config) -> Option<PathBuf> {
     match &a.baseline {
         Some(f) if f.as_os_str().is_empty() => None,
         Some(f) => Some(f.clone()),
-        None => cfg.baseline.clone(),
+        None => {
+            let f = cfg.baseline.clone()?;
+            baseline::confined(&cfg.root, &f).unwrap_or_else(|e| die(e));
+            Some(f)
+        }
     }
 }
 
@@ -1297,10 +1312,11 @@ fn lint_files(
         if a.fix {
             let cfg = &cfgs[p];
             // a violation the baseline has on a line like this one is left alone
-            let base = bases.get(p.as_path());
+            let base = bases.get(&p);
             let wanted = |v: &lint::Violation, text: &str| {
                 cfg.rule_enabled(v.rule)
-                    && !base.is_some_and(|(b, rel)| b.covers_line(rel, v.rule, line_of(text, v.line)))
+                    && !base
+                        .is_some_and(|(b, rel)| b.covers_line(rel, v.rule, line_of(text, v.line)))
             };
             match fix::fix(p, &src, wanted) {
                 Fix::Nothing => {}
@@ -1323,7 +1339,7 @@ fn lint_files(
         let text = new_text.as_deref().unwrap_or(&src);
         let cfg = &cfgs[p];
         r.violations.retain(|v| cfg.rule_enabled(v.rule));
-        if let Some((b, rel)) = bases.get(p.as_path()) {
+        if let Some((b, rel)) = bases.get(&p) {
             if writing.is_some() {
                 r.keys = Some((rel.clone(), baseline::keys(text, &r.violations)));
             } else {
@@ -1364,7 +1380,10 @@ fn lint_files(
                 fixed_files += usize::from(!r.fixed.is_empty());
                 (held, stale) = (held + r.held, stale + r.stale);
                 if let Some((rel, keys)) = r.keys {
-                    entries.extend(keys.into_iter().map(|(rule, fp, i)| (rel.clone(), rule, fp, i)));
+                    entries.extend(
+                        keys.into_iter()
+                            .map(|(rule, fp, i)| (rel.clone(), rule, fp, i)),
+                    );
                     recorded.insert(rel);
                     continue;
                 }
@@ -1478,7 +1497,9 @@ fn lint_files(
     if stale > 0 {
         summary += &format!(", {stale} stale baseline entries (--write-baseline drops them)");
     }
-    out.extra = vec![("baselined", held), ("stale_baseline_entries", stale)];
+    if !bases.is_empty() {
+        out.extra = vec![("baselined", held), ("stale_baseline_entries", stale)];
+    }
     if skipped > 0 {
         summary += &format!(", {skipped} skipped (-v shows why)");
     }
