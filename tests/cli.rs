@@ -273,7 +273,7 @@ fn syntax_messages_escape_names_and_quoted_source() {
     assert_eq!(o.status.code(), Some(1));
     assert_eq!(
         stdout(&o),
-        "x##\\[error]\\u{1b}[31m.groovy:1:5: could not parse: unexpected `b '##\\[e]\\u{7}'` in an argument list\n"
+        "x##\\[error]\\u{1b}[31m.groovy:1:7: could not parse: unexpected `'##\\[e]\\u{7}'` in an argument list\n"
     );
     let g = run(&d.0, &["--syntax", "--output-format", "github"], None);
     assert!(
