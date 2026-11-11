@@ -4,7 +4,30 @@
 
 ### Added
 
+- pre-commit hooks in the repository (`repo: https://github.com/costajohnt/groovyfmt`): `groovyfmt`, `groovyfmt-check` and `groovyfmt-lint` run the binary on `PATH`, and `groovyfmt-source`, `groovyfmt-check-source` and `groovyfmt-lint-source` build it from source with cargo.
+- A GitHub Action (`uses: costajohnt/groovyfmt@<ref>`): installs the release binary for the runner (Linux or macOS, x64 or arm64) after checking its `.sha256`, puts it on `PATH`, and runs it with `args` (default `--check --output-format github`).
+- Packaging for npm (`npm/`, the `groovyfmt` package with one `@groovyfmt/<os>-<arch>` package per platform), Homebrew (`packaging/homebrew/`, a formula rendered from a release's checksums) and a Docker image (`Dockerfile`, `scratch` plus the static binary). None of these is published yet: the release workflow's `publish-npm` and `publish-image` jobs stay off until the repository variables `PUBLISH_NPM` and `PUBLISH_IMAGE` are set (`docs/releasing.md`). CI builds and runs each against the latest release.
+- `--strict`: with `--check`, `--lint` or when formatting in place, list the files that were skipped (they don't parse, aren't UTF-8, are over 10 MB or nest too deeply) and exit 1 if there are any. Without it a skipped file never affects the exit status, so CI can pass on files nothing checked.
+- `--` ends the options: every argument after it is a path, even one starting with `-`.
+- A Gradle plugin (`gradle-plugin/`, id `io.github.costajohnt.groovyfmt`) with `groovyfmtCheck` and `groovyfmtLint`, which `check` runs, and `groovyfmtFormat`. It downloads the release binary into `~/.gradle/groovyfmt/`, checks its `.sha256` before unpacking it, and reuses it; `binary` runs a local one instead. Gradle 7.6+ on Java 11+, configuration cache compatible. Not published yet: use it with `includeBuild` from a checkout (README, Gradle). The release workflow's `publish-gradle-plugin` job stays off until the repository variable `PUBLISH_GRADLE_PLUGIN` is set (`docs/releasing.md`).
 - `normalize_spacing` config option (off by default): also fix the spaces between tokens within a line, in a conventional Groovy and Java style (one space around binary operators and after commas, `if (`, `foo(x)`, `[a: 1]`, `{ x }`, no space inside parentheses and brackets). It never moves a line break and never touches strings or comments. Alignment is kept: a run of spaces stays when the next token lines up with one on a nearby line, a line whose changes would move an aligned `=`, `:` or comment out of its column is left as it is up to that column, and Spock `where:` blocks are left exactly as written, as is spacing that could change how Groovy reads the code (`a -b`, `foo (x).bar()`, `a [1]`). The output must parse to the same tree shape as the input, or the file is formatted without spacing changes. On the 23,766-file corpus it changes 34,952 more lines in 4,435 files than formatting without it; formatting twice changes nothing, and no file is skipped that isn't skipped without it. With the option off, output is unchanged.
+
+### Changed
+
+- Each thread reuses one parser instead of creating one per parse (two to four per file): about 2% less CPU time on the 23,766-file corpus (`--stats`, 44.4 s user against 45.2 s, mean of 5 runs each).
+
+### Fixed
+
+- A line starting with a map key or named argument called `else`, `catch` or `finally` (`[` then `else: 1,`) keeps its indent instead of moving to the level of the line holding the `[` or `(`. Across the corpus and the 34 trial repositories no file has that shape; one GPars file changes because the grammar reads its `else` (after `if (follower) follower value`) as a name, and that `else` block now lines up with its `if` instead of sitting one level left of it.
+- Formatting a file whose name is close to the 255-byte limit no longer fails with `File name too long`: the temporary file beside it now has a short name of its own instead of one built from the file's name.
+- A worker thread that dies outside the per-file panic guard now turns each of its files into an `internal error, please report` error. Before, its results were dropped, the list came back short and later results could be reported against the wrong files.
+- Command-line parsing: a flag that takes no value rejects one (`--check=false` used to turn check on), and `--stdin` with path arguments is an error instead of ignoring the paths (name the buffer with `--stdin-filepath`).
+- `UnusedImport` no longer reports a class used only inside `${...}` that the grammar leaves as plain string text, as in a `"""` string holding `"${TextUtil.escapeString(path)}"` (common in Gradle's integration tests). Across the corpus and the 34 repositories this removes 97 false reports.
+- `UnusedImport` checks comments for the name as a whole word, so `// Listing` no longer counts as a use of `List`. This adds 29 reports across the corpus and the 34 repositories, each an import whose name appears nowhere else as a word (`import org.gradle.api.Project` next to `ProjectBuilder`). Comment text used to be searched once per import, which took 10 s on a 5 MB file with 30,000 imports; it now takes under 1 s.
+- `UnnecessarySemicolon` no longer reports a `;` before a line starting with `{`: without it the closure on that line becomes an argument of the statement before (`new DataflowVariable();` then `{-> ... }.callTimeoutAsync(t)` in GPars).
+- `AssignmentInConditional` treats an assignment in extra parentheses, `if ((m = matcher(s)))`, as meant, as GCC and ESLint do.
+- `ComparisonWithSelf` (off by default) no longer reports a comparison inside a GORM where query (`Book.where { title == title }`, `@Where({ ... })`), where the left side is the domain property and the right a variable.
+- `DuplicateCaseStatement` treats `case 'a':` and `case "a":` as the same label, as `DuplicateMapKey` already did for keys.
 
 ## 0.8.0 (2026-11-10)
 

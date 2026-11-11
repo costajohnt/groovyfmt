@@ -140,6 +140,59 @@ fn unparseable_files_are_left_alone() {
 }
 
 #[test]
+fn strict_fails_on_skipped_files_and_lists_them() {
+    let d = Dir::new("strict");
+    d.write("Broken.groovy", "def x = {\n");
+    d.write("Ok.groovy", PRETTY);
+    for mode in [&["--check"][..], &["--lint"], &[]] {
+        let plain = run(&d.0, mode, None);
+        assert_eq!(plain.status.code(), Some(0), "{mode:?}");
+        assert!(!stderr(&plain).contains("Broken.groovy: parse error"));
+        let args: Vec<&str> = mode.iter().copied().chain(["--strict"]).collect();
+        let strict = run(&d.0, &args, None);
+        assert_eq!(strict.status.code(), Some(1), "{mode:?}");
+        assert!(
+            stderr(&strict).contains("skipped Broken.groovy: parse error"),
+            "{mode:?}: {}",
+            stderr(&strict)
+        );
+    }
+    std::fs::remove_file(d.0.join("Broken.groovy")).unwrap();
+    assert_eq!(
+        run(&d.0, &["--check", "--strict"], None).status.code(),
+        Some(0)
+    );
+}
+
+#[test]
+fn option_parsing_edge_cases() {
+    let d = Dir::new("args");
+    d.write("A.groovy", UGLY);
+    d.write("-x.groovy", UGLY);
+    // a boolean flag takes no value, so `--check=false` can't turn check on
+    for bad in ["--check=false", "--lint=true", "--strict=no", "-v=1"] {
+        let o = run(&d.0, &[bad, "A.groovy"], None);
+        assert_eq!(o.status.code(), Some(2), "{bad}");
+        assert_eq!(d.read("A.groovy"), UGLY, "{bad}");
+    }
+    assert!(stderr(&run(&d.0, &["--check=false"], None)).contains("--check doesn't take a value"));
+    // `--` ends the options
+    let o = run(&d.0, &["--check", "--", "-x.groovy"], None);
+    assert_eq!(o.status.code(), Some(1), "{}", stderr(&o));
+    assert_eq!(stdout(&o), "-x.groovy\n");
+    assert_eq!(
+        run(&d.0, &["--", "--check"], None).status.code(),
+        Some(2),
+        "a path"
+    );
+    // paths aren't silently ignored with --stdin
+    let o = run(&d.0, &["--stdin", "A.groovy"], Some(UGLY));
+    assert_eq!(o.status.code(), Some(2));
+    assert!(stderr(&o).contains("--stdin-filepath"), "{}", stderr(&o));
+    assert_eq!(stdout(&o), "");
+}
+
+#[test]
 fn non_utf8_file_is_skipped_not_fatal() {
     let d = Dir::new("latin1");
     std::fs::write(d.0.join("Latin.groovy"), b"def s = 'caf\xe9'\n").unwrap();

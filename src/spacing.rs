@@ -791,6 +791,8 @@ mod tests {
                 "try { a() } catch (E e) { b() } finally { c() }",
             ),
             ("synchronized(x) {}", "synchronized (x) {}"),
+            // a map key spelled like a keyword is a key
+            ("def m = [else:1, catch :2]", "def m = [else: 1, catch: 2]"),
             ("do { x() }while(y)", "do { x() } while (y)"),
             ("foo (x)", "foo(x)"),
             ("def a = foo (x)", "def a = foo(x)"),

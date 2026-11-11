@@ -37,3 +37,103 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" groovyfmt-*.tar.gz* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+
+  # Off until the repository variable PUBLISH_NPM is 'true'. Needs the repository
+  # public and a trusted publisher on npmjs.com for each package; no token
+  # secret is used. See docs/releasing.md.
+  publish-npm:
+    needs: release
+    if: vars.PUBLISH_NPM == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      # Trusted publishing needs npm 11.5.1 or later.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          merge-multiple: true
+          path: archives
+      - run: node npm/build.mjs "$GITHUB_REF_NAME" archives
+      - name: Publish
+        run: |
+          set -euo pipefail
+          npm --version
+          version=${GITHUB_REF_NAME#v}
+          dist_tag=latest
+          if [[ $version == *-* ]]; then dist_tag=next; fi
+          # Platform packages first, so groovyfmt never points at a missing one.
+          # Versions already on the registry are skipped, so a rerun finishes the job.
+          for dir in npm/dist/*-*/ npm/dist/groovyfmt/; do
+            name=$(node -p "require('./$dir/package.json').name")
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "$name@$version is already published"
+              continue
+            fi
+            npm publish "./$dir" --provenance --access public --tag "$dist_tag"
+          done
+
+  # Off until the repository variable PUBLISH_IMAGE is 'true'. See docs/releasing.md.
+  publish-image:
+    needs: release
+    if: vars.PUBLISH_IMAGE == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          merge-multiple: true
+          path: archives
+      - name: Build and push
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          image=ghcr.io/${GITHUB_REPOSITORY,,}
+          version=${GITHUB_REF_NAME#v}
+          tags=(-t "$image:$version")
+          if [[ $version != *-* ]]; then tags+=(-t "$image:latest"); fi
+          packaging/docker/context.sh archives "$RUNNER_TEMP/ctx"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker buildx create --use --driver docker-container
+          docker buildx build --platform linux/amd64,linux/arm64 --push "${tags[@]}" -f Dockerfile "$RUNNER_TEMP/ctx"
+
+  # Off until the repository variable PUBLISH_GRADLE_PLUGIN is 'true'. Needs the
+  # secrets GRADLE_PUBLISH_KEY and GRADLE_PUBLISH_SECRET from a Gradle Plugin
+  # Portal account. See docs/releasing.md.
+  publish-gradle-plugin:
+    needs: release
+    if: vars.PUBLISH_GRADLE_PLUGIN == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: gradle-plugin
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: 17.0.21
+      # ci.yml skips the plugin's tests on a tag, so they run here before publishing.
+      # The plugin's version comes from Cargo.toml, which the check job matched to the tag.
+      - name: Test and publish
+        env:
+          GRADLE_PUBLISH_KEY: ${{ secrets.GRADLE_PUBLISH_KEY }}
+          GRADLE_PUBLISH_SECRET: ${{ secrets.GRADLE_PUBLISH_SECRET }}
+        run: ./gradlew --no-daemon check publishPlugins

@@ -34,17 +34,53 @@ The comparison flatters groovyfmt somewhat. It skips the 9 spock files it can't 
 
 ## Install
 
-Prebuilt binaries for Linux (x86_64 and arm64, both static musl builds that need no glibc) and macOS (Apple Silicon, Intel) are attached to each [release](https://github.com/costajohnt/groovyfmt/releases):
+| Channel | Status |
+|---|---|
+| [Release binaries](#release-binaries) | available |
+| [Build from source](#build-from-source) | available |
+| [pre-commit](#pre-commit) | available from `main`, and in releases after 0.8.0 |
+| [GitHub Action](#github-actions) | available from `main`, and in releases after 0.8.0; while the repository is private, only with a token that can read it |
+| [Gradle plugin](#gradle) | not published yet; works today from a checkout with `includeBuild` |
+| [npm](#npm) (`npx groovyfmt`) | not published yet; comes once the repository is public |
+| [Homebrew](#homebrew) | not published yet; comes once the repository is public |
+| [Docker image](#docker) | not published yet; comes once the repository is public |
+
+### Release binaries
+
+Prebuilt binaries for Linux (x86_64 and arm64, both static musl builds that need no glibc) and macOS (Apple Silicon, Intel) are attached to each [release](https://github.com/costajohnt/groovyfmt/releases), each with a `.sha256` file:
 
 ```sh
-gh release download --repo costajohnt/groovyfmt --pattern '*aarch64-apple-darwin.tar.gz'
+gh release download --repo costajohnt/groovyfmt --pattern '*aarch64-apple-darwin.tar.gz*'
+shasum -a 256 -c groovyfmt-*.tar.gz.sha256
 tar -xzf groovyfmt-*.tar.gz && mv groovyfmt-*/groovyfmt /usr/local/bin/
 ```
 
-Or build from source (Rust 1.90+, a C compiler):
+### Build from source
+
+Rust 1.90+ and a C compiler:
 
 ```sh
 cargo install --locked --git https://github.com/costajohnt/groovyfmt
+```
+
+### npm
+
+Not published yet. Once it is, `npx groovyfmt` runs it without installing, and `npm install --save-dev groovyfmt` adds it to a project. The package downloads only the binary for your platform (Linux or macOS, x64 or arm64).
+
+### Homebrew
+
+Not published yet. Once the tap exists:
+
+```sh
+brew install costajohnt/tap/groovyfmt
+```
+
+### Docker
+
+Not published yet. Once it is, the image holds only the static binary and works on the mounted directory:
+
+```sh
+docker run --rm -v "$PWD:/work" ghcr.io/costajohnt/groovyfmt --check
 ```
 
 ## Usage
@@ -53,7 +89,7 @@ cargo install --locked --git https://github.com/costajohnt/groovyfmt
 groovyfmt [OPTIONS] [PATH]...
 ```
 
-With no paths it works on the current directory. Directories are searched for `*.groovy`, `*.gradle`, `*.gvy`, `*.gy`, `*.gsh` and `Jenkinsfile`, skipping hidden directories, `build`, `out`, `target`, `node_modules` and anything matching the config's [`exclude`](#configuration) patterns. Symlinks inside those directories are not followed. A symlink named on the command line is followed: a linked file is formatted and the link stays a link, and a linked directory is searched. A named link (to a file or a directory) whose target is outside the working directory is read by `--check` and `--lint` but nothing is rewritten through it; formatting it in place is an error. This applies only when the argument itself is a link: `../other-project` or an absolute path is formatted as usual. A file named on the command line is processed even inside a skipped directory, unless it or a directory above it matches `exclude`. Files that aren't valid UTF-8, aren't regular files, are larger than 10 MB, or would need more than 200 columns of indentation (50 levels at the default indent) are skipped and listed under `-v`.
+With no paths it works on the current directory. Directories are searched for `*.groovy`, `*.gradle`, `*.gvy`, `*.gy`, `*.gsh` and `Jenkinsfile`, skipping hidden directories, `build`, `out`, `target`, `node_modules` and anything matching the config's [`exclude`](#configuration) patterns. Symlinks inside those directories are not followed. A symlink named on the command line is followed: a linked file is formatted and the link stays a link, and a linked directory is searched. A named link (to a file or a directory) whose target is outside the working directory is read by `--check` and `--lint` but nothing is rewritten through it; formatting it in place is an error. This applies only when the argument itself is a link: `../other-project` or an absolute path is formatted as usual. A file named on the command line is processed even inside a skipped directory, unless it or a directory above it matches `exclude`. Files that aren't valid UTF-8, aren't regular files, are larger than 10 MB, or would need more than 200 columns of indentation (50 levels at the default indent) are skipped and listed under `-v` or `--strict`.
 
 | Command | Does |
 |---|---|
@@ -64,7 +100,7 @@ With no paths it works on the current directory. Directories are searched for `*
 | `groovyfmt --rules` | list lint rules and whether each is on |
 | `groovyfmt --suggest-style` | suggest the indent settings that fit the code, writing nothing (see [Configuration](#configuration)) |
 
-Options: `--config <file>`, `--indent <n>`, `--stdin-filepath <path>` (see [Editors](#editors)), `--output-format text|github`, `-v` (also list skipped files and timing). Exit status is 0 when clean, 1 when files need formatting or lint found something, and 2 on errors (bad arguments, bad config, unreadable files, or `--stdin` input that can't be formatted).
+Options: `--config <file>`, `--indent <n>`, `--stdin-filepath <path>` (see [Editors](#editors)), `--output-format text|github`, `--strict` (list skipped files and exit 1 if there are any, with `--check`, `--lint` or in place), `-v` (also list skipped files and timing), and `--` to treat every later argument as a path. Exit status is 0 when clean, 1 when files need formatting or lint found something (or, with `--strict`, files were skipped), and 2 on errors (bad arguments, bad config, unreadable files, or `--stdin` input that can't be formatted).
 
 ### What formatting changes
 
@@ -101,9 +137,9 @@ Named after their [CodeNarc](https://codenarc.org/) equivalents so existing conf
 
 | Rule | Default | Flags |
 |---|---|---|
-| UnusedImport | on | an import whose name (or alias) never appears in code or comments |
+| UnusedImport | on | an import whose name (or alias) never appears in code or as a word in a comment |
 | DuplicateImport | on | the same import twice |
-| UnnecessarySemicolon | on | a `;` at the end of a line |
+| UnnecessarySemicolon | on | a `;` at the end of a line, unless the next line starts with `{` (without the `;` that closure would become an argument of the statement before) |
 | EmptyCatchBlock | on | an empty `catch`, unless the parameter is named `ignore` or `ignored` |
 | EmptyIfStatement | on | an `if` with an empty block |
 | EmptyElseBlock | on | an `else` with an empty block |
@@ -112,17 +148,17 @@ Named after their [CodeNarc](https://codenarc.org/) equivalents so existing conf
 | EmptyWhileStatement | on | a `while` loop with an empty block |
 | EmptyForStatement | on | a `for` loop with an empty block |
 | DuplicateMapKey | on | a map literal with the same constant key twice (`a:` and `'a':` count as the same); the later entry wins |
-| DuplicateCaseStatement | on | two `case` labels for the same constant |
-| AssignmentInConditional | on | `if (x = 1)`, where `==` was probably meant; `while (x = next())` is a common idiom and is exempt |
+| DuplicateCaseStatement | on | two `case` labels for the same constant (`'a'` and `"a"` count as the same) |
+| AssignmentInConditional | on | `if (x = 1)`, where `==` was probably meant; `while (x = next())` is a common idiom and is exempt, and so is an assignment in extra parentheses, `if ((m = re.matcher(s)))` |
 | ConstantIfExpression | on | an `if` whose condition is a literal, so one branch never runs |
 | UnnecessaryGString | off | a double-quoted string with nothing to interpolate (noisy where double quotes are the house style) |
-| ComparisonWithSelf | off | a variable compared with itself (GORM `where { title == title }` and Spock equality checks do this on purpose) |
+| ComparisonWithSelf | off | a variable compared with itself (Spock equality checks do this on purpose); not inside a GORM where query (`Book.where { title == title }`, `@Where`), where the left side is the domain property |
 
 A block holding only a comment doesn't count as empty.
 
 ## Configuration
 
-Each file is governed by the nearest `.groovyfmt.toml` or `groovyfmt.toml` found by walking up from that file's own directory (with `--stdin-filepath`, from that path's directory), wherever groovyfmt runs from. `groovyfmt --check ../proj` uses `proj`'s config, and one run from a repository root formats a subproject with its own config by that config. A nested config replaces its parent's completely: nothing is merged, so repeat any settings the subproject should keep. Files with no config above them use the defaults. `--config <file>` skips discovery and applies that one file to everything; `--indent` overrides the indent of whichever config applies. `--rules` and `--stdin` without `--stdin-filepath` use the config for the current directory. Everything is optional:
+Each file is governed by the nearest `.groovyfmt.toml` or `groovyfmt.toml` found by walking up from that file's own directory (with `--stdin-filepath`, from that path's directory), wherever groovyfmt runs from. `groovyfmt --check ../proj` uses `proj`'s config, and one run from a repository root formats a subproject with its own config by that config. A nested config replaces its parent's completely: nothing is merged, so repeat any settings the subproject should keep. The walk doesn't stop at the repository root, so a config in a directory above the checkout (a shared workspace directory, your home directory) applies too; `-v` shows which one is used. Files with no config above them use the defaults. `--config <file>` skips discovery and applies that one file to everything; `--indent` overrides the indent of whichever config applies. `--rules` and `--stdin` without `--stdin-filepath` use the config for the current directory. Everything is optional:
 
 ```toml
 indent = 4                  # spaces per block level, 1 to 16
@@ -167,20 +203,75 @@ Spock specs come in two styles. By default the statements of a `given:` / `when:
 
 ### GitHub Actions
 
+The action installs the release binary for the runner (Linux or macOS, x64 or arm64), checks it against its `.sha256`, puts it on `PATH` and runs it with `args`:
+
+```yaml
+- uses: actions/checkout@v5
+- uses: costajohnt/groovyfmt@main  # or a release tag after v0.8.0
+  # with:
+  #   args: --check --output-format github   # the default; "" only installs
+  #   version: 0.8.0                         # default: the release of the action ref used
+  #   token: ${{ github.token }}             # the default
+- run: groovyfmt --lint --output-format github
+```
+
+`--output-format github` turns findings into annotations on the pull request diff. While the repository is private, `token` must be able to read it, which `github.token` can only do in workflows of this repository. Without `version`, the action installs the release named by the `Cargo.toml` at the ref you use, so a release tag installs that release and `main` the latest one.
+
+Without the action:
+
 ```yaml
 - name: groovyfmt
   env:
     GH_TOKEN: ${{ github.token }}
   run: |
-    gh release download --repo costajohnt/groovyfmt --pattern '*x86_64-unknown-linux-musl.tar.gz' --output groovyfmt.tgz
-    tar -xzf groovyfmt.tgz --strip-components=1
+    gh release download --repo costajohnt/groovyfmt --pattern '*x86_64-unknown-linux-musl.tar.gz*'
+    shasum -a 256 -c groovyfmt-*.tar.gz.sha256
+    tar -xzf groovyfmt-*.tar.gz && mv groovyfmt-*/groovyfmt .
     ./groovyfmt --check --output-format github
     ./groovyfmt --lint --output-format github
 ```
 
-`--output-format github` turns findings into annotations on the pull request diff. While the repository is private, the token needs read access to it.
+This snippet has the same token limit: outside this repository, set `GH_TOKEN` to a token that can read `costajohnt/groovyfmt` (for example a fine-grained personal access token with read access to its contents, stored as a secret).
+
+Add `--strict` to `--check` or `--lint` to fail the job when a file was skipped (it doesn't parse, isn't UTF-8 or is over 10 MB), which otherwise passes unchecked.
 
 ### Gradle
+
+The Gradle plugin (`gradle-plugin/`) adds three tasks: `groovyfmtCheck` and `groovyfmtLint`, which `check` runs, and `groovyfmtFormat`, which formats in place. It downloads the release binary for the machine (Linux or macOS, x86_64 or arm64) into `~/.gradle/groovyfmt/<version>/<target>/`, checks it against its `.sha256` before unpacking it, and reuses it after that. It needs Gradle 7.6 or later on Java 11 or later, and works with the configuration cache.
+
+It is not on the Gradle Plugin Portal yet. Until it is, build it from a checkout of this repository with `includeBuild`:
+
+```groovy
+// settings.gradle
+pluginManagement {
+    includeBuild '../groovyfmt/gradle-plugin'  // path to your checkout
+}
+```
+
+```groovy
+// build.gradle
+plugins {
+    id 'base'  // or any plugin that adds check, such as java
+    id 'io.github.costajohnt.groovyfmt'
+}
+
+groovyfmt {
+    // version = '0.8.0'                          // default: the plugin's own version
+    // binary = file('/usr/local/bin/groovyfmt')  // run this binary and download nothing
+    // args = ['--strict']                        // added to every run
+    // paths = ['src', 'build.gradle']            // default: the project directory
+}
+```
+
+Once it is published, drop `includeBuild` and write `id 'io.github.costajohnt.groovyfmt' version '<version>'`.
+
+A task fails with groovyfmt's own output when files need formatting or lint finds something, and with a separate message when groovyfmt itself fails (exit code 2: bad arguments, a bad config, an unreadable file). The tasks are never up to date: groovyfmt finds its own files and configs, so Gradle can't tell when they changed.
+
+Apply the plugin to the root project only. groovyfmt searches the whole directory tree, subprojects included (it skips `build` directories), so one run covers a multi-project build; applying it to subprojects too would check their files twice.
+
+While the repository is private, the download needs a token that can read it: the environment variable `GROOVYFMT_GITHUB_TOKEN` or `GITHUB_TOKEN`, or the Gradle property `groovyfmt.githubToken` in a `gradle.properties` file. The token is sent only to `api.github.com`, in a header. Don't pass it as `-P` on the command line: Gradle 7.6 keeps every command-line `-P` value, in plain text, in its configuration cache. With `--offline` the plugin uses the cached binary and fails if there is none. There is no Windows release binary; on Windows, set `binary`.
+
+Without the plugin, with `groovyfmt` on `PATH`:
 
 ```groovy
 tasks.register('groovyfmtCheck', Exec) {
@@ -198,13 +289,24 @@ check.dependsOn 'groovyfmtCheck', 'groovyfmtLint'
 
 ```yaml
 repos:
+  - repo: https://github.com/costajohnt/groovyfmt
+    rev: main  # or a release tag after v0.8.0, which pre-commit prefers
+    hooks:
+      - id: groovyfmt        # format in place; or groovyfmt-check to only report
+      - id: groovyfmt-lint
+```
+
+These hooks run the `groovyfmt` on `PATH`. To have pre-commit build it from source instead (Rust 1.90+ and a C compiler, compiled once per `rev`), use `groovyfmt-source`, `groovyfmt-check-source` and `groovyfmt-lint-source`. While the repository is private, pre-commit needs git credentials that can clone it. Or point a local hook at the binary on `PATH`:
+
+```yaml
+repos:
   - repo: local
     hooks:
       - id: groovyfmt
         name: groovyfmt
         entry: groovyfmt
         language: system
-        files: (\.(groovy|gradle|gvy|gy|gsh)|Jenkinsfile)$
+        files: (\.(groovy|gradle|gvy|gy|gsh)|(^|/)Jenkinsfile)$
 ```
 
 pre-commit passes the staged files by name, and `exclude` in `.groovyfmt.toml` still applies to them, so generated code stays untouched without repeating the patterns in the hook.
@@ -254,6 +356,7 @@ Of the 117 corpus files still skipped, 80 aren't Groovy source: 70 Grails, Gradl
 ## Development
 
 ```sh
+scripts/ci-local.sh [corpus-dir]         # everything CI checks on Linux; run it before merging
 cargo test                               # unit and end-to-end CLI tests
 cargo clippy --all-targets -- -D warnings
 groovyfmt --stats <dir>                  # corpus report, including an idempotence check

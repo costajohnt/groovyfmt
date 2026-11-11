@@ -39,13 +39,16 @@ Options:
                            (overrides the config file)
       --output-format <F>  text (default) or github (GitHub Actions annotations)
       --rules              List lint rules and whether each is on, then exit
+      --strict             List skipped files (unparseable, not UTF-8, too large) and
+                           exit 1 if there are any, so CI can't pass on unchecked files
   -v, --verbose            Also report skipped files and timing
   -h, --help               Print help
   -V, --version            Print version
+      --                   Treat every later argument as a PATH
 
 Formatting changes whitespace only and never touches a file it can't parse, or
 one whose tokens would change. Exit status: 0 clean, 1 files to format or lint
-violations found, 2 error.
+violations found (or, with --strict, files skipped), 2 error.
 ";
 
 #[derive(Default)]
@@ -57,6 +60,7 @@ struct Args {
     indent: Option<usize>,
     github: bool,
     verbose: bool,
+    strict: bool,
 }
 
 #[derive(Default, PartialEq)]
@@ -105,14 +109,24 @@ fn parse_args() -> Args {
             _ => die("--check, --lint, --stdin, --rules and --suggest-style can't be combined"),
         };
     };
+    let mut only_paths = false;
     while let Some(arg) = it.next() {
-        let (flag, inline) = match arg.split_once('=') {
+        // `--` ends the options: everything after it is a path, even `-x` or `--check`
+        if only_paths {
+            a.paths.push(PathBuf::from(arg));
+            continue;
+        }
+        if arg == "--" {
+            only_paths = true;
+            continue;
+        }
+        let (flag, mut inline) = match arg.split_once('=') {
             Some((f, v)) if f.starts_with("--") => (f.to_string(), Some(v.to_string())),
             _ => (arg.clone(), None),
         };
         let mut value = |name: &str| {
             inline
-                .clone()
+                .take()
                 .or_else(|| it.next())
                 .unwrap_or_else(|| die(format!("{name} needs a value")))
         };
@@ -134,6 +148,7 @@ fn parse_args() -> Args {
             "--errors" => set_mode(&mut a, Mode::Errors),
             "--tree" => set_mode(&mut a, Mode::Tree),
             "-v" | "--verbose" => a.verbose = true,
+            "--strict" => a.strict = true,
             "--config" => a.config = Some(PathBuf::from(value("--config"))),
             "--stdin-filepath" => a.stdin_filepath = Some(PathBuf::from(value("--stdin-filepath"))),
             "--indent" => {
@@ -157,9 +172,16 @@ fn parse_args() -> Args {
             }
             _ => a.paths.push(PathBuf::from(arg)),
         }
+        // `--check=false` would otherwise turn check on
+        if inline.is_some() {
+            die(format!("{flag} doesn't take a value"));
+        }
     }
     if a.stdin_filepath.is_some() && a.mode != Mode::Stdin {
         die("--stdin-filepath needs --stdin");
+    }
+    if a.mode == Mode::Stdin && !a.paths.is_empty() {
+        die("--stdin reads stdin and takes no paths (name the file with --stdin-filepath)");
     }
     if a.indent.is_some() && a.mode == Mode::SuggestStyle {
         die("--indent can't be combined with --suggest-style, which tries the indents itself");
@@ -342,7 +364,8 @@ fn par_map<T: Send>(
     let threads = std::thread::available_parallelism()
         .map_or(1, |n| n.get())
         .min(files.len().max(1));
-    let mut out: Vec<(usize, Result<T, String>)> = std::thread::scope(|s| {
+    let mut out: Vec<Option<Result<T, String>>> = files.iter().map(|_| None).collect();
+    std::thread::scope(|s| {
         let handles: Vec<_> = (0..threads)
             .map(|_| {
                 s.spawn(|| {
@@ -360,13 +383,19 @@ fn par_map<T: Send>(
                 })
             })
             .collect();
-        handles
-            .into_iter()
-            .flat_map(|h| h.join().unwrap_or_default())
-            .collect()
+        for h in handles {
+            // a worker that died outside catch_unwind took its results with it
+            for (i, r) in h.join().unwrap_or_default() {
+                out[i] = Some(r);
+            }
+        }
     });
-    out.sort_unstable_by_key(|(i, _)| *i);
-    out.into_iter().map(|(_, r)| r).collect()
+    out.into_iter()
+        .zip(files)
+        .map(|(r, path)| {
+            r.unwrap_or_else(|| Err(format!("{}: internal error, please report", shown(path))))
+        })
+        .collect()
 }
 
 const NOT_UTF8: &str = "not valid UTF-8";
@@ -457,13 +486,10 @@ fn write_keeping_owner(
     if std::os::unix::fs::MetadataExt::nlink(&meta) > 1 {
         return write_in_place(path, read, contents);
     }
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy())
-        .unwrap_or_default();
-    // unique per call, so two workers given one file under different spellings can't collide
+    // unique per call, so two workers given one file under different spellings can't collide;
+    // short and not built from the file's name, which may already be as long as a name can be
     let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let tmp = path.with_file_name(format!(".{name}.groovyfmt-{}-{seq}", std::process::id()));
+    let tmp = path.with_file_name(tmp_name(seq));
     // a file already at that name isn't ours: fail without removing it
     let mut f = create_tmp(&tmp)?;
     // the new file belongs to whoever runs us (root, in a container); give it back
@@ -482,6 +508,10 @@ fn write_keeping_owner(
         let _ = std::fs::remove_file(&tmp);
     }
     result
+}
+
+fn tmp_name(seq: usize) -> String {
+    format!(".groovyfmt-{}-{seq}", std::process::id())
 }
 
 /// A new file at `tmp`, failing if one exists. Owner-only until the original permissions
@@ -696,7 +726,7 @@ fn fmt(files: &[PathBuf], links: &HashMap<PathBuf, PathBuf>, cfgs: &Configs, a: 
             Ok(Ok(None)) => {}
             Ok(Err(why)) => {
                 skipped += 1;
-                if a.verbose {
+                if a.verbose || a.strict {
                     eprintln!("skipped {}: {why}", shown(path));
                 }
             }
@@ -732,7 +762,7 @@ fn fmt(files: &[PathBuf], links: &HashMap<PathBuf, PathBuf>, cfgs: &Configs, a: 
     if failed {
         2
     } else {
-        i32::from(check && changed > 0)
+        i32::from((check && changed > 0) || (a.strict && skipped > 0))
     }
 }
 
@@ -751,7 +781,7 @@ fn lint_files(files: &[PathBuf], cfgs: &Configs, a: &Args, stats_only: bool) -> 
             }
             Ok(Err(why)) => {
                 skipped += 1;
-                if a.verbose {
+                if a.verbose || a.strict {
                     eprintln!("skipped {}: {why}", shown(path));
                 }
             }
@@ -798,7 +828,11 @@ fn lint_files(files: &[PathBuf], cfgs: &Configs, a: &Args, stats_only: bool) -> 
         summary += &format!(" in {:.2}s", t.elapsed().as_secs_f64());
     }
     eprintln!("{summary}");
-    if failed { 2 } else { i32::from(total > 0) }
+    if failed {
+        2
+    } else {
+        i32::from(total > 0 || (a.strict && skipped > 0))
+    }
 }
 
 /// Development: corpus report with an idempotence probe.
@@ -1035,8 +1069,7 @@ mod tests {
         let path = d.join("A.groovy");
         std::fs::write(&path, "old\n").unwrap();
         // squat on the temp name the next call will pick
-        let seq = TMP_SEQ.load(Ordering::Relaxed);
-        let squat = d.join(format!(".A.groovy.groovyfmt-{}-{seq}", std::process::id()));
+        let squat = d.join(tmp_name(TMP_SEQ.load(Ordering::Relaxed)));
         std::fs::write(&squat, "precious\n").unwrap();
         let err = write_atomic(&path, "new\n", id(&path)).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
@@ -1045,6 +1078,21 @@ mod tests {
         write_atomic(&path, "new\n", id(&path)).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "new\n");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn write_atomic_handles_the_longest_file_names() {
+        let _lock = TMP_NAMES.lock();
+        let d = std::env::temp_dir().join(format!("groovyfmt-longname-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        // 255 bytes, NAME_MAX on Linux and macOS: a temp name built from it can't be created
+        let path = d.join(format!("{}.groovy", "L".repeat(248)));
+        std::fs::write(&path, "old\n").unwrap();
+        let r = write_atomic(&path, "new\n", id(&path));
+        let text = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+        r.unwrap();
+        assert_eq!(text, "new\n");
     }
 
     #[test]
@@ -1097,6 +1145,35 @@ mod tests {
             } else {
                 assert_eq!(r, &Ok(f.display().to_string()));
             }
+        }
+    }
+
+    #[test]
+    fn par_map_keeps_results_with_their_files_when_a_worker_dies() {
+        // a panic payload that panics again when dropped kills its worker outside catch_unwind
+        struct Bomb;
+        impl Drop for Bomb {
+            fn drop(&mut self) {
+                panic!("dropped");
+            }
+        }
+        let files: Vec<PathBuf> = (0..200)
+            .map(|i| PathBuf::from(format!("F{i}.groovy")))
+            .collect();
+        let r = par_map(&files, |p| {
+            if p == Path::new("F3.groovy") {
+                std::panic::panic_any(Bomb);
+            }
+            Ok(p.display().to_string())
+        });
+        assert_eq!(r.len(), files.len());
+        let lost = Err("F3.groovy: internal error, please report".to_string());
+        assert_eq!(r[3], lost);
+        for (f, r) in files.iter().zip(&r) {
+            // the dead worker's other files are errors too; the rest keep their own results
+            let mine = Ok(f.display().to_string());
+            let error = Err(format!("{}: internal error, please report", f.display()));
+            assert!(*r == mine || *r == error, "{f:?}: {r:?}");
         }
     }
 

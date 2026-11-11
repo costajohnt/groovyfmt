@@ -1,11 +1,12 @@
 name: CI
 
+# Not run on pushes or pull requests, to save Actions minutes: run
+# scripts/ci-local.sh before merging instead. This workflow runs for a release
+# and when started by hand (gh workflow run ci.yml --ref <branch>).
 on:
-  push:
-    branches: [main]
-  pull_request:
   # release.yml calls this workflow, so a tag publishes only if every job here passes.
   workflow_call:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -52,7 +53,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo +1.90.0 test --locked
 
-  # The release targets, built and run on every push and pull request. On a tag,
+  # The release targets, built and run on every run of this workflow. On a tag,
   # release.yml publishes the archives this job uploads.
   build:
     name: build (${{ matrix.target }})
@@ -122,3 +123,168 @@ jobs:
         with:
           name: ${{ matrix.target }}
           path: groovyfmt-*.tar.gz*
+
+  # The install channels (action.yml, npm/, packaging/, Dockerfile), each run
+  # against the latest published release so none of them can rot. Skipped when
+  # release.yml calls this workflow for a tag: they test the previous release.
+  action:
+    name: action (${{ matrix.os }})
+    if: github.ref_type != 'tag'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - run: |
+          mkdir ci-sample
+          printf 'class A {\ndef f() {\nprintln 1\n}\n}\n' > ci-sample/A.groovy
+      - id: setup
+        uses: ./
+        with:
+          version: latest
+          args: ""
+      - name: groovyfmt is on PATH
+        env:
+          INSTALLED: ${{ steps.setup.outputs.version }}
+        run: |
+          set -euxo pipefail
+          test "$(groovyfmt --version)" = "groovyfmt ${INSTALLED#v}"
+      - id: unformatted
+        continue-on-error: true
+        uses: ./
+        with:
+          version: ${{ steps.setup.outputs.version }}
+          args: --check --output-format github ci-sample/A.groovy
+      - name: the check failed on the unformatted sample
+        if: steps.unformatted.outcome != 'failure'
+        run: exit 1
+      - run: groovyfmt ci-sample/A.groovy
+      - uses: ./
+        with:
+          version: ${{ steps.setup.outputs.version }}
+          args: --check --output-format github ci-sample/A.groovy
+
+  npm:
+    name: npm (${{ matrix.os }})
+    if: github.ref_type != 'tag'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: Build, pack and install the packages from the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          archives=$RUNNER_TEMP/archives
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern 'groovyfmt-*' --dir "$archives"
+          node npm/build.mjs "$tag" "$archives"
+          for dir in npm/dist/*/; do npm pack "./$dir" --pack-destination "$RUNNER_TEMP"; done
+          platform=$(node -p 'process.platform + "-" + process.arch')
+          npm install --no-audit --no-fund --prefix "$RUNNER_TEMP/prefix" \
+            "$RUNNER_TEMP/groovyfmt-${tag#v}.tgz" "$RUNNER_TEMP/groovyfmt-$platform-${tag#v}.tgz"
+          test "$("$RUNNER_TEMP/prefix/node_modules/.bin/groovyfmt" --version)" = "groovyfmt ${tag#v}"
+          # A checksum mismatch must stop the build.
+          printf '%064d  x\n' 0 > "$archives/groovyfmt-$tag-x86_64-apple-darwin.tar.gz.sha256"
+          if node npm/build.mjs "$tag" "$archives"; then exit 1; fi
+
+  homebrew:
+    name: homebrew formula
+    if: github.ref_type != 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: Render the formula for the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern '*.sha256' --dir "$RUNNER_TEMP/sha"
+          packaging/homebrew/render.sh "$tag" "$RUNNER_TEMP/sha" > "$RUNNER_TEMP/groovyfmt.rb"
+          cat "$RUNNER_TEMP/groovyfmt.rb"
+          ruby -c "$RUNNER_TEMP/groovyfmt.rb"
+          if grep -q '@' "$RUNNER_TEMP/groovyfmt.rb"; then exit 1; fi
+
+  docker:
+    name: docker (${{ matrix.os }})
+    if: github.ref_type != 'tag'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: Build the image from the latest release and run it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern '*-linux-musl.tar.gz*' --dir "$RUNNER_TEMP/archives"
+          packaging/docker/context.sh "$RUNNER_TEMP/archives" "$RUNNER_TEMP/ctx"
+          docker buildx create --use --driver docker-container
+          # Both platforms, as release.yml pushes them, then the native one to run.
+          docker buildx build --platform linux/amd64,linux/arm64 -f Dockerfile "$RUNNER_TEMP/ctx"
+          docker buildx build --load -t groovyfmt:ci -f Dockerfile "$RUNNER_TEMP/ctx"
+          test "$(docker run --rm groovyfmt:ci --version)" = "groovyfmt ${tag#v}"
+          mkdir "$RUNNER_TEMP/sample"
+          printf 'class A {\ndef f() {\nprintln 1\n}\n}\n' > "$RUNNER_TEMP/sample/A.groovy"
+          if docker run --rm -v "$RUNNER_TEMP/sample:/work" groovyfmt:ci --check; then exit 1; fi
+          docker run --rm -v "$RUNNER_TEMP/sample:/work" groovyfmt:ci
+          docker run --rm -v "$RUNNER_TEMP/sample:/work" groovyfmt:ci --check A.groovy
+
+  # The Gradle plugin (gradle-plugin/): unit tests and TestKit tests on the
+  # wrapper's Gradle and on the oldest supported one, then the plugin applied to
+  # a sample project, downloading the latest release.
+  gradle-plugin:
+    name: gradle plugin
+    if: github.ref_type != 'tag'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gradle-plugin
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: 17.0.21
+      - run: ./gradlew --no-daemon check
+      - name: Apply the plugin to a sample project with the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GROOVYFMT_GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          plugin=$PWD
+          sample=$RUNNER_TEMP/sample
+          mkdir -p "$sample/src"
+          printf "pluginManagement {\n    includeBuild '%s'\n}\nrootProject.name = 'sample'\n" "$plugin" > "$sample/settings.gradle"
+          printf "plugins {\n    id 'base'\n    id 'io.github.costajohnt.groovyfmt'\n}\ngroovyfmt {\n    version = '%s'\n}\n" "${tag#v}" > "$sample/build.gradle"
+          printf 'class A {\ndef f() {\nprintln 1\n}\n}\n' > "$sample/src/A.groovy"
+          cd "$sample"
+          if "$plugin/gradlew" --no-daemon groovyfmtCheck; then exit 1; fi
+          test -x "$HOME/.gradle/groovyfmt/${tag#v}/x86_64-unknown-linux-musl/groovyfmt"
+          "$plugin/gradlew" --no-daemon groovyfmtFormat
+          "$plugin/gradlew" --no-daemon check --configuration-cache
+          "$plugin/gradlew" --no-daemon check --configuration-cache --offline

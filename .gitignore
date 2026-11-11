@@ -1,3 +1,6 @@
 /target
 /corpus
 /.claude/
+/npm/dist
+/gradle-plugin/.gradle
+/gradle-plugin/build

@@ -1,0 +1,88 @@
+name: Set up groovyfmt
+description: Install a groovyfmt release binary on PATH and optionally run it
+author: costajohnt
+branding:
+  icon: check-square
+  color: green
+
+inputs:
+  version:
+    description: >-
+      Release to install, such as 0.8.0 or v0.8.0, or "latest". Default: the
+      release matching the version of the action ref you use (its Cargo.toml).
+    required: false
+    default: ""
+  args:
+    description: >-
+      Arguments to run groovyfmt with after installing, split on whitespace.
+      Empty to only install it.
+    required: false
+    default: --check --output-format github
+  token:
+    description: Token used to download the release assets.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  version:
+    description: The installed release tag, such as v0.8.0
+    value: ${{ steps.install.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - id: install
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        repo=costajohnt/groovyfmt
+        case "$RUNNER_OS/$RUNNER_ARCH" in
+          Linux/X64) target=x86_64-unknown-linux-musl ;;
+          Linux/ARM64) target=aarch64-unknown-linux-musl ;;
+          macOS/X64) target=x86_64-apple-darwin ;;
+          macOS/ARM64) target=aarch64-apple-darwin ;;
+          *)
+            echo "::error::groovyfmt has no release binary for $RUNNER_OS/$RUNNER_ARCH yet (Linux and macOS, x64 and arm64 only)"
+            exit 1 ;;
+        esac
+        version=$INPUT_VERSION
+        if [ -z "$version" ]; then
+          # ponytail: a release tag's Cargo.toml version equals the tag (check-release-tag.sh), so this is the action ref's release.
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$GITHUB_ACTION_PATH/Cargo.toml" | head -n 1)
+        fi
+        if [ "$version" = latest ]; then
+          tag=$(gh release view --repo "$repo" --json tagName --jq .tagName)
+        elif [[ "$version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+          tag=v${version#v}
+        else
+          echo "::error::version must be like 0.8.0, v0.8.0 or latest"
+          exit 1
+        fi
+        archive=groovyfmt-$tag-$target.tar.gz
+        dir=$RUNNER_TEMP/groovyfmt-$tag-$target
+        rm -rf "$dir"
+        mkdir -p "$dir"
+        gh release download "$tag" --repo "$repo" --dir "$dir" --pattern "$archive" --pattern "$archive.sha256"
+        expected=$(cut -d ' ' -f 1 "$dir/$archive.sha256")
+        actual=$(shasum -a 256 "$dir/$archive" | cut -d ' ' -f 1)
+        if [ "$expected" != "$actual" ] || [ -z "$actual" ]; then
+          echo "::error::Checksum mismatch for $archive: expected $expected, got $actual"
+          exit 1
+        fi
+        tar -xzf "$dir/$archive" -C "$dir" --strip-components=1
+        "$dir/groovyfmt" --version
+        echo "$dir" >> "$GITHUB_PATH"
+        echo "version=$tag" >> "$GITHUB_OUTPUT"
+        echo "dir=$dir" >> "$GITHUB_OUTPUT"
+    - if: inputs.args != ''
+      shell: bash
+      env:
+        INPUT_ARGS: ${{ inputs.args }}
+        GROOVYFMT_DIR: ${{ steps.install.outputs.dir }}
+      run: |
+        set -euo pipefail
+        read -r -a args <<< "$INPUT_ARGS"
+        "$GROOVYFMT_DIR/groovyfmt" ${args[@]+"${args[@]}"}
