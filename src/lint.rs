@@ -165,6 +165,244 @@ pub const RULES: &[Rule] = &[
         good: "def stage = 'build'",
         fixable: false,
     },
+    // Suppressions (src/lint/suppress.rs)
+    Rule {
+        name: "UnusedSuppression",
+        default: false,
+        description: "a groovyfmt-ignore comment that suppresses nothing, or a codenarc-disable comment or @SuppressWarnings naming a groovyfmt rule it doesn't suppress (off by default: a suppression can be kept for code that comes and goes)",
+        why: "A suppression that matches nothing hides the next real report on that line, and a misspelled rule name in it suppresses nothing at all.",
+        bad: "// groovyfmt-ignore UnusedImport\nprintln 'hello'",
+        good: "import a.Unused // groovyfmt-ignore UnusedImport -- loaded for its side effect\nprintln 'hello'",
+        fixable: false,
+    },
+    // Imports (src/lint/imports.rs)
+    Rule {
+        name: "UnnecessaryGroovyImport",
+        default: true,
+        description: "an import from java.lang, java.util, java.io, java.net, groovy.lang or groovy.util, or of BigDecimal or BigInteger, which Groovy imports by default (not in *.gradle files)",
+        why: "Groovy imports these packages into every file, so the import is noise. It can be needed only to beat a class of the same name in the file's own package, which is why --fix leaves it to you.",
+        bad: "import java.util.concurrent.TimeUnit\nimport java.util.List\n\nList<TimeUnit> units = []",
+        good: "import java.util.concurrent.TimeUnit\n\nList<TimeUnit> units = []",
+        fixable: false,
+    },
+    Rule {
+        name: "ImportFromSamePackage",
+        default: true,
+        description: "an import of a class from the file's own package",
+        why: "Classes of the file's own package need no import: Groovy looks there right after the imports, so the line does nothing.",
+        bad: "package com.example.build\n\nimport com.example.build.Versions\n\ndef v = Versions.KOTLIN",
+        good: "package com.example.build\n\ndef v = Versions.KOTLIN",
+        fixable: true,
+    },
+    // Bugs the syntax shows (src/lint/basic.rs)
+    Rule {
+        name: "DeadCode",
+        default: true,
+        description: "a statement after return, throw, break or continue in the same block, on a later line (not a declaration, a labeled statement, or a break right after a return or throw)",
+        why: "Code after a `return`, `throw`, `break` or `continue` never runs: it is left over from an edit, or the jump is in the wrong place.",
+        bad: "def check(x) {\n    return x > 0\n    log.info 'checked'\n}",
+        good: "def check(x) {\n    log.info 'checked'\n    return x > 0\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "DuplicateSetValue",
+        default: false,
+        description: "a list literal made a Set (`[...] as Set`) with the same constant twice (off by default: tests repeat values on purpose to check that a set drops them)",
+        why: "A set keeps one copy of each value, so the second copy is dropped: usually a typo for another value.",
+        bad: "def stages = ['build', 'test', 'build'] as Set",
+        good: "def stages = ['build', 'test', 'deploy'] as Set",
+        fixable: false,
+    },
+    Rule {
+        name: "EqualsAndHashCode",
+        default: true,
+        description: "a class defining equals(Object) without hashCode()",
+        why: "Equal objects must have equal hash codes; with a custom equals and the inherited identity hashCode, equal objects land in different buckets, so maps and sets misbehave.",
+        bad: "class Point {\n    int x\n    boolean equals(Object o) { o instanceof Point && o.x == x }\n}",
+        good: "class Point {\n    int x\n    boolean equals(Object o) { o instanceof Point && o.x == x }\n    int hashCode() { x }\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "EqualsOverloaded",
+        default: true,
+        description: "an equals method whose one parameter is typed other than Object, so it overloads equals instead of overriding it",
+        why: "`equals(Point p)` is a new method, not an override: `==`, collections and maps still call `equals(Object)` and never see it.",
+        bad: "class Point {\n    int x\n    boolean equals(Point p) { p.x == x }\n    int hashCode() { x }\n}",
+        good: "class Point {\n    int x\n    boolean equals(Object o) { o instanceof Point && o.x == x }\n    int hashCode() { x }\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "ReturnFromFinallyBlock",
+        default: true,
+        description: "a return in a finally block",
+        why: "A `return` in `finally` replaces whatever the `try` returned and silently discards any exception it threw.",
+        bad: "def read() {\n    try {\n        return load()\n    } finally {\n        return null\n    }\n}",
+        good: "def read() {\n    try {\n        return load()\n    } finally {\n        close()\n    }\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "ThrowExceptionFromFinallyBlock",
+        default: false,
+        description: "a throw in a finally block (not one a catch inside the finally handles) (off by default: rethrowing a saved exception after cleanup is a common idiom)",
+        why: "An exception thrown from `finally` replaces the one the `try` threw, which is the one that explains the failure.",
+        bad: "try {\n    run()\n} finally {\n    throw new IllegalStateException('cleanup failed')\n}",
+        good: "try {\n    run()\n} finally {\n    cleanup()\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "AssertWithinFinallyBlock",
+        default: false,
+        description: "an assert in a finally block (off by default: tests check state after cleanup this way on purpose)",
+        why: "A failing `assert` in `finally` throws and replaces the exception the `try` may have thrown.",
+        bad: "try {\n    run()\n} finally {\n    assert done\n}",
+        good: "try {\n    run()\n} finally {\n    cleanup()\n}\nassert done",
+        fixable: false,
+    },
+    Rule {
+        name: "EmptySwitchStatement",
+        default: true,
+        description: "a switch with no cases",
+        why: "A `switch` with no cases does nothing: an unfinished edit.",
+        bad: "switch (env) {\n}",
+        good: "switch (env) {\n    case 'prod': deploy(); break\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "EmptyStaticInitializer",
+        default: true,
+        description: "an empty static { } block in a class",
+        why: "An empty static initializer does nothing and can be removed.",
+        bad: "class Config {\n    static {\n    }\n}",
+        good: "class Config {\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "EmptyInstanceInitializer",
+        default: true,
+        description: "an empty { } instance initializer in a class",
+        why: "An empty instance initializer does nothing and can be removed.",
+        bad: "class Config {\n    {\n    }\n}",
+        good: "class Config {\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "ConstantTernaryExpression",
+        default: false,
+        description: "a ternary or elvis whose condition is a constant, so it always picks the same branch (off by default: on real code it found only tests of the ternary itself)",
+        why: "With a constant condition, `true ? a : b` is always `a`: a debugging leftover or a typo for a variable.",
+        bad: "def level = true ? 'debug' : 'info'",
+        good: "def level = verbose ? 'debug' : 'info'",
+        fixable: false,
+    },
+    Rule {
+        name: "ConstantAssertExpression",
+        default: false,
+        description: "an assert whose condition is a constant (off by default: tests use `assert false` and `assert true` on purpose)",
+        why: "`assert true` always passes and checks nothing; `assert null` always fails. Assert the condition that should hold.",
+        bad: "assert true",
+        good: "assert result.ok",
+        fixable: false,
+    },
+    Rule {
+        name: "ComparisonOfTwoConstants",
+        default: false,
+        description: "a comparison of two constants or literals made of constants (off by default: tests and placeholders (`expect: 1 == 1`) do it on purpose)",
+        why: "Comparing two constants always gives the same answer, so one side was meant to be a variable.",
+        bad: "if ('prod' == 'prod') {\n    deploy()\n}",
+        good: "if (env == 'prod') {\n    deploy()\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "BrokenNullCheck",
+        default: true,
+        description: "`x != null || x.a` or `x == null && x.a`, which dereference x exactly when it is null",
+        why: "The right side runs only when `x` is null, so it throws a NullPointerException: `&&` and `||` are swapped.",
+        bad: "if (name != null || name.length() > 0) {\n    greet(name)\n}",
+        good: "if (name != null && name.length() > 0) {\n    greet(name)\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "BrokenOddnessCheck",
+        default: false,
+        description: "`x % 2 == 1`, which is false for negative odd numbers (off by default: almost every real case is a count or size that is never negative)",
+        why: "For a negative odd `x`, `x % 2` is -1, so the check says it is even. `x % 2 != 0` works for both signs.",
+        bad: "if (n % 2 == 1) {\n    odd++\n}",
+        good: "if (n % 2 != 0) {\n    odd++\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "RemoveAllOnSelf",
+        default: true,
+        description: "`c.removeAll(c)`",
+        why: "`c.removeAll(c)` empties the collection less clearly than `c.clear()`, slower, and some collections throw ConcurrentModificationException.",
+        bad: "pending.removeAll(pending)",
+        good: "pending.clear()",
+        fixable: false,
+    },
+    Rule {
+        name: "ObjectOverrideMisspelledMethodName",
+        default: true,
+        description: "equal(Object), hashcode(), toSTring() and other misspellings of equals, hashCode and toString",
+        why: "A misspelled `hashcode()` or `equal(Object)` doesn't override Object's method, so nothing calls it.",
+        bad: "class Point {\n    int x\n    int hashcode() { x }\n}",
+        good: "class Point {\n    int x\n    int hashCode() { x }\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "ToStringReturnsNull",
+        default: false,
+        description: "a toString() that returns null, ends in null, or is empty (off by default: on real code it found only test fixtures that return null on purpose)",
+        why: "Callers expect `toString()` to return text; null breaks string building and logging with a NullPointerException.",
+        bad: "class Job {\n    String name\n    String toString() {\n        return null\n    }\n}",
+        good: "class Job {\n    String name\n    String toString() {\n        return \"Job ${name}\"\n    }\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "MissingNewInThrowStatement",
+        default: true,
+        description: "`throw SomeException(...)` or `throw SomeException` without new (a capitalized name ending in Exception, Failure or Fault)",
+        why: "Without `new`, Groovy calls a method named `RuntimeException`, which doesn't exist, so the error path throws MissingMethodException and hides the real cause.",
+        bad: "throw IllegalStateException('no target')",
+        good: "throw new IllegalStateException('no target')",
+        fixable: false,
+    },
+    Rule {
+        name: "ExceptionNotThrown",
+        default: true,
+        description: "a catch block ending in `new SomeException(...)` that isn't thrown (or returned as the method's value)",
+        why: "Creating an exception does nothing until it is thrown; without `throw` the error is swallowed.",
+        bad: "void run() {\n    try {\n        work()\n    } catch (IOException e) {\n        new IllegalStateException(e)\n    }\n}",
+        good: "void run() {\n    try {\n        work()\n    } catch (IOException e) {\n        throw new IllegalStateException(e)\n    }\n}",
+        fixable: false,
+    },
+    // Unused code (src/lint/unused.rs)
+    Rule {
+        name: "UnusedPrivateField",
+        default: true,
+        description: "a private field whose name appears nowhere else in the file (not one with an annotation, serialVersionUID, or in a class whose annotation reads fields)",
+        why: "A private field nothing reads is dead state: left over from a refactoring, or a sign that the code meant to use it doesn't.",
+        bad: "class Client {\n    private int retries = 3\n    def get(url) { url.toURL().text }\n}",
+        good: "class Client {\n    def get(url) { url.toURL().text }\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "UnusedPrivateMethod",
+        default: true,
+        description: "a private method whose name appears nowhere else in the file (for getX/isX/setX, nor the property x)",
+        why: "A private method nothing calls is dead code that still has to be read and maintained.",
+        bad: "class Client {\n    def get(url) { url.toURL().text }\n    private String trimmed(s) { s.trim() }\n}",
+        good: "class Client {\n    def get(url) { url.toURL().text }\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "UnusedVariable",
+        default: true,
+        description: "a local variable whose name never appears after its declaration in its block (not a script's top-level variable, `_`, an annotated one, or a `def (a, b)` tuple)",
+        why: "A variable nothing reads is dead code, or the sign of a typo: the code meant to use it and uses something else.",
+        bad: "def total(items) {\n    def count = items.size()\n    items.sum()\n}",
+        good: "def total(items) {\n    items.sum()\n}",
+        fixable: false,
+    },
     // Declarative Jenkins pipelines (src/lint/jenkins.rs)
     Rule {
         name: "JenkinsMissingSection",
@@ -323,9 +561,13 @@ pub const RULES: &[Rule] = &[
     },
 ];
 
+mod basic;
 mod gradle;
+mod imports;
 mod jenkins;
 mod spock;
+mod suppress;
+mod unused;
 
 #[derive(Debug, PartialEq)]
 pub struct Violation {
@@ -339,6 +581,9 @@ pub struct Violation {
     /// The bytes `--fix` deletes to fix it, for the rules it fixes: the `;`, or the import's
     /// whole lines when nothing else is on them.
     pub fix: Option<std::ops::Range<usize>>,
+    /// The bytes of the flagged code, so `--fix` can tell a report that goes with a deleted
+    /// line (an unused import that is also unnecessary) from one that changed.
+    pub span: std::ops::Range<usize>,
 }
 
 pub fn lint(src: &str) -> Result<Vec<Violation>, &'static str> {
@@ -360,8 +605,22 @@ pub fn lint_file(path: &Path, src: &str) -> Result<Vec<Violation>, &'static str>
         nodes.push(n);
         true
     });
+    // the nodes each of basic, unused and imports looks at, in preorder
+    let table = kinds(&tree.language());
+    let mut by_module: [Vec<Node>; 6] = Default::default();
     for (i, &n) in nodes.iter().enumerate() {
-        match n.kind() {
+        let (kind, m) = table
+            .get(usize::from(n.kind_id()))
+            .copied()
+            .unwrap_or(("", 0));
+        if m != 0 {
+            for (j, list) in by_module.iter_mut().enumerate() {
+                if m & (1 << j) != 0 {
+                    list.push(n);
+                }
+            }
+        }
+        match kind {
             "string_literal" => unnecessary_gstring(src, n, &mut v),
             ";" => unnecessary_semicolon(n, nodes.get(i + 1..).unwrap_or(&[]), &mut v),
             "catch_clause" => empty_catch(src, n, &mut v),
@@ -399,6 +658,18 @@ pub fn lint_file(path: &Path, src: &str) -> Result<Vec<Violation>, &'static str>
             _ => {}
         }
     }
+    let [
+        basic_nodes,
+        unused_nodes,
+        import_nodes,
+        name_leaves,
+        dynamic,
+        directives,
+    ] = by_module;
+    basic::check(src, &basic_nodes, &mut v);
+    unused::check(src, &unused_nodes, &name_leaves, &dynamic, &mut v);
+    imports::check(path, src, &import_nodes, &mut v);
+    suppress::apply(src, &directives, &mut v);
     // tree-sitter columns count bytes; report characters, as editors and GitHub do
     let lines: Vec<&str> = src.split('\n').collect();
     let chars = |line: usize, col: usize| {
@@ -415,6 +686,37 @@ pub fn lint_file(path: &Path, src: &str) -> Result<Vec<Violation>, &'static str>
     Ok(v)
 }
 
+/// By node kind id: the kind's name, and a bit for each list in [basic, unused, imports,
+/// unused's name leaves, unused's dynamic member access, suppressions] whose kinds include it. Looking the
+/// name up here costs one call into tree-sitter per node instead of two, and each module
+/// sees only its own nodes: a pass over every node per module cost 25% of `--lint`.
+fn kinds(lang: &tree_sitter::Language) -> &'static [(&'static str, u8)] {
+    static TABLE: std::sync::OnceLock<Vec<(&'static str, u8)>> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let modules = [
+            basic::KINDS,
+            unused::KINDS,
+            imports::KINDS,
+            unused::LEAVES,
+            unused::DYNAMIC,
+            suppress::KINDS,
+        ];
+        (0..lang.node_kind_count())
+            .map(|id| {
+                let id = u16::try_from(id).unwrap_or(u16::MAX);
+                let kind = lang.node_kind_for_id(id).unwrap_or("");
+                let named = lang.node_kind_is_named(id);
+                let bits = modules
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, ks)| named && ks.contains(&kind))
+                    .fold(0, |m, (i, _)| m | 1 << i);
+                (kind, bits)
+            })
+            .collect()
+    })
+}
+
 fn at(n: Node, rule: &'static str, message: String) -> Violation {
     let (p, e) = (n.start_position(), n.end_position());
     Violation {
@@ -425,6 +727,7 @@ fn at(n: Node, rule: &'static str, message: String) -> Violation {
         rule,
         message,
         fix: None,
+        span: n.byte_range(),
     }
 }
 
@@ -863,14 +1166,15 @@ mod tests {
     fn unused_import_is_linear_in_comment_text() {
         // a substring search of all comment text per import took over 10 s on this (5 MB) in a
         // release build; one word set takes under 1 s
-        let imports: String = (0..30_000).map(|i| format!("import a.C{i}\n")).collect();
-        let src = format!(
-            "{imports}{}",
-            "// lorem ipsum dolor sit amet\n".repeat(160_000)
-        );
-        let t = std::time::Instant::now();
-        assert_eq!(lint(&src).expect("parses").len(), 30_000);
-        assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
+        let run = |n: usize| {
+            let imports: String = (0..n).map(|i| format!("import a.C{i}\n")).collect();
+            let src = format!(
+                "{imports}{}",
+                "// lorem ipsum dolor sit amet\n".repeat(n * 16 / 3)
+            );
+            assert_eq!(lint(&src).expect("parses").len(), n);
+        };
+        crate::scaling::assert_scales("imports against comment text", run, 7_500, 4, 8);
     }
 
     #[test]
@@ -956,7 +1260,10 @@ mod tests {
         let gradle =
             "repositories { jcenter() }\ndependencies { compile 'a:b:+' }\ntask t << { }\n";
         let spock = "class S extends Specification {\n def f() {\n  when:\n  f()\n  then: 'x'\n  where:\n  a | b\n  2 | 3 | 4\n }\n def g() {\n  then:\n  x\n }\n}\n";
+        let more = "package p\nimport p.Q\nimport java.util.Date\nclass K {\n private int pf\n private void m() { }\n static { }\n { }\n boolean equals(Object o) { true }\n boolean equals(String s) { true }\n int hashcode() { 1 }\n String toString() { null }\n}\ndef g() {\n def u = 1\n return 1\n f()\n}\ntry { f() } finally { return 1; throw new E(); assert x }\nswitch (x) { }\ndef s = [1, 1] as Set\ndef t = true ? 1 : 2\nassert true\nif (1 == 2) { f() }\nif (x != null || x.a) { f() }\nif (x % 2 == 1) { f() }\nl.removeAll(l)\nthrow RuntimeException()\nvoid h() { try { f() } catch (e) { new BadException(e) } }\nDate d = new Q()\n";
         for (name, src) in [
+            ("A.groovy", more),
+            ("B.groovy", "// groovyfmt-ignore DeadCode\nprintln 1\n"),
             ("Jenkinsfile", jenkins),
             ("build.gradle", gradle),
             ("S.groovy", spock),

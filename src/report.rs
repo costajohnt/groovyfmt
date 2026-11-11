@@ -65,6 +65,11 @@ fn opt(s: Option<&str>) -> String {
 
 /// The `--output-format json` document: one line per file between the head and the summary.
 pub fn json(files: &[FileReport]) -> String {
+    json_with(files, &[])
+}
+
+/// `json`, with more counts at the end of the summary (`--lint` with a baseline).
+pub fn json_with(files: &[FileReport], extra: &[(&str, usize)]) -> String {
     let mut s = format!("{{\"version\":{JSON_VERSION},\"files\":[");
     let count = |st: &str| files.iter().filter(|f| f.status == st).count();
     let mut diagnostics = 0;
@@ -96,9 +101,13 @@ pub fn json(files: &[FileReport]) -> String {
         }
         s.push_str("]}");
     }
+    let extra: String = extra
+        .iter()
+        .map(|(k, n)| format!(",{}:{n}", string(k)))
+        .collect();
     let _ = writeln!(
         s,
-        "\n],\"summary\":{{\"files\":{},\"unchanged\":{},\"would_reformat\":{},\"reformatted\":{},\"fixed\":{},\"skipped\":{},\"errors\":{},\"diagnostics\":{diagnostics}}}}}",
+        "\n],\"summary\":{{\"files\":{},\"unchanged\":{},\"would_reformat\":{},\"reformatted\":{},\"fixed\":{},\"skipped\":{},\"errors\":{},\"diagnostics\":{diagnostics}{extra}}}}}",
         files.len(),
         count("unchanged"),
         count("would_reformat"),

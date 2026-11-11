@@ -1,4 +1,5 @@
-//! `--lint --fix`: delete what UnusedImport, DuplicateImport and UnnecessarySemicolon flag
+//! `--lint --fix`: delete what UnusedImport, DuplicateImport, ImportFromSamePackage and
+//! UnnecessarySemicolon flag
 //! (their `Violation::fix` ranges), then prove the result safe, as `format` does its output.
 //! The fixed text must parse cleanly; its tokens must be the input's minus exactly the
 //! deleted ones; its parse tree must have the input's shape minus the deleted nodes (so a
@@ -24,21 +25,24 @@ pub enum Fix {
 const MAX_ROUNDS: usize = 4;
 
 /// Fix the violations of `src`, the text of `path` (which decides the Jenkins, Gradle and
-/// Spock rules), that have a fix and that `wanted` (a rule enabled in the config) accepts.
-pub fn fix(path: &Path, src: &str, wanted: impl Fn(&Violation) -> bool) -> Fix {
-    let auto = |v: &Violation| v.fix.is_some() && wanted(v);
+/// Spock rules), that have a fix and that `wanted` (a rule enabled in the config, and not
+/// in the baseline) accepts; it is also given the text the violation is in.
+pub fn fix(path: &Path, src: &str, wanted: impl Fn(&Violation, &str) -> bool) -> Fix {
     let mut text = src.to_string();
     let mut fixed = Vec::new();
     for _ in 0..MAX_ROUNDS {
         let Ok(vs) = lint_file(path, &text) else {
             return Fix::Refused("parse error");
         };
-        let (todo, keep): (Vec<_>, Vec<_>) = vs.into_iter().partition(|v| auto(v));
+        let (todo, keep): (Vec<_>, Vec<_>) = vs
+            .into_iter()
+            .partition(|v| v.fix.is_some() && wanted(v, &text));
         if todo.is_empty() {
             break;
         }
         let removed = ranges(&todo);
         let out = delete(&text, &removed);
+        let auto = |v: &Violation| v.fix.is_some() && wanted(v, &out);
         if let Err(why) = check(path, &text, &out, &removed, keep, &auto) {
             return Fix::Refused(why);
         }
@@ -105,16 +109,13 @@ fn check(
     if shape(&before, removed) != shape(&after, &[]) {
         return Err("the parse tree would change shape");
     }
-    // the other violations stay, except one inside a removed line (a `;` whose rule is off);
-    // new fixable ones are left for the next round
+    // the other violations stay, except one inside a removed line (a `;` whose rule is off,
+    // an unused import that is also unnecessary); new fixable ones are left for the next round
     let key = |v: &Violation| (v.rule, v.message.clone());
+    let within = |x: &Range<usize>| removed.iter().any(|r| r.start <= x.start && x.end <= r.end);
     let mut want: Vec<_> = keep
         .iter()
-        .filter(|v| {
-            !v.fix
-                .as_ref()
-                .is_some_and(|f| removed.iter().any(|r| r.start <= f.start && f.end <= r.end))
-        })
+        .filter(|v| !within(&v.span) && !v.fix.as_ref().is_some_and(within))
         .map(key)
         .collect();
     let mut got: Vec<_> = lint_file(path, out)
@@ -176,7 +177,7 @@ mod tests {
     use crate::lint::lint;
 
     fn fixed(src: &str) -> Fix {
-        fix(Path::new("A.groovy"), src, |_| true)
+        fix(Path::new("A.groovy"), src, |_, _| true)
     }
 
     fn text(src: &str) -> String {
@@ -218,6 +219,37 @@ mod tests {
         // a mention in a string is not a use
         assert_eq!(text("import a.Foo\nprintln 'a Foo'\n"), "println 'a Foo'\n");
         assert_eq!(text("import a.Foo\nprintln 'Foo'\n"), "println 'Foo'\n");
+    }
+
+    #[test]
+    fn removes_same_package_imports_but_not_default_ones() {
+        // `import a.C` stays: the file declares a C of its own; `java.util.Date` stays: it
+        // may be beating an `a.Date` that this file can't show
+        let src = "package a\nimport a.B\nimport a.*\nimport a.C\nimport java.util.Date\nclass C { B b; Date d }\n";
+        assert_eq!(
+            text(src),
+            "package a\nimport a.C\nimport java.util.Date\nclass C { B b; Date d }\n"
+        );
+        assert_eq!(fixed(&text(src)), Fix::Nothing, "idempotent");
+    }
+
+    #[test]
+    fn suppressed_violations_are_not_fixed() {
+        let src = "// groovyfmt-ignore UnusedImport\nimport a.B\nx = 1; // groovyfmt-ignore\n@SuppressWarnings('UnnecessarySemicolon')\ndef f() { g(); \n}\nimport c.D\n";
+        assert_eq!(
+            text(src),
+            "// groovyfmt-ignore UnusedImport\nimport a.B\nx = 1; // groovyfmt-ignore\n@SuppressWarnings('UnnecessarySemicolon')\ndef f() { g(); \n}\n"
+        );
+    }
+
+    #[test]
+    fn a_line_removed_takes_its_other_reports_along() {
+        // `java.util.List` is unused (fixable) and unnecessary (not fixable): removing the
+        // line for the first removes the second too, which is not a change to refuse
+        assert_eq!(
+            text("import java.util.List\nimport a.B\nB.go();\n"),
+            "import a.B\nB.go()\n"
+        );
     }
 
     #[test]
@@ -280,13 +312,13 @@ mod tests {
     #[test]
     fn only_wanted_rules_are_fixed() {
         let src = "import a.B;\nx = 1;\n";
-        let semis = |v: &Violation| v.rule == "UnnecessarySemicolon";
+        let semis = |v: &Violation, _: &str| v.rule == "UnnecessarySemicolon";
         let Fix::Fixed(t, f) = fix(Path::new("A.groovy"), src, semis) else {
             panic!()
         };
         assert_eq!((t.as_str(), f.len()), ("import a.B\nx = 1\n", 2));
         // the import line goes with its `;` even when UnnecessarySemicolon is off
-        let imports = |v: &Violation| v.rule == "UnusedImport";
+        let imports = |v: &Violation, _: &str| v.rule == "UnusedImport";
         let Fix::Fixed(t, f) = fix(Path::new("A.groovy"), src, imports) else {
             panic!()
         };

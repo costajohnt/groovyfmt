@@ -975,24 +975,25 @@ mod tests {
     fn long_lines_and_many_aligned_runs_stay_linear() {
         // alignment is looked up by column; walking each line from its start per lookup was
         // quadratic in the line, times the sweeps
-        let t = std::time::Instant::now();
-        // over the line limit: left as re-indented
-        let long = format!("x = [{}a:b]\n", "a:b,".repeat(50_000));
-        assert_eq!(fmt(&long), long);
         let row = |pad: usize| {
             let r: String = (0..90)
                 .map(|i| format!("v{i}{}  = {i}; ", "x".repeat(pad)))
                 .collect();
             r.trim_end().to_string() + "\n"
         };
-        // every run lines up with the rows around it: kept
-        let aligned = row(0).repeat(300);
-        assert_eq!(fmt(&aligned), aligned);
-        // rows that line up only here and there: sweeps settle (`fmt` checks a second pass
-        // changes nothing)
-        let ragged: String = (0..300).map(|n| row(n % 3)).collect();
-        fmt(&ragged);
-        assert!(t.elapsed().as_secs() < 10, "{:?}", t.elapsed());
+        let run = |n: usize| {
+            // over the line limit: left as re-indented
+            let long = format!("x = [{}a:b]\n", "a:b,".repeat(n * 50));
+            assert_eq!(fmt(&long), long);
+            // every run lines up with the rows around it: kept
+            let aligned = row(0).repeat(n / 3);
+            assert_eq!(fmt(&aligned), aligned);
+            // rows that line up only here and there: sweeps settle (`fmt` checks a second
+            // pass changes nothing)
+            let ragged: String = (0..n / 3).map(|i| row(i % 3)).collect();
+            fmt(&ragged);
+        };
+        crate::scaling::assert_scales("long lines and aligned runs", run, 250, 4, 8);
     }
 
     #[test]

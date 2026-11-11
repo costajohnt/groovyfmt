@@ -2439,3 +2439,225 @@ fn windows_diffs_withhold_unsafe_content_and_keep_crlf() {
         "--- a/g/W.groovy\n+++ b/g/W.groovy\n@@ -1,3 +1,3 @@\n class W {\r\n-def f() {}\r\n+    def f() {}\r\n }\r\n"
     );
 }
+
+#[test]
+fn baseline_holds_back_recorded_violations_only() {
+    let d = Dir::new("baseline");
+    d.write("src/A.groovy", "import a.Unused\nx = 1;\n");
+    // record, then nothing new: exit 0
+    let o = run(&d.0, &["--lint", "--write-baseline"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert!(stderr(&o).contains("wrote 2 violations in 1 files to .groovyfmt-baseline.json"));
+    let doc = d.read(".groovyfmt-baseline.json");
+    assert!(
+        doc.starts_with("{\"version\":1,\"entries\":[\n{\"path\":\"src/A.groovy\""),
+        "{doc}"
+    );
+    // without a baseline everything is reported; with one, nothing
+    assert_eq!(run(&d.0, &["--lint"], None).status.code(), Some(1));
+    let o = run(
+        &d.0,
+        &["--lint", "--baseline", ".groovyfmt-baseline.json"],
+        None,
+    );
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains("0 violations in 1 files, 2 in the baseline"),
+        "{}",
+        stderr(&o)
+    );
+    // from the config; lines shifted above, a new violation below
+    d.write(
+        ".groovyfmt.toml",
+        "baseline = \".groovyfmt-baseline.json\"\n",
+    );
+    d.write(
+        "src/A.groovy",
+        "// header\n\nimport a.Unused\nx = 1;\ny = 2;\n",
+    );
+    let o = run(&d.0, &["--lint"], None);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(
+        stdout(&o),
+        "src/A.groovy:5:6: UnnecessarySemicolon: Semicolons as line endings can be removed safely (fixable)\n"
+    );
+    // --fix leaves the baselined `;` alone and fixes the new one
+    let o = run(&d.0, &["--lint", "--fix"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(
+        d.read("src/A.groovy"),
+        "// header\n\nimport a.Unused\nx = 1;\ny = 2\n"
+    );
+    // one fixed by hand: stale; --strict fails on it; rewriting drops it
+    d.write("src/A.groovy", "import a.Unused\nx = 1\n");
+    let o = run(&d.0, &["--lint"], None);
+    assert_eq!(o.status.code(), Some(0));
+    assert!(
+        stderr(&o).contains("1 stale baseline entries"),
+        "{}",
+        stderr(&o)
+    );
+    assert_eq!(
+        run(&d.0, &["--lint", "--strict"], None).status.code(),
+        Some(1)
+    );
+    let o = run(&d.0, &["--lint", "--write-baseline"], None);
+    assert!(stderr(&o).contains("wrote 1 violations"), "{}", stderr(&o));
+    assert_eq!(
+        run(&d.0, &["--lint", "--strict"], None).status.code(),
+        Some(0)
+    );
+    // JSON leaves held-back violations out and counts them
+    let o = run(&d.0, &["--lint", "--output-format", "json"], None);
+    assert!(
+        stdout(&o).contains("\"diagnostics\":0,\"baselined\":1,\"stale_baseline_entries\":0}"),
+        "{}",
+        stdout(&o)
+    );
+    // --baseline '' ignores it
+    assert_eq!(
+        run(&d.0, &["--lint", "--baseline", ""], None).status.code(),
+        Some(1)
+    );
+    // a file renamed: its violations are new, its old entries stale
+    std::fs::rename(d.0.join("src/A.groovy"), d.0.join("src/B.groovy")).unwrap();
+    let o = run(&d.0, &["--lint"], None);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(stdout(&o).starts_with("src/B.groovy:1:1: UnusedImport"));
+}
+
+#[test]
+fn write_baseline_keeps_entries_of_files_not_linted_and_crlf_matches() {
+    let d = Dir::new("baseline-partial");
+    d.write("A.groovy", "import a.X\n");
+    d.write("B.groovy", "import a.Y\r\nz = 1;\r\n");
+    assert_eq!(
+        run(&d.0, &["--lint", "--write-baseline=bl.json"], None)
+            .status
+            .code(),
+        Some(0)
+    );
+    // rewriting from one file keeps the other's entries
+    d.write("A.groovy", "x = 1\n");
+    let o = run(
+        &d.0,
+        &["--lint", "--write-baseline=bl.json", "A.groovy"],
+        None,
+    );
+    assert!(stderr(&o).contains("wrote 0 violations"), "{}", stderr(&o));
+    let o = run(&d.0, &["--lint", "--baseline", "bl.json"], None);
+    assert_eq!(o.status.code(), Some(0), "{}{}", stdout(&o), stderr(&o));
+}
+
+#[test]
+fn bad_baselines_are_errors() {
+    let d = Dir::new("baseline-bad");
+    d.write("A.groovy", "x = 1\n");
+    for (doc, why) in [
+        ("not json", "byte"),
+        ("{\"version\":9,\"entries\":[]}", "version 9"),
+        ("{\"entries\":[]}", "no \"version\""),
+    ] {
+        d.write("bl.json", doc);
+        let o = run(&d.0, &["--lint", "--baseline", "bl.json"], None);
+        assert_eq!(o.status.code(), Some(2), "{doc}");
+        assert!(stderr(&o).contains(why), "{doc}: {}", stderr(&o));
+    }
+    // a missing baseline named by the config is an error too
+    d.write(".groovyfmt.toml", "baseline = \"missing.json\"\n");
+    assert_eq!(run(&d.0, &["--lint"], None).status.code(), Some(2));
+    // the file isn't echoed
+    d.write("secret.json", "TOPSECRET\n");
+    let o = run(&d.0, &["--lint", "--baseline", "secret.json"], None);
+    assert!(!stderr(&o).contains("TOPSECRET"), "{}", stderr(&o));
+}
+
+#[test]
+fn a_config_cannot_point_its_baseline_outside_its_tree() {
+    let d = Dir::new("baseline-escape");
+    d.write("repo/A.groovy", "import a.X\n");
+    let repo = d.0.join("repo");
+    for bad in [
+        "../x.json",
+        "/tmp/x.json",
+        "a/../../x.json",
+        "../../.github/workflows/x.yml",
+    ] {
+        d.write("repo/.groovyfmt.toml", &format!("baseline = \"{bad}\"\n"));
+        let o = run(&repo, &["--lint", "--write-baseline"], None);
+        assert_eq!(o.status.code(), Some(2), "{bad}");
+        assert!(
+            stderr(&o).contains("relative path inside"),
+            "{bad}: {}",
+            stderr(&o)
+        );
+    }
+    assert!(!d.0.join("x.json").exists());
+    // a nested config pointing above its own directory
+    d.write("repo/.groovyfmt.toml", "\n");
+    d.write("repo/sub/.groovyfmt.toml", "baseline = \"../x.json\"\n");
+    d.write("repo/sub/B.groovy", "x = 1\n");
+    assert_eq!(run(&repo, &["--lint"], None).status.code(), Some(2));
+    std::fs::remove_file(d.0.join("repo/sub/.groovyfmt.toml")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        std::fs::create_dir_all(d.0.join("outside")).unwrap();
+        // a symlinked directory and a symlink at the target, both leading out
+        symlink(d.0.join("outside"), repo.join("ci")).unwrap();
+        symlink(d.0.join("outside/t.json"), repo.join("t.json")).unwrap();
+        for target in ["ci/x.json", "t.json"] {
+            d.write(
+                "repo/.groovyfmt.toml",
+                &format!("baseline = \"{target}\"\n"),
+            );
+            let o = run(&repo, &["--lint", "--write-baseline"], None);
+            assert_eq!(o.status.code(), Some(2), "{target}");
+            assert!(
+                stderr(&o).contains("must stay inside"),
+                "{target}: {}",
+                stderr(&o)
+            );
+            assert_eq!(
+                run(&repo, &["--lint"], None).status.code(),
+                Some(2),
+                "{target}: read"
+            );
+        }
+        assert!(!d.0.join("outside/x.json").exists() && !d.0.join("outside/t.json").exists());
+    }
+    // the normal case, and an explicit path anywhere: the user's choice
+    d.write("repo/.groovyfmt.toml", "baseline = \"ci2/bl.json\"\n");
+    std::fs::create_dir_all(repo.join("ci2")).unwrap();
+    assert_eq!(
+        run(&repo, &["--lint", "--write-baseline"], None)
+            .status
+            .code(),
+        Some(0)
+    );
+    assert!(repo.join("ci2/bl.json").exists());
+    let elsewhere = d.0.join("elsewhere.json");
+    let o = run(
+        &repo,
+        &[
+            "--lint",
+            &format!("--write-baseline={}", elsewhere.display()),
+        ],
+        None,
+    );
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert!(elsewhere.exists());
+}
+
+#[test]
+fn baseline_options_need_lint() {
+    let d = Dir::new("baseline-args");
+    for args in [
+        &["--check", "--baseline", "x"][..],
+        &["--write-baseline"],
+        &["--lint", "--fix", "--write-baseline"],
+        &["--lint", "--output-format", "json", "--write-baseline"],
+    ] {
+        assert_eq!(run(&d.0, args, None).status.code(), Some(2), "{args:?}");
+    }
+}
