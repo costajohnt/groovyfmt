@@ -16,7 +16,7 @@ pub const RULES: &[Rule] = &[
     Rule {
         name: "UnusedImport",
         default: true,
-        description: "import whose name (or alias) never appears in code or comments",
+        description: "import whose name (or alias) never appears in code or as a word in a comment",
     },
     Rule {
         name: "DuplicateImport",
@@ -76,12 +76,12 @@ pub const RULES: &[Rule] = &[
     Rule {
         name: "AssignmentInConditional",
         default: true,
-        description: "`=` where `==` was probably meant, in an if condition (`while (x = next())` is a common idiom, so loops are exempt)",
+        description: "`=` where `==` was probably meant, in an if condition (`while (x = next())` is a common idiom, so loops are exempt, and so is an assignment in extra parentheses)",
     },
     Rule {
         name: "ComparisonWithSelf",
         default: false,
-        description: "a variable compared with itself (off by default: GORM `where { title == title }` and Spock equality checks do this on purpose)",
+        description: "a variable compared with itself (off by default: Spock equality checks do this on purpose; GORM `where { title == title }` is exempt)",
     },
     Rule {
         name: "ConstantIfExpression",
@@ -178,16 +178,16 @@ fn at(n: Node, rule: &'static str, message: String) -> Violation {
 
 /// UnusedImport + DuplicateImport.
 fn imports(src: &str, tree: &Tree, v: &mut Vec<Violation>) {
-    let (mut decls, mut used, mut comments) = (Vec::new(), HashSet::new(), String::new());
+    let (mut decls, mut used) = (Vec::new(), HashSet::new());
     crate::preorder(tree.root_node(), |n| match n.kind() {
         // don't descend: names inside imports aren't uses
         "import_declaration" => {
             decls.push(n);
             false
         }
+        // a whole word in a comment ({@link Foo}) counts as a use, as in CodeNarc
         k if k.contains("comment") => {
-            comments.push_str(text(n, src));
-            comments.push('\n');
+            used.extend(words(text(n, src)));
             false
         }
         // `"$Name.CONST"` is one leaf whose text keeps the `$` and the dots
@@ -197,7 +197,16 @@ fn imports(src: &str, tree: &Tree, v: &mut Vec<Violation>) {
         }
         _ => {
             if n.child_count() == 0 {
-                used.insert(text(n, src));
+                let t = text(n, src);
+                used.insert(t);
+                // The grammar sometimes leaves a GString's interpolations as plain text, as in
+                // `"""` holding `"${Name.x}"`: count the names after each unescaped `$`.
+                if n.kind() == "string_fragment"
+                    && t.contains('$')
+                    && n.parent().is_some_and(|p| !text(p, src).starts_with('\''))
+                {
+                    dollar_names(t, &mut used);
+                }
             }
             true
         }
@@ -224,13 +233,49 @@ fn imports(src: &str, tree: &Tree, v: &mut Vec<Violation>) {
         let symbol = d
             .child_by_field_name("alias")
             .map_or_else(|| name.rsplit('.').next().unwrap_or(name), |a| text(a, src));
-        // ponytail: a mention in a comment ({@link Foo}) counts as use, as CodeNarc does; no word-boundary check.
-        if !symbol.is_empty() && !used.contains(symbol) && !comments.contains(symbol) {
+        if !symbol.is_empty() && !used.contains(symbol) {
             v.push(at(
                 d,
                 "UnusedImport",
                 format!("The [{name}] import is never referenced"),
             ));
+        }
+    }
+}
+
+/// The identifier-like words in `s`.
+fn words(s: &str) -> impl Iterator<Item = &str> {
+    s.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty())
+}
+
+/// The names after each unescaped `$` in GString text: `$a.b`, and every word in `${...}`.
+fn dollar_names<'a>(t: &'a str, used: &mut HashSet<&'a str>) {
+    let b = t.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'\\' => i += 2,
+            b'$' => {
+                let start = i + 1;
+                let end = if b.get(start) == Some(&b'{') {
+                    // to the matching `}`, or the end of the text
+                    let mut depth = 0;
+                    (start..b.len())
+                        .find(|&j| {
+                            depth += i32::from(b[j] == b'{') - i32::from(b[j] == b'}');
+                            depth == 0
+                        })
+                        .unwrap_or(b.len())
+                } else {
+                    t[start..]
+                        .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
+                        .map_or(b.len(), |k| start + k)
+                };
+                used.extend(words(&t[start..end]));
+                i = end;
+            }
+            _ => i += 1,
         }
     }
 }
@@ -248,7 +293,9 @@ fn unnecessary_gstring(src: &str, n: Node, v: &mut Vec<Violation>) {
 }
 
 /// UnnecessarySemicolon: a `;` that ends a line (or the file). Not one that is a loop's
-/// empty body (`while (it.next());`), which removing would change the program.
+/// empty body (`while (it.next());`), or one before a line starting with `{`
+/// (`foo();` then `{ -> x }.call()`): either way removing it would change the program,
+/// here by making the closure an argument of the statement before.
 fn unnecessary_semicolon(n: Node, rest: &[Node], v: &mut Vec<Violation>) {
     if n.parent().is_some_and(|p| {
         p.kind().contains("enum")
@@ -262,7 +309,7 @@ fn unnecessary_semicolon(n: Node, rest: &[Node], v: &mut Vec<Violation>) {
     let next = rest
         .iter()
         .find(|x| x.child_count() == 0 && !x.kind().contains("comment"));
-    if next.is_none_or(|x| x.start_position().row > row) {
+    if next.is_none_or(|x| x.start_position().row > row && x.kind() != "{") {
         v.push(at(
             n,
             "UnnecessarySemicolon",
@@ -321,8 +368,10 @@ fn has_interpolation(n: Node) -> bool {
         .any(|k| k.kind().starts_with("gstring_"))
 }
 
+/// AssignmentInConditional. Extra parentheses, `if ((m = re.matcher(s)))`, mark the
+/// assignment as meant, as with GCC's -Wparentheses and ESLint's no-cond-assign.
 fn assignment_in_condition(n: Node, v: &mut Vec<Violation>) {
-    if let Some(c) = condition(n)
+    if let Some(c) = n.child_by_field_name("condition")
         && c.kind() == "assignment_expression"
         && c.child_by_field_name("operator")
             .is_some_and(|o| o.kind() == "=")
@@ -413,12 +462,15 @@ fn duplicate_case(src: &str, n: Node, v: &mut Vec<Violation>) {
         if !is_literal(val) {
             continue;
         }
-        let t = text(val, src);
-        if !seen.insert(t) {
+        // `'a'` and `"a"` are the same label; `1` and `'1'` are not
+        let k = constant_value(val, src).map(|s| (val.kind() == "string_literal", s));
+        if let Some(k) = k
+            && !seen.insert(k)
+        {
             v.push(at(
                 val,
                 "DuplicateCaseStatement",
-                format!("Duplicate case label {t}"),
+                format!("Duplicate case label {}", text(val, src)),
             ));
         }
     }
@@ -439,13 +491,40 @@ fn comparison_with_self(src: &str, n: Node, v: &mut Vec<Violation>) {
         return;
     };
     // plain variables only: `f() == f()` can legitimately differ
-    if l.kind() == "identifier" && r.kind() == "identifier" && text(l, src) == text(r, src) {
+    if l.kind() == "identifier"
+        && r.kind() == "identifier"
+        && text(l, src) == text(r, src)
+        && !in_where_query(n, src)
+    {
         v.push(at(
             n,
             "ComparisonWithSelf",
             format!("Comparing `{}` with itself", text(l, src)),
         ));
     }
+}
+
+/// Inside a closure given to a GORM where query (`Book.where { title == title }`,
+/// `@Where({ ... })`), where the left side names the domain property and the right a
+/// variable of the same name.
+fn in_where_query(n: Node, src: &str) -> bool {
+    let mut in_closure = false;
+    let mut p = n.parent();
+    while let Some(a) = p {
+        match a.kind() {
+            "closure" => in_closure = true,
+            "method_invocation" | "command_chain" | "annotation" if in_closure => {
+                let head = text(a, src).split(['(', '{']).next().unwrap_or("");
+                let name = head.trim().rsplit(['.', '@']).next().unwrap_or("");
+                if matches!(name, "where" | "whereAny" | "whereLazy" | "Where") {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        p = a.parent();
+    }
+    false
 }
 
 #[cfg(test)]
@@ -488,6 +567,36 @@ mod tests {
             let src = format!("import a.N\nprintln {s}\n");
             assert_eq!(rules(&src), vec![("UnusedImport", 1)], "{s}");
         }
+    }
+
+    #[test]
+    fn interpolation_the_grammar_left_as_text_is_a_use() {
+        // gradle ExternalProcessFixture: in this `"""` the `${...}` parses as plain text
+        let src = "import a.TestJavaMain\nimport a.TextUtil\nimport a.Gone\ndef s = \"\"\"\n    mainClass.set(\"${TestJavaMain.class.name}\")\n    classpath(\"${TextUtil.escapeString(x)}\")\n    echo \"\\$Gone\"\n\"\"\"\n";
+        assert_eq!(rules(src), vec![("UnusedImport", 3)]);
+        // a `$` in a single-quoted string is text
+        let src = "import a.X\ndef s = '''\n\"${X}\"\n'''\n";
+        assert_eq!(rules(src), vec![("UnusedImport", 1)]);
+    }
+
+    #[test]
+    fn comments_count_whole_words_only() {
+        let src = "import a.List\nimport a.Linked\n// Listing, {@link Linked#x}\nclass X {}\n";
+        assert_eq!(rules(src), vec![("UnusedImport", 1)]);
+    }
+
+    #[test]
+    fn unused_import_is_linear_in_comment_text() {
+        // a substring search of all comment text per import took over 10 s on this (5 MB) in a
+        // release build; one word set takes under 1 s
+        let imports: String = (0..30_000).map(|i| format!("import a.C{i}\n")).collect();
+        let src = format!(
+            "{imports}{}",
+            "// lorem ipsum dolor sit amet\n".repeat(160_000)
+        );
+        let t = std::time::Instant::now();
+        assert_eq!(lint(&src).expect("parses").len(), 30_000);
+        assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
     }
 
     #[test]
@@ -551,10 +660,16 @@ mod tests {
 
     #[test]
     fn duplicate_keys_and_cases() {
-        let src = "def m = [a: 1, 'a': 2, b: 3, 1: 'x', '1': 'y', \"${k}\": 4, \"${k}\": 5]\nswitch (x) {\n  case 1: f(); break\n  case 2: g(); break\n  case 1: h(); break\n}\n";
+        let src = "def m = [a: 1, 'a': 2, b: 3, 1: 'x', '1': 'y', \"${k}\": 4, \"${k}\": 5]\nswitch (x) {\n  case 1: f(); break\n  case 2: g(); break\n  case 1: h(); break\n  case 'a': f(); break\n  case '1': f(); break\n  case \"a\": f(); break\n  case '''a''': f(); break\n}\n";
         assert_eq!(
             rules(src),
-            vec![("DuplicateMapKey", 1), ("DuplicateCaseStatement", 5)]
+            vec![
+                ("DuplicateMapKey", 1),
+                ("DuplicateCaseStatement", 5),
+                ("DuplicateCaseStatement", 8),
+                ("UnnecessaryGString", 8),
+                ("DuplicateCaseStatement", 9)
+            ]
         );
     }
 
@@ -568,7 +683,8 @@ mod tests {
 
     #[test]
     fn exemptions_do_not_fire() {
-        let src = "try { f() } catch (Exception ignore) { }\nif (x += 1) { f() }\nif (\"${x}\") { f() }\nenum E { A, B;\n  int v }\n";
+        // nextflow NextflowDSLImpl: `if( (varX=isVariableX(stm.expression)) )`
+        let src = "try { f() } catch (Exception ignore) { }\nif (x += 1) { f() }\nif (\"${x}\") { f() }\nenum E { A, B;\n  int v }\nif ((m = s.find(p))) { f() }\n";
         assert_eq!(rules(src), vec![]);
     }
 
@@ -586,6 +702,40 @@ mod tests {
     fn empty_loop_body_semicolon_is_never_reported() {
         // The `;` is the loop's whole body: removing it would make `println` the body.
         assert_eq!(lint("while (it.next());\nprintln 'x'\n"), Ok(vec![]));
+    }
+
+    #[test]
+    fn semicolon_before_a_closure_line_is_kept() {
+        // GPars AsyncInvocationWithTimeoutTest: without the `;` the closure becomes an
+        // argument of `new DataflowVariable()`
+        let src = "final DataflowVariable result = new DataflowVariable();\n{-> result << 20 }.callTimeoutAsync(timeout);\nsleep 3000\n";
+        assert_eq!(rules(src), vec![("UnnecessarySemicolon", 2)]);
+        // a comment between doesn't matter
+        assert_eq!(rules("f();\n// why\n{ -> g() }()\n"), vec![]);
+    }
+
+    #[test]
+    fn gorm_where_queries_compare_a_property_with_a_variable() {
+        let cfg = |src: &str| -> Vec<(&'static str, usize)> {
+            rules(src)
+                .into_iter()
+                .filter(|(r, _)| *r == "ComparisonWithSelf")
+                .collect()
+        };
+        // grails-core WhereQueryVariableScopeService, EmbeddedWhereClauseSpec, WhereMethodSpec
+        let src = "def f(String title) {\n    Book.where {\n        title == title\n    }.list()\n}\ninterface S {\n    @Where({ contexts { n == n } })\n    List f(String n)\n}\nPerson.where { age > age && pets { age > age } }\nwhere { a == a }\n";
+        assert_eq!(cfg(src), vec![]);
+        // other closures still count
+        let src =
+            "xs.findAll { title == title }\ndef where(x) { x == x }\nBook.where(title == title)\n";
+        assert_eq!(
+            cfg(src),
+            vec![
+                ("ComparisonWithSelf", 1),
+                ("ComparisonWithSelf", 2),
+                ("ComparisonWithSelf", 3)
+            ]
+        );
     }
 
     #[test]
