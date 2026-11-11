@@ -69,6 +69,13 @@ brew install costajohnt/tap/groovyfmt && brew test groovyfmt
 
 For each later release, render the formula again and commit it to the tap.
 
+## crates.io
+
+Nothing publishes to crates.io yet, and no workflow job does. The crate is ready to package: the grammar is vendored in `grammar/` (no git dependencies), `include` in `Cargo.toml` limits the package to the sources, the grammar, `build.rs`, the tests, `README.md`, `LICENSE` and `CHANGELOG.md`, and `cargo publish --dry-run --locked` succeeds. The package is MIT: the vendored grammar is `Apache-2.0 OR MIT` and groovyfmt uses it under MIT, with both of its license files kept in `grammar/`. What remains is a decision to publish and, once:
+
+1. A crates.io account (sign in with GitHub as `costajohnt`) and an API token with the `publish-new` and `publish-update` scopes, or trusted publishing from `release.yml` once the crate exists.
+2. `cargo publish --locked` from the tagged commit. A version can't be replaced once published, only yanked.
+
 ## Going public, in order
 
 1. Merge the install-channel changes and cut a release, so a tag carries `action.yml` and `.pre-commit-hooks.yaml`.
