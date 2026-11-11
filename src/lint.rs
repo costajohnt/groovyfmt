@@ -1152,14 +1152,15 @@ mod tests {
     fn unused_import_is_linear_in_comment_text() {
         // a substring search of all comment text per import took over 10 s on this (5 MB) in a
         // release build; one word set takes under 1 s
-        let imports: String = (0..30_000).map(|i| format!("import a.C{i}\n")).collect();
-        let src = format!(
-            "{imports}{}",
-            "// lorem ipsum dolor sit amet\n".repeat(160_000)
-        );
-        let t = std::time::Instant::now();
-        assert_eq!(lint(&src).expect("parses").len(), 30_000);
-        assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
+        let run = |n: usize| {
+            let imports: String = (0..n).map(|i| format!("import a.C{i}\n")).collect();
+            let src = format!(
+                "{imports}{}",
+                "// lorem ipsum dolor sit amet\n".repeat(n * 16 / 3)
+            );
+            assert_eq!(lint(&src).expect("parses").len(), n);
+        };
+        crate::scaling::assert_scales("imports against comment text", run, 7_500, 4, 8);
     }
 
     #[test]

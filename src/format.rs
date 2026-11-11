@@ -692,18 +692,19 @@ mod tests {
     #[test]
     fn indented_comment_runs_stay_linear() {
         // a sibling walk-back per line took over 120 s on 4000 lines in a release build
-        let t = std::time::Instant::now();
-        for line in [" // c\n", " /* c */\n"] {
-            let body = line.repeat(4000);
-            let want = format!(
-                "def f() {{\n{}}}\n",
-                format!("    {}", line.trim_start()).repeat(4000)
-            );
-            assert_eq!(fmt(&format!("def f() {{\n{body}}}\n")), want);
-            let top = fmt(&body);
-            assert_eq!(top, line.trim_start().repeat(4000));
-        }
-        assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
+        let run = |n: usize| {
+            for line in [" // c\n", " /* c */\n"] {
+                let body = line.repeat(n);
+                let want = format!(
+                    "def f() {{\n{}}}\n",
+                    format!("    {}", line.trim_start()).repeat(n)
+                );
+                assert_eq!(fmt(&format!("def f() {{\n{body}}}\n")), want);
+                let top = fmt(&body);
+                assert_eq!(top, line.trim_start().repeat(n));
+            }
+        };
+        crate::scaling::assert_scales("comment runs", run, 1000, 4, 8);
     }
 
     #[test]
