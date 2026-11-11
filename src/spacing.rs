@@ -463,16 +463,29 @@ fn aligned_at(line: &[char], col: usize, ch: char) -> bool {
     same_at(line, col, ch) && col > 0 && line[col - 1].is_whitespace()
 }
 
-/// Whether `line` has a `:` at column `col` with other than exactly one space before it: a
-/// key padded, or not, to line its colon up (`9 :` over `10:`). The same key length with the
-/// same single space (`access :` over `access :`) lines up only by coincidence.
-fn colon_column(line: &[char], col: usize) -> bool {
-    let spaces = line[..col.min(line.len())]
-        .iter()
-        .rev()
-        .take_while(|c| **c == ' ')
-        .count();
-    same_at(line, col, ':') && spaces != 1
+/// Whether `line` has a `:` at column `col` after a key of other than `len` characters: keys
+/// of different lengths padded to line their colons up (`9 :` over `10:`). Keys of the same
+/// length (`access :` over `access:`) line up only by coincidence.
+fn colon_column(line: &[char], col: usize, len: usize) -> bool {
+    if !same_at(line, col, ':') {
+        return false;
+    }
+    let before = &line[..col];
+    let end = before.len() - before.iter().rev().take_while(|c| **c == ' ').count();
+    let key = &before[..end];
+    let n = match key.last() {
+        Some(&q @ ('\'' | '"')) => key[..end - 1]
+            .iter()
+            .rev()
+            .position(|&c| c == q)
+            .map_or(0, |p| p + 2),
+        _ => key
+            .iter()
+            .rev()
+            .take_while(|c| c.is_alphanumeric() || **c == '_' || **c == '$')
+            .count(),
+    };
+    n > 0 && n != len
 }
 
 /// Whether `line` has, at column `col`, something `ch` could be aligned with: a token after
@@ -522,9 +535,10 @@ struct GapInfo {
 /// Lay out `row` from its gaps' widths in `base`: the first `freeze` gaps stay as they are;
 /// each other gap becomes what its rule wants unless it is kept because what follows it lines
 /// up with something in `near` (a run of two or more spaces; a single space before a key's
-/// `:`, against a `:` in a colon column). A run that stays absorbs the shift of the changes
-/// before it on the line, so what it lines up keeps its column. With `forced`, a gap changed
-/// once stays changed (and is recorded as such); without it, nothing is remembered.
+/// `:`, against the `:` of a key of another length). A run that stays absorbs the shift of
+/// the changes before it on the line, so what it lines up keeps its column. With `forced`, a
+/// gap changed once stays changed (and is recorded as such); without it, nothing is
+/// remembered.
 fn lay(
     row: &Row,
     here: (&[Gap], &[GapInfo]),
@@ -562,7 +576,7 @@ fn lay(
             && ((w == 1
                 && ruled == 0
                 && x.rule == "colon"
-                && near.iter().any(|n| colon_column(n, col + 1)))
+                && near.iter().any(|n| colon_column(n, col + 1, row.seg_cols[k])))
                 || (kept >= 2 && near.iter().any(|n| token_at(n, col + kept, ch))));
         let to = if ruled == w || aligned { kept } else { ruled };
         if ruled != w
@@ -1080,6 +1094,11 @@ mod tests {
         assert_eq!(
             fmt("f(\n    access :1,\n    access :2,\n)\n"),
             "f(\n    access: 1,\n    access: 2,\n)\n"
+        );
+        // nor over the same key a column later, with no space
+        assert_eq!(
+            fmt("x = [\n    [p: 'ab', access :1],\n    [p: 'abc', access:2],\n]\n"),
+            "x = [\n    [p: 'ab', access: 1],\n    [p: 'abc', access: 2],\n]\n"
         );
         // reduced from streamaserver/streama's application.groovy, where a row was left half
         // respaced against a row that then changed, and a second run changed it again: every
