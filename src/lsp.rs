@@ -113,7 +113,8 @@ fn log(msg: &str) {
 
 fn send(body: &str) {
     let mut out = std::io::stdout().lock();
-    let sent = write!(out, "Content-Length: {}\r\n\r\n{body}", body.len()).and_then(|_| out.flush());
+    let sent =
+        write!(out, "Content-Length: {}\r\n\r\n{body}", body.len()).and_then(|_| out.flush());
     if let Err(e) = sent {
         log(&format!("writing to the client: {e}"));
         std::process::exit(1);
@@ -138,7 +139,11 @@ fn uri_path(uri: &str) -> Option<PathBuf> {
         if b == b'%' {
             let hex = [it.next()?, it.next()?];
             let hex = std::str::from_utf8(&hex).ok()?;
-            bytes.push(u8::from_str_radix(hex, 16).ok().filter(|_| hex.bytes().all(|c| c.is_ascii_hexdigit()))?);
+            bytes.push(
+                u8::from_str_radix(hex, 16)
+                    .ok()
+                    .filter(|_| hex.bytes().all(|c| c.is_ascii_hexdigit()))?,
+            );
         } else {
             bytes.push(b);
         }
@@ -155,7 +160,8 @@ fn uri_path(uri: &str) -> Option<PathBuf> {
     {
         let s = String::from_utf8(bytes).ok()?;
         // `/C:/x` names `C:/x`
-        let drive = s.len() >= 3 && s.as_bytes()[2] == b':' && s.as_bytes()[1].is_ascii_alphabetic();
+        let drive =
+            s.len() >= 3 && s.as_bytes()[2] == b':' && s.as_bytes()[1].is_ascii_alphabetic();
         Some(PathBuf::from(if drive { &s[1..] } else { &s[..] }))
     }
 }
@@ -229,25 +235,40 @@ impl<'a> Lines<'a> {
     }
 
     fn range(&self, start: usize, end: usize) -> String {
-        format!("{{\"start\":{},\"end\":{}}}", self.pos(start), self.pos(end))
+        format!(
+            "{{\"start\":{},\"end\":{}}}",
+            self.pos(start),
+            self.pos(end)
+        )
     }
 
     /// The offset of an LSP position; past the end of a line is its end, past the last line
     /// the end of the text.
     fn offset_of(&self, p: &Value) -> Option<usize> {
-        let (line, ch) = (p.get("line").u32()? as usize, p.get("character").u32()? as usize);
+        let (line, ch) = (
+            p.get("line").u32()? as usize,
+            p.get("character").u32()? as usize,
+        );
         let Some(&start) = self.lsp.get(line) else {
             return Some(self.text.len());
         };
         let end = self.lsp.get(line + 1).map_or(self.text.len(), |&n| {
-            n - if self.text[..n].ends_with("\r\n") { 2 } else { 1 }
+            n - if self.text[..n].ends_with("\r\n") {
+                2
+            } else {
+                1
+            }
         });
         let mut u = 0;
         for (i, c) in self.text[start..end].char_indices() {
             if u >= ch {
                 return Some(start + i);
             }
-            u += if self.utf8 { c.len_utf8() } else { c.len_utf16() };
+            u += if self.utf8 {
+                c.len_utf8()
+            } else {
+                c.len_utf16()
+            };
         }
         Some(end)
     }
@@ -352,7 +373,10 @@ impl Server {
                     .iter()
                     .filter(|v| cfg.rule_enabled(v.rule))
                     .map(|v| {
-                        let (s, e) = (lines.offset(v.line, v.col), lines.offset(v.end_line, v.end_col));
+                        let (s, e) = (
+                            lines.offset(v.line, v.col),
+                            lines.offset(v.end_line, v.end_col),
+                        );
                         diag(s, e, 2, v.rule, &v.message)
                     })
                     .collect(),
@@ -360,7 +384,10 @@ impl Server {
                     .0
                     .iter()
                     .map(|e| {
-                        let (s, end) = (lines.offset(e.line, e.col), lines.offset(e.end_line, e.end_col));
+                        let (s, end) = (
+                            lines.offset(e.line, e.col),
+                            lines.offset(e.end_line, e.end_col),
+                        );
                         diag(s, end, 1, crate::report::PARSE_RULE, &e.message)
                     })
                     .collect(),
@@ -379,7 +406,9 @@ impl Server {
 
     /// The open document a request names, with its config; `None` if there is nothing to do.
     fn doc(&self, params: &Value) -> Option<(&Doc, Arc<Config>)> {
-        let doc = self.docs.get(params.get("textDocument").get("uri").str()?)?;
+        let doc = self
+            .docs
+            .get(params.get("textDocument").get("uri").str()?)?;
         match self.setup(doc) {
             Setup::Cfg(c) => Some((doc, c)),
             _ => None,
@@ -393,7 +422,10 @@ impl Server {
         let lines = Lines::new(&doc.text, self.utf8);
         let out = if range {
             let r = params.get("range");
-            let (Some(s), Some(e)) = (lines.offset_of(r.get("start")), lines.offset_of(r.get("end"))) else {
+            let (Some(s), Some(e)) = (
+                lines.offset_of(r.get("start")),
+                lines.offset_of(r.get("end")),
+            ) else {
                 return Err((INVALID_PARAMS, "bad range".into()));
             };
             let first = lines.line_of(s);
@@ -407,9 +439,7 @@ impl Server {
         Ok(match out {
             // format checked the tokens; this re-checks the one promise an edit must keep:
             // only whitespace changes (normalize_spacing may add some between tokens)
-            Outcome::Formatted(new) if non_ws(&doc.text).eq(non_ws(&new)) => {
-                edits(&lines, &new)
-            }
+            Outcome::Formatted(new) if non_ws(&doc.text).eq(non_ws(&new)) => edits(&lines, &new),
             _ => "[]".into(),
         })
     }
@@ -418,7 +448,13 @@ impl Server {
         let Some((doc, cfg)) = self.doc(params) else {
             return Ok("[]".into());
         };
-        let only: Vec<&str> = params.get("context").get("only").arr().iter().filter_map(Value::str).collect();
+        let only: Vec<&str> = params
+            .get("context")
+            .get("only")
+            .arr()
+            .iter()
+            .filter_map(Value::str)
+            .collect();
         let want = |kind: &str| {
             only.is_empty()
                 || only
@@ -441,14 +477,20 @@ impl Server {
         let mut out = Vec::new();
         if want("quickfix") {
             let r = params.get("range");
-            let (Some(rs), Some(re)) = (lines.offset_of(r.get("start")), lines.offset_of(r.get("end"))) else {
+            let (Some(rs), Some(re)) = (
+                lines.offset_of(r.get("start")),
+                lines.offset_of(r.get("end")),
+            ) else {
                 return Err((INVALID_PARAMS, "bad range".into()));
             };
             for v in vs
                 .iter()
                 .filter(|v| v.fix.is_some() && cfg.rule_enabled(v.rule))
                 .filter(|v| {
-                    let (s, e) = (lines.offset(v.line, v.col), lines.offset(v.end_line, v.end_col));
+                    let (s, e) = (
+                        lines.offset(v.line, v.col),
+                        lines.offset(v.end_line, v.end_col),
+                    );
                     s <= re && rs <= e
                 })
                 .take(MAX_QUICK_FIXES)
@@ -460,14 +502,22 @@ impl Server {
                     (w.rule, w.line, w.col, &w.message) == (v.rule, v.line, v.col, &v.message)
                 };
                 if let Fix::Fixed(new, _) = fix::fix(&doc.path, &doc.text, this) {
-                    let (s, e) = (lines.offset(v.line, v.col), lines.offset(v.end_line, v.end_col));
+                    let (s, e) = (
+                        lines.offset(v.line, v.col),
+                        lines.offset(v.end_line, v.end_col),
+                    );
                     let diag = format!(
                         ",\"diagnostics\":[{{\"range\":{},\"severity\":2,\"code\":{},\"source\":\"groovyfmt\",\"message\":{}}}],\"isPreferred\":true",
                         lines.range(s, e),
                         js(v.rule),
                         js(&v.message)
                     );
-                    out.push(action(&format!("Fix {}: {}", v.rule, v.message), "quickfix", &new, &diag));
+                    out.push(action(
+                        &format!("Fix {}: {}", v.rule, v.message),
+                        "quickfix",
+                        &new,
+                        &diag,
+                    ));
                 }
             }
         }
@@ -487,7 +537,14 @@ impl Server {
             Value::Num(n) => Some(n.clone()),
             _ => None,
         };
-        self.docs.insert(uri.to_string(), Doc { path, text, version });
+        self.docs.insert(
+            uri.to_string(),
+            Doc {
+                path,
+                text,
+                version,
+            },
+        );
         self.publish(uri);
     }
 
@@ -537,7 +594,12 @@ impl Server {
         if !self.initialized || self.shutdown {
             return;
         }
-        let uri = params.get("textDocument").get("uri").str().unwrap_or("").to_string();
+        let uri = params
+            .get("textDocument")
+            .get("uri")
+            .str()
+            .unwrap_or("")
+            .to_string();
         match method {
             "textDocument/didOpen" => {
                 let td = params.get("textDocument");
@@ -624,7 +686,10 @@ pub fn run(fixed: Option<Config>, indent: Option<usize>) -> i32 {
                 return 1;
             }
         };
-        let msg = match std::str::from_utf8(&body).map_err(|e| e.to_string()).and_then(json::parse) {
+        let msg = match std::str::from_utf8(&body)
+            .map_err(|e| e.to_string())
+            .and_then(json::parse)
+        {
             Ok(m) => m,
             Err(e) => {
                 log(&format!("unreadable message: {e}"));
@@ -645,7 +710,10 @@ pub fn run(fixed: Option<Config>, indent: Option<usize>) -> i32 {
         let Some(method) = msg.get("method").str() else {
             // a response to a request we never send, or not a message at all
             if msg.get("result").is_null() && msg.get("error").is_null() {
-                respond(id.as_deref().unwrap_or("null"), Err((INVALID_REQUEST, "no method".into())));
+                respond(
+                    id.as_deref().unwrap_or("null"),
+                    Err((INVALID_REQUEST, "no method".into())),
+                );
             }
             continue;
         };
@@ -663,7 +731,10 @@ pub fn run(fixed: Option<Config>, indent: Option<usize>) -> i32 {
         }));
         match (id, result) {
             (Some(id), Ok(Some(reply))) => respond(&id, reply),
-            (Some(id), Err(_)) => respond(&id, Err((INTERNAL_ERROR, "internal error, please report".into()))),
+            (Some(id), Err(_)) => respond(
+                &id,
+                Err((INTERNAL_ERROR, "internal error, please report".into())),
+            ),
             _ => {}
         }
     }
@@ -724,7 +795,11 @@ mod tests {
             b"Content-Length: 5\r\n",
         ] {
             let got = frames(input);
-            assert!(got.last().unwrap().is_err(), "{:?}: {got:?}", String::from_utf8_lossy(input));
+            assert!(
+                got.last().unwrap().is_err(),
+                "{:?}: {got:?}",
+                String::from_utf8_lossy(input)
+            );
         }
         // no line break for megabytes: refused after one header line's worth
         assert!(frames(&vec![b'a'; 1 << 20])[0].is_err());
@@ -750,9 +825,18 @@ mod tests {
         let p = |u: &str| uri_path(u).map(|p| p.to_string_lossy().into_owned());
         #[cfg(unix)]
         {
-            assert_eq!(p("file:///home/a/B.groovy").as_deref(), Some("/home/a/B.groovy"));
-            assert_eq!(p("file:///a%20b/%C3%A9%23x.gradle").as_deref(), Some("/a b/é#x.gradle"));
-            assert_eq!(p("FILE://localhost/x/Jenkinsfile").as_deref(), Some("/x/Jenkinsfile"));
+            assert_eq!(
+                p("file:///home/a/B.groovy").as_deref(),
+                Some("/home/a/B.groovy")
+            );
+            assert_eq!(
+                p("file:///a%20b/%C3%A9%23x.gradle").as_deref(),
+                Some("/a b/é#x.gradle")
+            );
+            assert_eq!(
+                p("FILE://localhost/x/Jenkinsfile").as_deref(),
+                Some("/x/Jenkinsfile")
+            );
             assert_eq!(p("file:///x/A.groovy#frag").as_deref(), Some("/x/A.groovy"));
             assert_eq!(p("file:///c%3A/x").as_deref(), Some("/c:/x"));
             // bytes that aren't UTF-8 are a valid file name on unix
@@ -777,7 +861,10 @@ mod tests {
 
     fn lsp_pos(l: &Lines, off: usize) -> (u32, u32) {
         let v = json::parse(&l.pos(off)).unwrap();
-        (v.get("line").u32().unwrap(), v.get("character").u32().unwrap())
+        (
+            v.get("line").u32().unwrap(),
+            v.get("character").u32().unwrap(),
+        )
     }
 
     fn at(line: u32, ch: u32) -> Value {
@@ -798,8 +885,16 @@ mod tests {
         assert_eq!(u8.offset_of(&at(0, 10)), Some(e));
         // the end of line 1 is before the `\r`, and past it is clamped there
         let eol = text.find('\r').unwrap();
-        assert_eq!(u16.offset(1, 99), eol + 1, "groovyfmt lines end at \\n, the \\r is in it");
-        assert_eq!(lsp_pos(&u16, eol + 1), (0, 10), "inside \\r\\n is the end of the line");
+        assert_eq!(
+            u16.offset(1, 99),
+            eol + 1,
+            "groovyfmt lines end at \\n, the \\r is in it"
+        );
+        assert_eq!(
+            lsp_pos(&u16, eol + 1),
+            (0, 10),
+            "inside \\r\\n is the end of the line"
+        );
         assert_eq!(u16.offset_of(&at(0, 99)), Some(eol));
         // the lone `\r` starts a new LSP line, not a groovyfmt one
         let z = text.find('z').unwrap();
@@ -811,7 +906,10 @@ mod tests {
         // a position inside a surrogate pair lands on a char boundary
         let off = u16.offset_of(&at(2, 2)).unwrap();
         assert!(text.is_char_boundary(off));
-        assert_eq!(u16.offset_of(&json::parse("{\"line\":-1,\"character\":0}").unwrap()), None);
+        assert_eq!(
+            u16.offset_of(&json::parse("{\"line\":-1,\"character\":0}").unwrap()),
+            None
+        );
     }
 
     #[test]
@@ -822,8 +920,20 @@ mod tests {
         let v = json::parse(&edits(&l, new)).unwrap();
         let e = &v.arr()[0];
         let r = e.get("range");
-        assert_eq!((r.get("start").get("line").u32(), r.get("start").get("character").u32()), (Some(1), Some(0)));
-        assert_eq!((r.get("end").get("line").u32(), r.get("end").get("character").u32()), (Some(4), Some(0)));
+        assert_eq!(
+            (
+                r.get("start").get("line").u32(),
+                r.get("start").get("character").u32()
+            ),
+            (Some(1), Some(0))
+        );
+        assert_eq!(
+            (
+                r.get("end").get("line").u32(),
+                r.get("end").get("character").u32()
+            ),
+            (Some(4), Some(0))
+        );
         assert_eq!(e.get("newText").str(), Some("b\nc\n😀d\n"));
         // to and from empty, and a missing final newline
         for (old, new) in [("", "x\n"), ("x\n", ""), ("x", "x\n"), ("a\nb", "a\nb\n")] {
@@ -832,7 +942,12 @@ mod tests {
             let e = &v.arr()[0];
             let s = l.offset_of(e.get("range").get("start")).unwrap();
             let t = l.offset_of(e.get("range").get("end")).unwrap();
-            let applied = format!("{}{}{}", &old[..s], e.get("newText").str().unwrap(), &old[t..]);
+            let applied = format!(
+                "{}{}{}",
+                &old[..s],
+                e.get("newText").str().unwrap(),
+                &old[t..]
+            );
             assert_eq!(applied, new, "{old:?} -> {new:?}");
         }
     }

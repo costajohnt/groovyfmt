@@ -275,7 +275,10 @@ const MESSY: &str = "import java.util.List\nimport a.Unused\nclass A {\ndef f() 
 #[test]
 fn a_full_session_matches_the_cli() {
     let d = Dir::new("session");
-    d.write(".groovyfmt.toml", "indent = 2\nexclude = [\"gen/**\"]\n\n[lint]\nEmptyCatchBlock = false\n");
+    d.write(
+        ".groovyfmt.toml",
+        "indent = 2\nexclude = [\"gen/**\"]\n\n[lint]\nEmptyCatchBlock = false\n",
+    );
     let path = d.write("src/A.groovy", MESSY);
     let p = path.to_str().unwrap();
     let u = uri(&path);
@@ -285,9 +288,15 @@ fn a_full_session_matches_the_cli() {
     let caps = init.get("capabilities");
     assert_eq!(caps.get("positionEncoding").str(), Some("utf-16"));
     assert_eq!(caps.get("textDocumentSync").get("change").u32(), Some(1));
-    assert_eq!(caps.get("textDocumentSync").get("openClose"), &Value::Bool(true));
+    assert_eq!(
+        caps.get("textDocumentSync").get("openClose"),
+        &Value::Bool(true)
+    );
     assert_eq!(caps.get("documentFormattingProvider"), &Value::Bool(true));
-    assert_eq!(caps.get("documentRangeFormattingProvider"), &Value::Bool(true));
+    assert_eq!(
+        caps.get("documentRangeFormattingProvider"),
+        &Value::Bool(true)
+    );
     assert_eq!(
         caps.get("codeActionProvider").get("codeActionKinds").arr(),
         [
@@ -325,14 +334,21 @@ fn a_full_session_matches_the_cli() {
     let (code, want) = cli(&d.0, &["--stdin", "--stdin-filepath", p], MESSY);
     assert_eq!(code, Some(0));
     assert_eq!(apply(MESSY, edits.arr(), false), want);
-    assert!(want.contains("\n  def f() {\n"), "indent = 2 from the config");
+    assert!(
+        want.contains("\n  def f() {\n"),
+        "indent = 2 from the config"
+    );
 
     // range formatting: as --lines; a selection ending at a line start leaves that line
     let edits = srv.result(
         "textDocument/rangeFormatting",
         &format!("{{\"textDocument\":{{\"uri\":{}}},\"range\":{{\"start\":{{\"line\":3,\"character\":2}},\"end\":{{\"line\":5,\"character\":0}}}},\"options\":{{\"tabSize\":4,\"insertSpaces\":true}}}}", js(&u)),
     );
-    let (_, want) = cli(&d.0, &["--stdin", "--stdin-filepath", p, "--lines", "4-5"], MESSY);
+    let (_, want) = cli(
+        &d.0,
+        &["--stdin", "--stdin-filepath", p, "--lines", "4-5"],
+        MESSY,
+    );
     assert_eq!(apply(MESSY, edits.arr(), false), want);
     assert_ne!(want, MESSY);
 
@@ -362,15 +378,25 @@ fn a_full_session_matches_the_cli() {
     assert_eq!(actions.arr().len(), 1, "{actions:?}");
     let a = &actions.arr()[0];
     assert_eq!(a.get("kind").str(), Some("quickfix"));
-    assert_eq!(summary(a.get("diagnostics").arr()), [s("UnusedImport", 2, 1, 0, 1, 15)]);
+    assert_eq!(
+        summary(a.get("diagnostics").arr()),
+        [s("UnusedImport", 2, 1, 0, 1, 15)]
+    );
     let e = a.get("edit").get("changes").get(&u).arr();
-    assert_eq!(apply(MESSY, e, false), MESSY.replace("import a.Unused\n", ""));
+    assert_eq!(
+        apply(MESSY, e, false),
+        MESSY.replace("import a.Unused\n", "")
+    );
     // no kinds asked for: both kinds, the quick fixes first
     let actions = srv.result(
         "textDocument/codeAction",
         &format!("{{\"textDocument\":{{\"uri\":{}}},\"range\":{{\"start\":{{\"line\":9,\"character\":0}},\"end\":{{\"line\":9,\"character\":20}}}},\"context\":{{\"diagnostics\":[]}}}}", js(&u)),
     );
-    let kinds: Vec<_> = actions.arr().iter().map(|a| a.get("kind").str().unwrap()).collect();
+    let kinds: Vec<_> = actions
+        .arr()
+        .iter()
+        .map(|a| a.get("kind").str().unwrap())
+        .collect();
     assert_eq!(kinds, ["quickfix", "source.fixAll.groovyfmt"]);
 
     // the config is read again for each request
@@ -388,11 +414,21 @@ fn a_full_session_matches_the_cli() {
         &format!("{{\"textDocument\":{{\"uri\":{},\"version\":2}},\"contentChanges\":[{{\"text\":{}}}]}}", js(&u), js(broken)),
     );
     let ds = srv.diagnostics(&u);
-    assert_eq!(summary(&ds), [s("ParseError", 1, 1, 11, 1, 11)]);
+    assert_eq!(summary(&ds), [s("ParseError", 1, 1, 10, 1, 11)]);
     let c = d.write("src/C.groovy", broken);
-    let (_, syn) = cli(&d.0, &["--syntax", "--output-format", "json", c.to_str().unwrap()], "");
-    assert!(syn.contains("\"line\":2,\"column\":12,\"end_line\":2,\"end_column\":12"), "{syn}");
-    assert_eq!(ds[0].get("message").str(), Some("expected `}` to close the `{` on line 2"));
+    let (_, syn) = cli(
+        &d.0,
+        &["--syntax", "--output-format", "json", c.to_str().unwrap()],
+        "",
+    );
+    assert!(
+        syn.contains("\"line\":2,\"column\":11,\"end_line\":2,\"end_column\":12"),
+        "{syn}"
+    );
+    assert_eq!(
+        ds[0].get("message").str(),
+        Some("`{` is never closed at the top level")
+    );
     let edits = srv.result(
         "textDocument/formatting",
         &format!("{{\"textDocument\":{{\"uri\":{}}},\"options\":{{\"tabSize\":4,\"insertSpaces\":true}}}}", js(&u)),
@@ -409,7 +445,10 @@ fn a_full_session_matches_the_cli() {
     assert_eq!(v.get("error").get("code"), &Value::Num("-32601".into()));
 
     // close clears the diagnostics
-    srv.notify("textDocument/didClose", &format!("{{\"textDocument\":{{\"uri\":{}}}}}", js(&u)));
+    srv.notify(
+        "textDocument/didClose",
+        &format!("{{\"textDocument\":{{\"uri\":{}}}}}", js(&u)),
+    );
     assert_eq!(srv.diagnostics(&u).len(), 0);
     let edits = srv.result(
         "textDocument/formatting",
@@ -446,10 +485,22 @@ fn excludes_file_names_and_other_schemes() {
     // the Gradle rules follow the file name; percent-encoded names decode
     let script = "repositories {\n    jcenter()\n}\n";
     let gradle = d.0.join("dir with space/build.gradle");
-    let codes: Vec<_> = summary(&srv.open(&uri(&gradle), script)).into_iter().map(|d| d.0).collect();
+    let codes: Vec<_> = summary(&srv.open(&uri(&gradle), script))
+        .into_iter()
+        .map(|d| d.0)
+        .collect();
     assert_eq!(codes, ["GradleJcenter"]);
     let gradle = d.write("dir with space/build.gradle", script);
-    let (_, lint) = cli(&d.0, &["--lint", "--output-format", "json", gradle.to_str().unwrap()], "");
+    let (_, lint) = cli(
+        &d.0,
+        &[
+            "--lint",
+            "--output-format",
+            "json",
+            gradle.to_str().unwrap(),
+        ],
+        "",
+    );
     assert!(lint.contains("GradleJcenter"), "{lint}");
     let other = d.0.join("dir with space/Other.groovy");
     assert_eq!(srv.open(&uri(&other), script).len(), 0);
@@ -457,7 +508,10 @@ fn excludes_file_names_and_other_schemes() {
     // a broken config: one error at the top, no edits
     d.write("bad/.groovyfmt.toml", "indent = 0\n");
     let bad = uri(&d.0.join("bad/A.groovy"));
-    assert_eq!(summary(&srv.open(&bad, MESSY)), [s("config", 1, 0, 0, 0, 0)]);
+    assert_eq!(
+        summary(&srv.open(&bad, MESSY)),
+        [s("config", 1, 0, 0, 0, 0)]
+    );
 
     // untitled buffers and other schemes are ignored: no diagnostics are published
     srv.notify(
@@ -479,17 +533,66 @@ fn utf8_positions_when_the_client_offers_them() {
     let d = Dir::new("utf8");
     let mut srv = Server::start(&d.0);
     let init = srv.initialize("[\"utf-8\",\"utf-16\"]");
-    assert_eq!(init.get("capabilities").get("positionEncoding").str(), Some("utf-8"));
+    assert_eq!(
+        init.get("capabilities").get("positionEncoding").str(),
+        Some("utf-8")
+    );
     let path = d.0.join("A.groovy");
     let text = "\tprintln '😀é';\r\n";
     // tab (1) println (7) space (1) ' (1) 😀 (4 bytes) é (2) ' (1): the `;` at byte 17
-    assert_eq!(summary(&srv.open(&uri(&path), text)), [s("UnnecessarySemicolon", 2, 0, 17, 0, 18)]);
+    assert_eq!(
+        summary(&srv.open(&uri(&path), text)),
+        [s("UnnecessarySemicolon", 2, 0, 17, 0, 18)]
+    );
     let edits = srv.result(
         "textDocument/formatting",
         &format!("{{\"textDocument\":{{\"uri\":{}}},\"options\":{{\"tabSize\":4,\"insertSpaces\":true}}}}", js(&uri(&path))),
     );
-    let (_, want) = cli(&d.0, &["--stdin", "--stdin-filepath", path.to_str().unwrap()], text);
+    let (_, want) = cli(
+        &d.0,
+        &["--stdin", "--stdin-filepath", path.to_str().unwrap()],
+        text,
+    );
     assert_eq!(apply(text, edits.arr(), true), want);
+    assert_eq!(srv.result("shutdown", "null"), Value::Null);
+    srv.notify("exit", "null");
+    assert_eq!(srv.finish().0, Some(0));
+}
+
+#[test]
+fn normalize_spacing_from_the_config() {
+    let d = Dir::new("spacing");
+    d.write(".groovyfmt.toml", "normalize_spacing = true\n");
+    let text = "def x=1+2\nif(x){\nprintln( x )   \n}\nmap = [a:1,b:2]\n";
+    let path = d.0.join("A.groovy");
+    let p = path.to_str().unwrap();
+    let mut srv = Server::start(&d.0);
+    srv.initialize("[]");
+    srv.open(&uri(&path), text);
+    let opts = "\"options\":{\"tabSize\":4,\"insertSpaces\":true}";
+    let edits = srv.result(
+        "textDocument/formatting",
+        &format!(
+            "{{\"textDocument\":{{\"uri\":{}}},{opts}}}",
+            js(&uri(&path))
+        ),
+    );
+    let (code, want) = cli(&d.0, &["--stdin", "--stdin-filepath", p], text);
+    assert_eq!(code, Some(0));
+    assert_eq!(apply(text, edits.arr(), false), want);
+    assert!(want.starts_with("def x = 1 + 2\n"), "{want}");
+    // range formatting, as --lines
+    let edits = srv.result(
+        "textDocument/rangeFormatting",
+        &format!("{{\"textDocument\":{{\"uri\":{}}},\"range\":{{\"start\":{{\"line\":0,\"character\":0}},\"end\":{{\"line\":0,\"character\":3}}}},{opts}}}", js(&uri(&path))),
+    );
+    let (_, want) = cli(
+        &d.0,
+        &["--stdin", "--stdin-filepath", p, "--lines", "1-1"],
+        text,
+    );
+    assert_eq!(apply(text, edits.arr(), false), want);
+    assert_ne!(want, text);
     assert_eq!(srv.result("shutdown", "null"), Value::Null);
     srv.notify("exit", "null");
     assert_eq!(srv.finish().0, Some(0));
@@ -518,8 +621,17 @@ fn invalid_json_gets_a_parse_error_and_the_session_goes_on() {
     let mut srv = Server::start(&d.0);
     srv.initialize("[]");
     let path = d.0.join("A.groovy");
-    assert_eq!(srv.open(&uri(&path), MESSY).len(), 4);
-    for bad in ["{", "{\"jsonrpc\":\"2.0\",\"method\":", "\u{0}\u{1}", "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[["] {
+    assert_eq!(
+        srv.open(&uri(&path), MESSY).len(),
+        5,
+        "with the empty catch"
+    );
+    for bad in [
+        "{",
+        "{\"jsonrpc\":\"2.0\",\"method\":",
+        "\u{0}\u{1}",
+        "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[",
+    ] {
         srv.send(bad);
         // the open document is forgotten (the bad message may have been a change to it)
         let mut got_error = false;
@@ -528,7 +640,11 @@ fn invalid_json_gets_a_parse_error_and_the_session_goes_on() {
             if v.get("method").str() == Some("textDocument/publishDiagnostics") {
                 assert_eq!(v.get("params").get("diagnostics").arr().len(), 0);
             } else {
-                assert_eq!(v.get("error").get("code"), &Value::Num("-32700".into()), "{v:?}");
+                assert_eq!(
+                    v.get("error").get("code"),
+                    &Value::Num("-32700".into()),
+                    "{v:?}"
+                );
                 assert!(v.get("id").is_null());
                 got_error = true;
                 break;
@@ -538,18 +654,31 @@ fn invalid_json_gets_a_parse_error_and_the_session_goes_on() {
     }
     // not UTF-8
     srv.raw(b"Content-Length: 2\r\n\r\n\xff\xfe");
-    assert_eq!(srv.recv().get("error").get("code"), &Value::Num("-32700".into()));
+    assert_eq!(
+        srv.recv().get("error").get("code"),
+        &Value::Num("-32700".into())
+    );
     // valid JSON that isn't a request
     srv.send("[1,2]");
-    assert_eq!(srv.recv().get("error").get("code"), &Value::Num("-32600".into()));
+    assert_eq!(
+        srv.recv().get("error").get("code"),
+        &Value::Num("-32600".into())
+    );
     srv.send("{\"jsonrpc\":\"2.0\",\"id\":{},\"method\":\"shutdown\"}");
-    assert_eq!(srv.recv().get("error").get("code"), &Value::Num("-32600".into()));
+    assert_eq!(
+        srv.recv().get("error").get("code"),
+        &Value::Num("-32600".into())
+    );
     let edits = srv.result(
         "textDocument/formatting",
         &format!("{{\"textDocument\":{{\"uri\":{}}},\"options\":{{\"tabSize\":4,\"insertSpaces\":true}}}}", js(&uri(&path))),
     );
     assert_eq!(edits, Value::Arr(vec![]), "forgotten until opened again");
-    assert_eq!(srv.open(&uri(&path), MESSY).len(), 4);
+    assert_eq!(
+        srv.open(&uri(&path), MESSY).len(),
+        5,
+        "with the empty catch"
+    );
     assert_eq!(srv.result("shutdown", "null"), Value::Null);
     srv.notify("exit", "null");
     let (code, err) = srv.finish();

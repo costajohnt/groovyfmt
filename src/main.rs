@@ -1,8 +1,8 @@
+use groovyfmt::MAX_FILE_BYTES;
 use groovyfmt::config::{self, Config, Resolver};
 use groovyfmt::diff;
 use groovyfmt::fix::{self, Fix};
 use groovyfmt::format::{Outcome, Style, format};
-use groovyfmt::MAX_FILE_BYTES;
 use groovyfmt::lint::{self, RULES};
 use groovyfmt::report::{self, Diagnostic, FileReport};
 use groovyfmt::syntax::{self, SyntaxError};

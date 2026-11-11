@@ -197,7 +197,9 @@ impl Parser<'_> {
             }
         }
         // only ASCII digits and signs were consumed, so this is a char boundary
-        Ok(Value::Num(String::from_utf8_lossy(&self.b[start..self.i]).into_owned()))
+        Ok(Value::Num(
+            String::from_utf8_lossy(&self.b[start..self.i]).into_owned(),
+        ))
     }
 
     fn hex4(&mut self) -> Result<u32, String> {
@@ -225,7 +227,9 @@ impl Parser<'_> {
             {
                 self.i += 1;
             }
-            out.push_str(std::str::from_utf8(&self.b[start..self.i]).map_err(|_| self.err("bad UTF-8"))?);
+            out.push_str(
+                std::str::from_utf8(&self.b[start..self.i]).map_err(|_| self.err("bad UTF-8"))?,
+            );
             match self.peek() {
                 Some(b'"') => {
                     self.i += 1;
@@ -279,8 +283,8 @@ mod tests {
 
     #[test]
     fn values() {
-        let v = parse(r#" {"a": [1, -2.5e3, true, false, null], "b": {"c": "d"}, "a": 0} "#)
-            .unwrap();
+        let v =
+            parse(r#" {"a": [1, -2.5e3, true, false, null], "b": {"c": "d"}, "a": 0} "#).unwrap();
         assert_eq!(
             v.get("a").arr(),
             [
@@ -303,7 +307,10 @@ mod tests {
     #[test]
     fn strings_and_escapes() {
         let s = |j: &str| parse(j).map(|v| v.str().unwrap().to_string());
-        assert_eq!(s(r#""a\"\\\/\b\f\n\r\t""#).unwrap(), "a\"\\/\u{8}\u{c}\n\r\t");
+        assert_eq!(
+            s(r#""a\"\\\/\b\f\n\r\t""#).unwrap(),
+            "a\"\\/\u{8}\u{c}\n\r\t"
+        );
         assert_eq!(s(r#""\u00e9\u4e2d\ud83d\ude00""#).unwrap(), "é中😀");
         assert_eq!(s("\"é中😀\"").unwrap(), "é中😀");
         for bad in [
@@ -327,8 +334,25 @@ mod tests {
     #[test]
     fn rejects_what_is_not_json() {
         for bad in [
-            "", " ", "{", "[1,]", "{\"a\":1,}", "{\"a\" 1}", "{a:1}", "01", "1.", "-", "1e",
-            ".5", "+1", "tru", "nul", "[1 2]", "{} x", "'a'", "NaN",
+            "",
+            " ",
+            "{",
+            "[1,]",
+            "{\"a\":1,}",
+            "{\"a\" 1}",
+            "{a:1}",
+            "01",
+            "1.",
+            "-",
+            "1e",
+            ".5",
+            "+1",
+            "tru",
+            "nul",
+            "[1 2]",
+            "{} x",
+            "'a'",
+            "NaN",
         ] {
             assert!(parse(bad).is_err(), "{bad:?}");
         }
