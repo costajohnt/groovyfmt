@@ -1,0 +1,75 @@
+plugins {
+    id 'java-gradle-plugin'
+    id 'com.gradle.plugin-publish' version '2.2.1'
+}
+
+group = 'io.github.costajohnt'
+// The plugin carries groovyfmt's version, so by default it downloads the release it was built with.
+version = file('../Cargo.toml').readLines().find { it.startsWith('version = ') }.split('"')[1]
+
+// Gradle 7.6+ runs on Java 11+, so the plugin targets 11. Tests run on whatever JDK runs this build.
+java {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+}
+tasks.named('compileJava') {
+    options.release = 11
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation platform('org.junit:junit-bom:5.14.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+def pluginVersion = version
+tasks.named('processResources') {
+    inputs.property('version', pluginVersion)
+    filesMatching('**/version.txt') {
+        expand(version: pluginVersion)
+    }
+}
+
+// The oldest Gradle the plugin supports. Raising it is a breaking change: say so in the CHANGELOG.
+def minGradle = '7.6.6'
+
+tasks.named('test') {
+    useJUnitPlatform()
+    systemProperty 'groovyfmt.testKitDir', layout.buildDirectory.dir('testkit-current').get().asFile.path
+}
+
+def testMinGradle = tasks.register('testMinGradle', Test) {
+    description = "Runs the TestKit tests against Gradle $minGradle."
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform()
+    filter {
+        includeTestsMatching '*FunctionalTest'
+    }
+    systemProperty 'groovyfmt.testGradleVersion', minGradle
+    systemProperty 'groovyfmt.testKitDir', layout.buildDirectory.dir('testkit-min').get().asFile.path
+    shouldRunAfter 'test'
+}
+
+tasks.named('check') {
+    dependsOn testMinGradle
+}
+
+gradlePlugin {
+    website = 'https://github.com/costajohnt/groovyfmt'
+    vcsUrl = 'https://github.com/costajohnt/groovyfmt'
+    plugins {
+        groovyfmt {
+            id = 'io.github.costajohnt.groovyfmt'
+            implementationClass = 'io.github.costajohnt.groovyfmt.GroovyfmtPlugin'
+            displayName = 'groovyfmt'
+            description = 'Formats and lints Groovy, Gradle build scripts and Jenkinsfiles with groovyfmt, downloading and verifying its release binary.'
+            tags.set(['groovy', 'formatter', 'lint', 'jenkinsfile', 'codestyle'])
+        }
+    }
+}
