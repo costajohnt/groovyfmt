@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.1 (2026-11-10)
+
+The first published release of the 0.9 line: 0.9.0 was tagged but its release run failed on macOS, so no 0.9.0 binaries exist. Everything listed under 0.9.0 below is in this release.
+
+### Fixed
+
+- A self-test of the test suite's own timing helper failed on fast machines (the macOS runners), which stopped the 0.9.0 release. No change to groovyfmt's behavior.
+
 ## 0.9.0 (2026-11-10)
 
 ### Added

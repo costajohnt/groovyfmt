@@ -190,7 +190,13 @@ pub(crate) mod scaling {
     #[test]
     #[should_panic(expected = "over 8x")]
     fn quadratic_work_fails() {
-        assert_scales("quadratic", quadratic, 20, 4, 8);
+        // Start from a size that costs more than the 50 ms floor on this machine: on a fast
+        // one, size 20 sat under the floor and 16 times its real cost still passed.
+        let mut n = 20;
+        while cost(&quadratic, n) < Duration::from_millis(100) {
+            n *= 2;
+        }
+        assert_scales("quadratic", quadratic, n, 4, 8);
     }
 }
 
