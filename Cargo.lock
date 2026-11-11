@@ -22,15 +22,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dekobon-tree-sitter-groovy"
-version = "0.3.0"
-source = "git+https://github.com/costajohnt/tree-sitter-groovy?rev=65a9b34b447fa1ab58322c84df55da90c4656af4#65a9b34b447fa1ab58322c84df55da90c4656af4"
-dependencies = [
- "cc",
- "tree-sitter-language",
-]
-
-[[package]]
 name = "equivalent"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -52,9 +43,10 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 name = "groovyfmt"
 version = "0.8.0"
 dependencies = [
- "dekobon-tree-sitter-groovy",
+ "cc",
  "toml",
  "tree-sitter",
+ "tree-sitter-language",
 ]
 
 [[package]]
