@@ -15,6 +15,7 @@
 - `--diff` with `--check` (and `--lint --fix`): print a unified diff of the changes instead of the file names, writing nothing, for `git apply` or `patch -p1`. A file whose name or diff would print a control character, `##[` or a line starting `::` gets a `# groovyfmt: ... diff not shown` line instead.
 - `--lines <start>-<end>` (repeatable) for one file or `--stdin`: change only those lines; every other line stays byte for byte, and the result passes the same token check as formatting.
 - `--changed-since <rev>`: limit a run to the files that differ from a git revision, plus untracked files, under the working directory.
+- A Gradle plugin (`gradle-plugin/`, id `io.github.costajohnt.groovyfmt`) with `groovyfmtCheck` and `groovyfmtLint`, which `check` runs, and `groovyfmtFormat`. It downloads the release binary into `~/.gradle/groovyfmt/`, checks its `.sha256` before unpacking it, and reuses it; `binary` runs a local one instead. Gradle 7.6+ on Java 11+, configuration cache compatible. Not published yet: use it with `includeBuild` from a checkout (README, Gradle). The release workflow's `publish-gradle-plugin` job stays off until the repository variable `PUBLISH_GRADLE_PLUGIN` is set (`docs/releasing.md`).
 
 ### Changed
 
