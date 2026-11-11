@@ -121,6 +121,21 @@ mod tests {
             "annotation",
             "gstring_brace_interpolation",
             "gstring_dollar_interpolation",
+            // lint/jenkins.rs, lint/gradle.rs, lint/spock.rs
+            "pipeline_statement",
+            "expression_statement",
+            "closure_parameters",
+            "named_argument",
+            "local_variable_declaration",
+            "for_in_statement",
+            "do_while_statement",
+            "switch_expression",
+            "assignment_expression",
+            "package_declaration",
+            "class_declaration",
+            "superclass",
+            "method_declaration",
+            "quoted_identifier",
             // spacing.rs
             "expression_statement",
             "named_argument",
@@ -196,6 +211,7 @@ mod tests {
             "for",
             "switch",
             "synchronized",
+            "<<",
         ] {
             assert_ne!(lang.id_for_node_kind(k, false), 0, "missing token {k}");
         }
@@ -213,6 +229,12 @@ mod tests {
             "left",
             "right",
             "label",
+            "receiver",
+            "argument",
+            "function",
+            "arguments",
+            "closure",
+            "statement",
             "base",
         ];
         for f in fields {

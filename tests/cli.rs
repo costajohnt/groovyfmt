@@ -41,12 +41,17 @@ fn run(dir: &Path, args: &[&str], stdin: Option<&str>) -> Output {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = cmd.spawn().unwrap();
-    child
+    // A child that exits early (a bad argument) closes its stdin before the write
+    // finishes; that's fine, its exit status and stderr are what the tests check.
+    if let Err(e) = child
         .stdin
         .take()
         .unwrap()
         .write_all(stdin.unwrap_or("").as_bytes())
-        .unwrap();
+        && e.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        panic!("writing the child's stdin: {e}");
+    }
     child.wait_with_output().unwrap()
 }
 

@@ -769,7 +769,7 @@ fn fmt(files: &[PathBuf], links: &HashMap<PathBuf, PathBuf>, cfgs: &Configs, a: 
 fn lint_files(files: &[PathBuf], cfgs: &Configs, a: &Args, stats_only: bool) -> i32 {
     let t = Instant::now();
     let results = par_map(files, |p| {
-        read(p).map(|src| src.and_then(|s| lint::lint(&s)))
+        read(p).map(|src| src.and_then(|s| lint::lint_file(p, &s)))
     });
     let (mut skipped, mut total, mut failed) = (0usize, 0usize, false);
     let mut by_rule: BTreeMap<&str, usize> = BTreeMap::new();
