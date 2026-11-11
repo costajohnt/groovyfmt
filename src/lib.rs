@@ -7,13 +7,23 @@ pub mod syntax;
 
 use std::path::Path;
 use tree_sitter::{Node, Parser, Tree};
+use tree_sitter_language::LanguageFn;
+
+unsafe extern "C" {
+    fn tree_sitter_groovy() -> *const ();
+}
+
+// SAFETY: tree_sitter_groovy is the entry point of grammar/parser.c, compiled by build.rs. It
+// takes no arguments and returns a pointer to the grammar's static TSLanguage, which is what
+// from_raw requires. The only unsafe code in groovyfmt.
+const GROOVY: LanguageFn = unsafe { LanguageFn::from_raw(tree_sitter_groovy) };
 
 pub fn parse(src: &str) -> Tree {
     // one parser per thread, reused: a file is parsed two to four times
     thread_local! {
         static PARSER: std::cell::RefCell<Parser> = std::cell::RefCell::new({
             let mut p = Parser::new();
-            p.set_language(&dekobon_tree_sitter_groovy::LANGUAGE.into())
+            p.set_language(&GROOVY.into())
                 .expect("grammar ABI mismatch");
             p
         });
@@ -86,7 +96,7 @@ mod tests {
     /// update that renames one would otherwise silently turn a lint rule into a no-op.
     #[test]
     fn grammar_has_every_kind_and_field_we_match() {
-        let lang: tree_sitter::Language = dekobon_tree_sitter_groovy::LANGUAGE.into();
+        let lang: tree_sitter::Language = super::GROOVY.into();
         let named = [
             "source_file",
             "identifier",
