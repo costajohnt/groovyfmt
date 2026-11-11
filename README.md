@@ -36,7 +36,7 @@ The comparison flatters groovyfmt somewhat. It skips the 9 spock files it can't 
 
 | Channel | Status |
 |---|---|
-| [Release binaries](#release-binaries) | available |
+| [Release binaries](#release-binaries) | available; [Windows](#windows) in releases after 0.8.0, tested on Windows Server 2022 and under Wine |
 | [Build from source](#build-from-source) | available |
 | [pre-commit](#pre-commit) | available from `main`, and in releases after 0.8.0 |
 | [GitHub Action](#github-actions) | available from `main`, and in releases after 0.8.0; while the repository is private, only with a token that can read it |
@@ -47,13 +47,39 @@ The comparison flatters groovyfmt somewhat. It skips the 9 spock files it can't 
 
 ### Release binaries
 
-Prebuilt binaries for Linux (x86_64 and arm64, both static musl builds that need no glibc) and macOS (Apple Silicon, Intel) are attached to each [release](https://github.com/costajohnt/groovyfmt/releases), each with a `.sha256` file:
+Prebuilt binaries for Linux (x86_64 and arm64, both static musl builds that need no glibc), macOS (Apple Silicon, Intel) and [Windows](#windows) (x86_64, a `.zip`) are attached to each [release](https://github.com/costajohnt/groovyfmt/releases), each with a `.sha256` file:
 
 ```sh
 gh release download --repo costajohnt/groovyfmt --pattern '*aarch64-apple-darwin.tar.gz*'
 shasum -a 256 -c groovyfmt-*.tar.gz.sha256
 tar -xzf groovyfmt-*.tar.gz && mv groovyfmt-*/groovyfmt /usr/local/bin/
 ```
+
+### Windows
+
+Support level: **tested on Windows Server 2022 (x86_64, NTFS) and under Wine; not yet on a desktop Windows release or on ARM.** `groovyfmt-<version>-x86_64-pc-windows-gnu.zip` holds `groovyfmt.exe`, one file that needs only Windows' own DLLs: it runs on a Windows machine that has never had a compiler or runtime installed. It is cross-compiled on Linux with mingw-w64. The whole test suite passes on Windows Server 2022 and under Wine, and formatting a 3,000-file sample of the corpus on Windows Server, and the whole 23,766-file corpus under Wine, gives files byte-identical to the Linux build's. In PowerShell:
+
+```powershell
+gh release download --repo costajohnt/groovyfmt --pattern '*windows*'
+(Get-FileHash groovyfmt-*.zip -Algorithm SHA256).Hash.ToLower()   # compare with the .sha256 file
+Expand-Archive groovyfmt-*.zip .
+```
+
+Then put the folder holding `groovyfmt.exe` on `PATH`. `tar -xf` (the `tar.exe` Windows ships) unpacks the zip too. The [GitHub Action](#github-actions), the [npm](#npm) package (`@groovyfmt/win32-x64`) and the [Gradle plugin](#gradle) install it on Windows x64 too. There is no Windows on ARM build.
+
+What to expect (each checked on Windows Server 2022 unless it says otherwise):
+
+- Output is the same as on Linux and macOS: paths print with `/` in every format (text, `github`, JSON, SARIF, `--diff` headers), and groovyfmt never turns `\n` into `\r\n`, so CRLF files keep their line endings and `--lsp` framing stays exact over pipes. Paths can be typed with `\` or `/`, with or without a drive letter. `exclude` patterns use `/` and are case-sensitive, as everywhere, so a config written on Linux works unchanged.
+- Formatting in place writes a temporary file beside the original and renames it over it, as elsewhere, so a crash never leaves half a file. A read-only file is not formatted (exit 2). A file another program has open is formatted if that program opened it with delete sharing (`FILE_SHARE_DELETE`); otherwise groovyfmt names the file, exits 2 and leaves it as it was. Before the rename, groovyfmt checks that the path still holds the file it read by size, modification time and contents (Windows has no inode number std can read).
+- The rewritten file gets the permissions (ACL) its folder gives new files, so a file with explicit permissions of its own loses them. There is no owner to keep.
+- Hard links can't be seen, so formatting a hard-linked file replaces it and its other names keep the old text. On Linux and macOS they stay linked.
+- Symlinks and junctions get the same rules as on Linux and macOS: not followed inside a walk, followed when named, and not written through when named and pointing outside the working directory (`groovyfmt: vendor: symlink target is outside the working directory, not formatted`, exit 2).
+- `CON`, `NUL`, `COM1` and the other device names are never created or read: naming one is `no such file or directory` (exit 2). Windows drops a trailing dot or space from a name, so `A.groovy.` is `A.groovy`. Paths longer than 260 characters work, without the `LongPathsEnabled` setting.
+- Neither PowerShell nor `cmd` expands `*.groovy` for a program on Windows, and groovyfmt doesn't either: name a directory (`groovyfmt --check .`), which is searched as on Linux, or let PowerShell expand the names (`groovyfmt --check (Get-ChildItem *.groovy).Name`).
+- `--stdin` reads and writes bytes, but Windows PowerShell 5.1 re-encodes what it pipes to a program (as ASCII, by default, so `é` becomes `?`) and adds line endings, and its `>` writes UTF-16. Use `cmd`'s redirection, which passes bytes through: `cmd /c "groovyfmt --stdin < A.groovy > out.groovy"`. Editors and the `--lsp` server don't go through a shell and aren't affected. File names print as UTF-8; to read non-ASCII ones in a PowerShell 5.1 console, first run `[Console]::OutputEncoding = [Text.Encoding]::UTF8`. In PowerShell 5.1 a quoted argument can't end in `\` (`'my dir\'` reaches groovyfmt as `my dir"`): write `'my dir'` or `'my dir/'`.
+- `--changed-since` runs `git` from `PATH` (Git for Windows); without it, it exits 2 with `running git: program not found`. Not yet tried with Git for Windows installed.
+
+Not checked yet: desktop Windows 10 and 11, Windows on ARM, antivirus or indexer locks on a file being replaced, PowerShell 7, and Git for Windows.
 
 ### Build from source
 
@@ -67,7 +93,7 @@ The Groovy grammar is vendored in the repository (`grammar/`), so this fetches o
 
 ### npm
 
-Not published yet. Once it is, `npx groovyfmt` runs it without installing, and `npm install --save-dev groovyfmt` adds it to a project. The package downloads only the binary for your platform (Linux or macOS, x64 or arm64).
+Not published yet. Once it is, `npx groovyfmt` runs it without installing, and `npm install --save-dev groovyfmt` adds it to a project. The package downloads only the binary for your platform (Linux or macOS, x64 or arm64, or Windows x64).
 
 ### Homebrew
 
@@ -460,7 +486,7 @@ Spock specs come in two styles. By default the statements of a `given:` / `when:
 
 ### GitHub Actions
 
-The action installs the release binary for the runner (Linux or macOS, x64 or arm64), checks it against its `.sha256`, puts it on `PATH` and runs it with `args`:
+The action installs the release binary for the runner (Linux or macOS, x64 or arm64, or Windows x64), checks it against its `.sha256`, puts it on `PATH` and runs it with `args`:
 
 ```yaml
 - uses: actions/checkout@v5
@@ -473,6 +499,8 @@ The action installs the release binary for the runner (Linux or macOS, x64 or ar
 ```
 
 `--output-format github` turns findings into annotations on the pull request diff. While the repository is private, `token` must be able to read it, which `github.token` can only do in workflows of this repository. Without `version`, the action installs the release named by the `Cargo.toml` at the ref you use, so a release tag installs that release and `main` the latest one.
+
+On a Windows runner the action's steps run in bash (Git Bash, which GitHub's Windows images have) and unpack the `.zip` with PowerShell's `Expand-Archive`; later steps find `groovyfmt` on `PATH` in `pwsh`, `cmd` or `bash`. This has not run on a GitHub Windows runner yet.
 
 Without the action:
 
@@ -494,7 +522,7 @@ Add `--strict` to `--check` or `--lint` to fail the job when a file was skipped 
 
 ### Gradle
 
-The Gradle plugin (`gradle-plugin/`) adds three tasks: `groovyfmtCheck` and `groovyfmtLint`, which `check` runs, and `groovyfmtFormat`, which formats in place. It downloads the release binary for the machine (Linux or macOS, x86_64 or arm64) into `~/.gradle/groovyfmt/<version>/<target>/`, checks it against its `.sha256` before unpacking it, and reuses it after that. It needs Gradle 7.6 or later on Java 11 or later, and works with the configuration cache.
+The Gradle plugin (`gradle-plugin/`) adds three tasks: `groovyfmtCheck` and `groovyfmtLint`, which `check` runs, and `groovyfmtFormat`, which formats in place. It downloads the release binary for the machine (Linux or macOS, x86_64 or arm64, or Windows x86_64) into `~/.gradle/groovyfmt/<version>/<target>/`, checks it against its `.sha256` before unpacking it, and reuses it after that. It needs Gradle 7.6 or later on Java 11 or later, and works with the configuration cache.
 
 It is not on the Gradle Plugin Portal yet. Until it is, build it from a checkout of this repository with `includeBuild`:
 
@@ -526,7 +554,7 @@ A task fails with groovyfmt's own output when files need formatting or lint find
 
 Apply the plugin to the root project only. groovyfmt searches the whole directory tree, subprojects included (it skips `build` directories), so one run covers a multi-project build; applying it to subprojects too would check their files twice.
 
-While the repository is private, the download needs a token that can read it: the environment variable `GROOVYFMT_GITHUB_TOKEN` or `GITHUB_TOKEN`, or the Gradle property `groovyfmt.githubToken` in a `gradle.properties` file. The token is sent only to `api.github.com`, in a header. Don't pass it as `-P` on the command line: Gradle 7.6 keeps every command-line `-P` value, in plain text, in its configuration cache. With `--offline` the plugin uses the cached binary and fails if there is none. There is no Windows release binary; on Windows, set `binary`.
+While the repository is private, the download needs a token that can read it: the environment variable `GROOVYFMT_GITHUB_TOKEN` or `GITHUB_TOKEN`, or the Gradle property `groovyfmt.githubToken` in a `gradle.properties` file. The token is sent only to `api.github.com`, in a header. Don't pass it as `-P` on the command line: Gradle 7.6 keeps every command-line `-P` value, in plain text, in its configuration cache. With `--offline` the plugin uses the cached binary and fails if there is none. On Windows on ARM, which has no release binary, set `binary`.
 
 Without the plugin, with `groovyfmt` on `PATH`:
 

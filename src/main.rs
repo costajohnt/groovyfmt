@@ -1,4 +1,3 @@
-use groovyfmt::MAX_FILE_BYTES;
 use groovyfmt::baseline::{self, Baseline};
 use groovyfmt::config::{self, Config, Resolver};
 use groovyfmt::diff;
@@ -7,6 +6,7 @@ use groovyfmt::format::{Outcome, Style, format};
 use groovyfmt::lint::{self, RULES};
 use groovyfmt::report::{self, Diagnostic, FileReport};
 use groovyfmt::syntax::{self, SyntaxError};
+use groovyfmt::{MAX_FILE_BYTES, display_path};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -441,13 +441,13 @@ fn collect(
     let cwd = std::fs::canonicalize(".").ok();
     for p in paths {
         if !p.exists() {
-            die(format!("{}: no such file or directory", p.display()));
+            die(format!("{}: no such file or directory", display_path(p)));
         }
         // components() drops a trailing `/` or `/.`, which would make the link resolve
         let last: PathBuf = p.components().collect();
         if write && last.is_symlink() {
-            let real =
-                std::fs::canonicalize(p).unwrap_or_else(|e| die(format!("{}: {e}", p.display())));
+            let real = std::fs::canonicalize(p)
+                .unwrap_or_else(|e| die(format!("{}: {e}", display_path(p))));
             if cwd.as_ref().is_none_or(|c| !real.starts_with(c)) {
                 eprintln!(
                     "groovyfmt: {}: symlink target is outside the working directory, not formatted",
@@ -466,7 +466,7 @@ fn collect(
                 Ok(real) => {
                     links.insert(files[n].0.clone(), real);
                 }
-                Err(e) => die(format!("{}: {e}", p.display())),
+                Err(e) => die(format!("{}: {e}", display_path(p))),
             }
         }
     }
@@ -550,23 +550,55 @@ fn read_as(path: &Path, name: &Path) -> Result<Result<(String, FileId), &'static
     if bytes.len() as u64 > MAX_FILE_BYTES {
         return Ok(Err("larger than 10 MB"));
     }
+    let id = file_id(&meta, &bytes);
     Ok(String::from_utf8(bytes)
-        .map(|src| (src, file_id(&meta)))
+        .map(|src| (src, id))
         .map_err(|_| NOT_UTF8))
 }
 
-/// Device and inode on unix; elsewhere there is nothing to compare.
+/// What a write checks to be sure the path still names the file that was read
+/// (`still_read`). On unix, the device and inode.
+#[cfg(unix)]
 type FileId = (u64, u64);
 
 #[cfg(unix)]
-fn file_id(m: &std::fs::Metadata) -> FileId {
+fn file_id(m: &std::fs::Metadata, _: &[u8]) -> FileId {
     use std::os::unix::fs::MetadataExt;
     (m.dev(), m.ino())
 }
 
+/// Elsewhere (Windows), std has no stable file identity (the volume serial number and file
+/// index are behind the unstable `windows_by_handle`), so: the size, the last write time and
+/// a hash of the contents. Before writing, the file is read again and all three must match,
+/// so a file swapped in since must at least hold the same text. The hash is std's SipHash,
+/// not a cryptographic one; a collision needs a local attacker racing the write, who could
+/// write the file directly anyway.
 #[cfg(not(unix))]
-fn file_id(_: &std::fs::Metadata) -> FileId {
-    (0, 0)
+type FileId = (u64, u64, u64);
+
+#[cfg(not(unix))]
+fn file_id(m: &std::fs::Metadata, bytes: &[u8]) -> FileId {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    let modified = m
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos() as u64);
+    (m.len(), modified, h.finish())
+}
+
+/// Whether `path`, with metadata `m`, is still the file read as `read`.
+#[cfg(unix)]
+fn still_read(_: &Path, m: &std::fs::Metadata, read: FileId) -> std::io::Result<bool> {
+    Ok(file_id(m, &[]) == read)
+}
+
+#[cfg(not(unix))]
+fn still_read(path: &Path, m: &std::fs::Metadata, read: FileId) -> std::io::Result<bool> {
+    // the size first, so a file swapped for a huge one isn't read
+    Ok(m.len() == read.0 && file_id(m, &std::fs::read(path)?) == read)
 }
 
 fn changed() -> std::io::Error {
@@ -581,6 +613,15 @@ static TMP_SEQ: AtomicUsize = AtomicUsize::new(0);
 /// instead. `read` is the identity of the file the contents came from; if the path no
 /// longer names that regular file (swapped for a symlink or another file), nothing is
 /// written.
+///
+/// On Windows the rename is the same (`std::fs::rename` replaces an existing file there), and:
+/// - a read-only file is refused as on unix; a file another program holds open without
+///   delete sharing can't be replaced, so the rename fails, the temporary file is removed and
+///   the original is left as it was;
+/// - there is no owner to keep, and the new file gets the access control list the directory
+///   gives new files, not the original's: a file with an explicit ACL of its own loses it;
+/// - std can't count a file's hard links there, so a hard-linked file is replaced like any
+///   other and its other names keep the old text.
 fn write_atomic(path: &Path, contents: &str, read: FileId) -> std::io::Result<()> {
     write_keeping_owner(path, contents, read, keep_owner)
 }
@@ -594,7 +635,7 @@ fn write_keeping_owner(
     // This narrows the gap between the check and the rename below but can't close it: std
     // has no rename relative to a pinned file. The in-place path checks its open handle.
     let meta = std::fs::symlink_metadata(path)?;
-    if !meta.is_file() || file_id(&meta) != read {
+    if !meta.is_file() || !still_read(path, &meta, read)? {
         return Err(changed());
     }
     let perms = meta.permissions();
@@ -640,6 +681,8 @@ fn tmp_name(seq: usize) -> String {
 
 /// A new file at `tmp`, failing if one exists. Owner-only until the original permissions
 /// are applied, so the contents of a private file are never readable by others in between.
+/// Windows has no mode bits: the file gets the ACL its directory gives new files, the one
+/// the file being replaced has too unless it was given one of its own.
 fn create_tmp(tmp: &Path) -> std::io::Result<std::fs::File> {
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);
@@ -660,6 +703,8 @@ fn keep_owner(f: &std::fs::File, orig: &std::fs::Metadata) -> std::io::Result<()
     std::os::unix::fs::fchown(f, Some(orig.uid()), Some(orig.gid()))
 }
 
+/// Nothing to keep elsewhere: on Windows a new file belongs to whoever creates it, and std
+/// can't change that.
 #[cfg(not(unix))]
 fn keep_owner(_: &std::fs::File, _: &std::fs::Metadata) -> std::io::Result<()> {
     Ok(())
@@ -677,7 +722,7 @@ fn write_in_place(path: &Path, read: FileId, contents: &str) -> std::io::Result<
     // read side, that needs a concurrent local attacker (the first audit's accepted risk).
     let mut f = std::fs::OpenOptions::new().write(true).open(path)?;
     let now = f.metadata()?;
-    if !now.is_file() || file_id(&now) != read {
+    if !now.is_file() || !still_read(path, &now, read)? {
         return Err(changed());
     }
     f.set_len(0)?;
@@ -706,7 +751,7 @@ fn printable(s: &str) -> String {
 /// A path for display. A leading `:` gets `./` in front, so no report line can start
 /// with `::` and be taken as a GitHub Actions workflow command.
 fn shown(p: &Path) -> String {
-    let s = printable(&p.display().to_string());
+    let s = printable(&display_path(p));
     // after any leading whitespace too, in case the log reader trims it
     if s.trim_start().starts_with(':') {
         format!("./{s}")
@@ -801,7 +846,7 @@ fn format_some(src: &str, style: &Style, lines: &[(usize, usize)]) -> Outcome {
 ///
 /// `git apply` and `patch` skip a `#` line between files, so the rest still applies.
 fn patch_for(path: &Path, old: &str, new: &str) -> String {
-    let name = path.display().to_string();
+    let name = display_path(path);
     let withheld = || {
         format!(
             "# groovyfmt: {}: diff not shown, as the file name or a changed line holds a control character or a CI workflow command\n",
@@ -930,7 +975,7 @@ impl Out {
     ) {
         if !self.text() {
             self.files.push(FileReport {
-                path: path.display().to_string(),
+                path: display_path(path),
                 status,
                 reason: reason.map(String::from),
                 diagnostics,
@@ -1525,7 +1570,14 @@ fn lint_files(
 /// Write `contents` to `path`, a new file or one replaced atomically, as formatting does.
 fn write_new(path: &Path, contents: &str) -> std::io::Result<()> {
     match std::fs::symlink_metadata(path) {
-        Ok(m) => write_atomic(path, contents, file_id(&m)),
+        Ok(m) => {
+            // elsewhere than unix the identity includes the contents (`file_id`)
+            #[cfg(unix)]
+            let id = file_id(&m, &[]);
+            #[cfg(not(unix))]
+            let id = file_id(&m, &std::fs::read(path)?);
+            write_atomic(path, contents, id)
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
             let tmp = path.with_file_name(tmp_name(seq));
@@ -1806,7 +1858,7 @@ mod tests {
     static TMP_NAMES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn id(p: &Path) -> FileId {
-        file_id(&std::fs::metadata(p).unwrap())
+        file_id(&std::fs::metadata(p).unwrap(), &std::fs::read(p).unwrap())
     }
 
     #[test]
@@ -2021,6 +2073,112 @@ mod tests {
         assert!(leftovers.is_empty(), "no temp files left behind");
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_paths_print_with_forward_slashes() {
+        assert_eq!(shown(Path::new(r"src\a\A.groovy")), "src/a/A.groovy");
+        assert_eq!(shown(Path::new(r"C:\x\A.groovy")), "C:/x/A.groovy");
+        let p = patch_for(Path::new(r"src\A.groovy"), "x  \n", "x\n");
+        assert!(
+            p.starts_with("--- a/src/A.groovy\n+++ b/src/A.groovy\n"),
+            "{p}"
+        );
+        // an unpaired surrogate can't be printed; it shows as U+FFFD
+        use std::os::windows::ffi::OsStringExt;
+        let bad = PathBuf::from(std::ffi::OsString::from_wide(&[0x61, 0xD800, 0x62]));
+        assert_eq!(shown(&bad), "a\u{FFFD}b");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_temp_file_is_always_new() {
+        let d = std::env::temp_dir().join(format!("groovyfmt-tmpnew-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let tmp = d.join(".A.groovy.tmp");
+        let _ = std::fs::remove_file(&tmp);
+        let f = create_tmp(&tmp).unwrap();
+        let readonly = f.metadata().unwrap().permissions().readonly();
+        let again = create_tmp(&tmp);
+        drop(f);
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(again.is_err(), "an existing file is never reused");
+        assert!(!readonly);
+    }
+
+    /// The Windows side of `rename_unless_hard_linked_or_owner_lost`: always a rename, with
+    /// the identity of the file read checked by size, write time and contents.
+    #[cfg(windows)]
+    #[test]
+    fn windows_rename_checks_what_was_read_and_never_half_writes() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let _lock = TMP_NAMES.lock();
+        let d = std::env::temp_dir().join(format!("groovyfmt-winwrite-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let (a, b) = (d.join("A.groovy"), d.join("B.groovy"));
+        let text = |p: &Path| std::fs::read_to_string(p).unwrap();
+
+        std::fs::write(&a, "old\n").unwrap();
+        write_atomic(&a, "new\n", id(&a)).unwrap();
+        assert_eq!(text(&a), "new\n", "renamed over the original");
+
+        // only the file that was read is written
+        let other = d.join("Other.groovy");
+        std::fs::write(&other, "other\n").unwrap();
+        assert!(write_atomic(&a, "evil\n", id(&other)).is_err());
+        // same size and write time, other text: the contents give it away
+        let was = id(&a);
+        let mtime = std::fs::metadata(&a).unwrap().modified().unwrap();
+        std::fs::write(&a, "NEW\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&a)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        assert_eq!(id(&a).0, was.0);
+        assert_eq!(id(&a).1, was.1);
+        assert!(write_atomic(&a, "evil\n", was).is_err(), "contents changed");
+        assert!(write_in_place(&a, was, "evil\n").is_err(), "in place too");
+        assert_eq!(text(&a), "NEW\n");
+
+        // read-only: refused, untouched
+        let writable = std::fs::metadata(&a).unwrap().permissions();
+        let mut ro = writable.clone();
+        ro.set_readonly(true);
+        std::fs::set_permissions(&a, ro).unwrap();
+        let e = write_atomic(&a, "evil\n", id(&a)).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);
+        std::fs::set_permissions(&a, writable).unwrap();
+        assert_eq!(text(&a), "NEW\n");
+
+        // open in another program without sharing: the rename fails and the file is whole
+        let read = id(&a);
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1) // FILE_SHARE_READ: no writing, renaming or deleting
+            .open(&a)
+            .unwrap();
+        assert!(write_atomic(&a, "evil\n", read).is_err());
+        drop(held);
+        assert_eq!(text(&a), "NEW\n");
+        write_atomic(&a, "after\n", read).unwrap();
+        assert_eq!(text(&a), "after\n");
+
+        // a hard link can't be seen, so the rename splits it: the other name keeps the old text
+        std::fs::hard_link(&a, &b).unwrap();
+        write_atomic(&b, "linked\n", id(&b)).unwrap();
+        assert_eq!((text(&a), text(&b)), ("after\n".into(), "linked\n".into()));
+
+        let leftovers: Vec<_> = std::fs::read_dir(&d)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".groovyfmt-"))
+            .collect();
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(leftovers.is_empty(), "no temp files left behind");
+    }
+
     #[test]
     fn patches_are_withheld_for_unsafe_names_and_content() {
         const UGLY: &str = "class A {\ndef f() {}\n}\n";
@@ -2037,7 +2195,11 @@ mod tests {
             "q\"x.groovy",
             "b\\s.groovy",
             "x##[error]y.groovy",
-        ] {
+        ]
+        .into_iter()
+        // on Windows `\` separates directories and prints as `/` (windows_paths_print_with_forward_slashes)
+        .filter(|n| cfg!(unix) || !n.contains('\\'))
+        {
             assert!(withheld(name), "{name:?}");
             let out = patch_for(Path::new(name), UGLY, PRETTY);
             assert_eq!(out.lines().count(), 1, "{name:?}: one notice line");

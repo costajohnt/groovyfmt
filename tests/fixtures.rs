@@ -41,7 +41,10 @@ fn check(name: &str, src: &str, style: &Style) -> String {
 
 #[test]
 fn fixtures_format_whitespace_only_and_idempotently() {
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+    // GROOVYFMT_TEST_FIXTURES: this directory, when the test binary runs on another machine
+    let dir = std::env::var("GROOVYFMT_TEST_FIXTURES")
+        .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures").into());
+    let dir = dir.as_str();
     let mut paths: Vec<_> = std::fs::read_dir(dir)
         .unwrap()
         .map(|e| e.unwrap().path())

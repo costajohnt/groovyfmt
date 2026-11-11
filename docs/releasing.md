@@ -5,13 +5,13 @@
 1. Bump `version` in `Cargo.toml` (and `Cargo.lock`), add a `## <version> (<date>)` heading to `CHANGELOG.md`, merge to `main`.
 2. Tag the merge commit `v<version>` and push the tag.
 
-`release.yml` then checks the tag (`check`), runs all of `ci.yml` on it (`ci`), and creates the GitHub release with the four archives and their `.sha256` files (`release`). The pre-commit hooks (`.pre-commit-hooks.yaml`) and the GitHub Action (`action.yml`) need nothing more: they are used straight from the tag.
+`release.yml` then checks the tag (`check`), runs all of `ci.yml` on it (`ci`), and creates the GitHub release with the five archives and their `.sha256` files (`release`): a `.tar.gz` for each Linux and macOS target and a `.zip` for Windows. The pre-commit hooks (`.pre-commit-hooks.yaml`) and the GitHub Action (`action.yml`) need nothing more: they are used straight from the tag.
 
 Three more jobs publish to registries. Each is off until a repository variable switches it on, and each runs only after `release` succeeds, on the tag push itself. Rerunning a whole release workflow fails at `release` because the GitHub release already exists, so switch a channel on before pushing the tag you want it to publish.
 
 | Variable | Job | Publishes |
 |---|---|---|
-| `PUBLISH_NPM` = `true` | `publish-npm` | `groovyfmt` and `@groovyfmt/{darwin,linux}-{arm64,x64}` to npm, with provenance |
+| `PUBLISH_NPM` = `true` | `publish-npm` | `groovyfmt`, `@groovyfmt/{darwin,linux}-{arm64,x64}` and `@groovyfmt/win32-x64` to npm, with provenance |
 | `PUBLISH_IMAGE` = `true` | `publish-image` | `ghcr.io/costajohnt/groovyfmt:<version>` and `:latest` for linux/amd64 and linux/arm64 |
 | `PUBLISH_GRADLE_PLUGIN` = `true` | `publish-gradle-plugin` | the Gradle plugin `io.github.costajohnt.groovyfmt` to the Gradle Plugin Portal |
 
@@ -19,18 +19,31 @@ Set one with `gh variable set PUBLISH_NPM --body true --repo costajohnt/groovyfm
 
 ## npm
 
-`npm/build.mjs <version> <archives-dir>` builds the packages into `npm/dist/` from the release archives, checking each against its `.sha256`: one package per platform holding the binary, with `os` and `cpu` set so npm installs only the matching one, and the `groovyfmt` package with a small Node launcher and those packages as optional dependencies. CI builds them from the latest release, packs them, installs the tarballs and runs `groovyfmt --version` on Linux and macOS.
+`npm/build.mjs <version> <archives-dir>` builds the packages into `npm/dist/` from the release archives, checking each against its `.sha256`: one package per platform holding the binary, with `os` and `cpu` set so npm installs only the matching one, and the `groovyfmt` package with a small Node launcher and those packages as optional dependencies. CI builds them from the latest release, packs them, installs the tarballs and runs `groovyfmt --version` on Linux and macOS. The Windows package is built from the `.zip` (unpacked with Node's own zlib), so until a release has the Windows asset, a by-hand CI run fails at its npm job.
 
 `publish-npm` publishes with npm trusted publishing (OIDC): there is no npm token secret, and provenance is attached automatically. That needs, once:
 
 1. The repository public. npm does not attach provenance for private repositories, and the job passes `--provenance`.
 2. The `@groovyfmt` scope: on npmjs.com, create the organization `groovyfmt` (free for public packages) with your account as owner. The scope was unclaimed when this was written.
-3. A trusted publisher on each of the five packages (`groovyfmt`, `@groovyfmt/darwin-arm64`, `@groovyfmt/darwin-x64`, `@groovyfmt/linux-arm64`, `@groovyfmt/linux-x64`): in the package's Settings, Trusted Publisher, GitHub Actions, with organization or user `costajohnt`, repository `groovyfmt`, workflow filename `release.yml`, and no environment. Then, under publishing access, require two-factor authentication and disallow tokens.
+3. A trusted publisher on each of the six packages (`groovyfmt`, `@groovyfmt/darwin-arm64`, `@groovyfmt/darwin-x64`, `@groovyfmt/linux-arm64`, `@groovyfmt/linux-x64`, `@groovyfmt/win32-x64`): in the package's Settings, Trusted Publisher, GitHub Actions, with organization or user `costajohnt`, repository `groovyfmt`, workflow filename `release.yml`, and no environment. Then, under publishing access, require two-factor authentication and disallow tokens.
 
-   The trusted publisher form lives on a package's settings page, so a package may have to exist first. If so, publish the first version of each package by hand (`npm login`, then `node npm/build.mjs v<version> <dir>` on archives fetched with `gh release download v<version> --repo costajohnt/groovyfmt --pattern 'groovyfmt-*'`, then `npm publish ./npm/dist/<package> --access public` for the four platform packages and `groovyfmt` last), configure the trusted publishers, and let CI publish every later version.
+   The trusted publisher form lives on a package's settings page, so a package may have to exist first. If so, publish the first version of each package by hand (`npm login`, then `node npm/build.mjs v<version> <dir>` on archives fetched with `gh release download v<version> --repo costajohnt/groovyfmt --pattern 'groovyfmt-*'`, then `npm publish ./npm/dist/<package> --access public` for the five platform packages and `groovyfmt` last), configure the trusted publishers, and let CI publish every later version.
 4. `gh variable set PUBLISH_NPM --body true --repo costajohnt/groovyfmt`.
 
 `package.json` names `https://github.com/costajohnt/groovyfmt` as the repository, which trusted publishing requires to match the publishing repository exactly. A rerun skips versions already on the registry.
+
+## Windows
+
+The Windows build is cross-compiled from Linux, so no workflow needs a Windows runner. `.cargo/config.toml` sets the `x86_64-pc-windows-gnu` linker to mingw-w64's `x86_64-w64-mingw32-gcc` and links the C runtime statically, so `groovyfmt.exe` imports only DLLs that are part of Windows (`KERNEL32`, `ntdll`, `msvcrt`, `bcryptprimitives` and `api-ms-win-core-synch-l1-2-0`, as of this writing). In `ci.yml`'s `build` job it is built on `ubuntu-latest` with `gcc-mingw-w64-x86-64` from apt, its imports are checked with `x86_64-w64-mingw32-objdump -p`, it is smoke-tested under Wine (`wine64` from apt), and it is packaged as `groovyfmt-<tag>-x86_64-pc-windows-gnu.zip` (`groovyfmt.exe`, README, LICENSE) with a `.sha256`.
+
+To build and test it locally (Debian or Ubuntu: `gcc-mingw-w64-x86-64` and `wine64`, plus `rustup target add x86_64-pc-windows-gnu`):
+
+```sh
+cargo build --release --locked --target x86_64-pc-windows-gnu
+CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=$PWD/scripts/wine-run.sh cargo test --locked --target x86_64-pc-windows-gnu
+```
+
+`scripts/wine-run.sh` runs each test binary, and through it `groovyfmt.exe`, under Wine with a UTF-8 locale and the prefix `~/.wine-gf`; `scripts/ci-local.sh` does all of this when the tools are there. Wine maps `/` to the drive `Z:`, so Linux paths work as arguments. The test binaries also run on a Windows machine as they are: copy them with `groovyfmt.exe` and `tests/fixtures`, and set `GROOVYFMT_TEST_BIN` and `GROOVYFMT_TEST_FIXTURES` to those copies (the paths cargo bakes in are Linux ones). That is how the README's Windows results were checked on Windows Server 2022.
 
 ## Docker image
 
