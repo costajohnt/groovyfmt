@@ -697,6 +697,31 @@ fn diffs_never_print_control_characters_or_workflow_commands() {
         );
     }
     assert!(out.contains("--- a/e/Ok.groovy\n"), "{out}");
+    // names that would split or forge the `---` / `+++` header lines
+    for name in [
+        "f/x\n+++ b/other.groovy",
+        "f/a\rb.groovy",
+        "f/a\tb.groovy",
+        "f/x##[e].groovy",
+    ] {
+        d.write(name, UGLY);
+    }
+    let o = run(&d.0, &["--check", "--diff", "f"], None);
+    assert_eq!(o.status.code(), Some(1));
+    let out = stdout(&o);
+    assert_eq!(out.matches("# groovyfmt: f/").count(), 4, "{out}");
+    assert!(
+        out.lines().all(|l| l.starts_with("# groovyfmt: ")),
+        "{out:?}"
+    );
+    assert!(!out.contains("##["), "{out}");
+    // CR LF content diffs as it is
+    d.write("g/W.groovy", "class W {\r\ndef f() {}\r\n}\r\n");
+    let o = run(&d.0, &["--check", "--diff", "g"], None);
+    assert_eq!(
+        stdout(&o),
+        "--- a/g/W.groovy\n+++ b/g/W.groovy\n@@ -1,3 +1,3 @@\n class W {\r\n-def f() {}\r\n+    def f() {}\r\n }\r\n"
+    );
     assert!(!out.contains("##["), "{out}");
     assert!(!out.chars().any(|c| c.is_control() && c != '\n'), "{out:?}");
     assert!(

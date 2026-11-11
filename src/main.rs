@@ -758,24 +758,41 @@ fn format_some(src: &str, style: &Style, lines: &[(usize, usize)]) -> Outcome {
 }
 
 /// `--diff`: the patch turning `old` into `new`, or a `#` line saying why it isn't shown.
-/// A patch has to print file content as it is, so it is withheld when the file name or a
-/// line of it could act on a terminal or a CI log: a control character other than a tab
-/// (or the CR of a CR LF), `##[` anywhere, or `::` starting a line. Names with `"` or `\`
-/// are withheld too, as git would quote them. `git apply` and `patch` skip a `#` line
-/// between files, so the rest of the output still applies.
+/// A patch has to print the file name and content as they are, so it is withheld when
+/// either could act on a terminal, a CI log or the patch itself:
+/// - the name goes into the `---` / `+++` headers before anything else is looked at: any
+///   control character there (a line break would start a header of its own, naming
+///   another file), or a `"` or `\`, which git would quote, withholds it;
+/// - the patch is then scanned as a whole, not line by line (splitting into lines would
+///   hide a CR): no control character but a tab, a line feed, and a CR right before a line
+///   feed (CR LF files diff as they are; that CR ends a line, so nothing can follow it on
+///   that line); no `##[` anywhere; no line starting `::` after leading whitespace.
+///
+/// `git apply` and `patch` skip a `#` line between files, so the rest still applies.
 fn patch_for(path: &Path, old: &str, new: &str) -> String {
     let name = path.display().to_string();
-    let patch = diff::unified(&name, old, new);
-    let unsafe_line = |l: &str| {
-        l.contains("##[")
-            || l.trim_start().starts_with("::")
-            || l.chars().any(|c| c.is_control() && c != '\t')
-    };
-    if name.contains(['"', '\\']) || patch.lines().any(unsafe_line) {
+    let withheld = || {
         format!(
             "# groovyfmt: {}: diff not shown, as the file name or a changed line holds a control character or a CI workflow command\n",
             shown(path)
         )
+    };
+    if name
+        .chars()
+        .any(|c| c.is_control() || c == '"' || c == '\\')
+    {
+        return withheld();
+    }
+    let patch = diff::unified(&name, old, new);
+    let mut chars = patch.chars().peekable();
+    while let Some(c) = chars.next() {
+        let crlf = c == '\r' && chars.peek() == Some(&'\n');
+        if c.is_control() && !matches!(c, '\t' | '\n') && !crlf {
+            return withheld();
+        }
+    }
+    if patch.contains("##[") || patch.split('\n').any(|l| l.trim_start().starts_with("::")) {
+        withheld()
     } else {
         patch
     }
@@ -1751,6 +1768,62 @@ mod tests {
             .collect();
         let _ = std::fs::remove_dir_all(&d);
         assert!(leftovers.is_empty(), "no temp files left behind");
+    }
+
+    #[test]
+    fn patches_are_withheld_for_unsafe_names_and_content() {
+        const UGLY: &str = "class A {\ndef f() {}\n}\n";
+        const PRETTY: &str = "class A {\n    def f() {}\n}\n";
+        let withheld = |p: &str| patch_for(Path::new(p), UGLY, PRETTY).starts_with("# groovyfmt: ");
+        // a name is checked before it reaches a header
+        for name in [
+            "x\n+++ b/other.groovy",
+            "x\r\n+++ b/other.groovy",
+            "a\rb.groovy",
+            "a\tb.groovy",
+            "a\x1b[31m.groovy",
+            "a\u{85}b.groovy",
+            "q\"x.groovy",
+            "b\\s.groovy",
+            "x##[error]y.groovy",
+        ] {
+            assert!(withheld(name), "{name:?}");
+            let out = patch_for(Path::new(name), UGLY, PRETTY);
+            assert_eq!(out.lines().count(), 1, "{name:?}: one notice line");
+            assert!(
+                out.starts_with("# groovyfmt: ") && !out.contains("##["),
+                "{out:?}"
+            );
+        }
+        // a leading `::` in a name lands after `--- a/`, never at a line start
+        let p = patch_for(Path::new("::warning::x.groovy"), UGLY, PRETTY);
+        assert!(p.starts_with("--- a/::warning::x.groovy\n"), "{p}");
+        assert!(p.split('\n').all(|l| !l.trim_start().starts_with("::")));
+        assert!(!withheld("src/A b-c.groovy"));
+
+        // content: CR LF is kept as it is; a CR anywhere else, ESC, `##[` or a `::` line is not
+        let crlf = patch_for(
+            Path::new("A.groovy"),
+            "class A {\r\ndef f() {}\r\n}\r\n",
+            "class A {\r\n    def f() {}\r\n}\r\n",
+        );
+        assert!(
+            crlf.contains("\n-def f() {}\r\n+    def f() {}\r\n"),
+            "{crlf:?}"
+        );
+        for line in [
+            "def s = 'a\rb'",
+            "def s = '\x1b[2J'",
+            "def s = '##[error]'",
+            "// x\n::set-output x",
+        ] {
+            let old = format!("class A {{\n{line}\ndef f() {{}}\n}}\n");
+            let new = format!("class A {{\n{line}\n    def f() {{}}\n}}\n");
+            assert!(
+                patch_for(Path::new("A.groovy"), &old, &new).starts_with("# groovyfmt: "),
+                "{line:?}"
+            );
+        }
     }
 
     #[test]
