@@ -335,7 +335,14 @@ fn indent_for(
     let closes_anchor = matches!(first, "}" | ")" | "]") && path[path.len() - 2].0 == a;
     // the keyword, not a map key or named argument spelled the same (`[else: 1]`)
     let continues = !leaf.is_named() && matches!(first, "else" | "catch" | "finally");
-    if closes_anchor || after_annotation || continues {
+    // A body's `{` on its own line (`void f()` then `{`) lines up with its declaration or
+    // statement, as its `}` does.
+    let opens_body = first == "{"
+        && matches!(
+            child.kind(),
+            "block" | "class_body" | "enum_body" | "switch_block"
+        );
+    if closes_anchor || opens_body || after_annotation || continues {
         return base;
     }
     // The statement right after a label (`when:` then a newline) hangs off the label.
@@ -466,6 +473,14 @@ mod tests {
     fn body_indents_from_declaration_not_wrapped_line() {
         let src = "class T {\n    void f(String a,\n            String b) {\n        a()\n    }\n    def g() {\n        if (a &&\n                b) {\n            c()\n        } else if (d) {\n            e()\n        }\n        try {\n            f()\n        } catch (IOException |\n                RuntimeException x) {\n            g()\n        }\n    }\n}\n";
         let want = "class T {\n    void f(String a,\n        String b) {\n        a()\n    }\n    def g() {\n        if (a &&\n            b) {\n            c()\n        } else if (d) {\n            e()\n        }\n        try {\n            f()\n        } catch (IOException |\n            RuntimeException x) {\n            g()\n        }\n    }\n}\n";
+        assert_eq!(fmt(src), want);
+        assert_eq!(fmt(want), want, "idempotent");
+    }
+
+    #[test]
+    fn brace_on_its_own_line_lines_up_with_its_declaration() {
+        let src = "class T\n  {\n  void f()\n      {\n  if (a)\n          {\n  b()\n  }\n  }\n}\n";
+        let want = "class T\n{\n    void f()\n    {\n        if (a)\n        {\n            b()\n        }\n    }\n}\n";
         assert_eq!(fmt(src), want);
         assert_eq!(fmt(want), want, "idempotent");
     }

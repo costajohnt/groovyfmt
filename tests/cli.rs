@@ -41,12 +41,17 @@ fn run(dir: &Path, args: &[&str], stdin: Option<&str>) -> Output {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = cmd.spawn().unwrap();
-    child
+    // A child that exits early (a bad argument) closes its stdin before the write
+    // finishes; that's fine, its exit status and stderr are what the tests check.
+    if let Err(e) = child
         .stdin
         .take()
         .unwrap()
         .write_all(stdin.unwrap_or("").as_bytes())
-        .unwrap();
+        && e.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        panic!("writing the child's stdin: {e}");
+    }
     child.wait_with_output().unwrap()
 }
 
@@ -268,7 +273,7 @@ fn syntax_messages_escape_names_and_quoted_source() {
     assert_eq!(o.status.code(), Some(1));
     assert_eq!(
         stdout(&o),
-        "x##\\[error]\\u{1b}[31m.groovy:1:5: could not parse: unexpected `b '##\\[e]\\u{7}'` in an argument list\n"
+        "x##\\[error]\\u{1b}[31m.groovy:1:7: could not parse: unexpected `'##\\[e]\\u{7}'` in an argument list\n"
     );
     let g = run(&d.0, &["--syntax", "--output-format", "github"], None);
     assert!(
@@ -422,7 +427,12 @@ fn sarif_output_for_lint_and_parse_errors() {
     assert!(s.contains(r#"{"id":"UnusedImport","shortDescription":{"text":"import whose name (or alias) never appears in code or as a word in a comment"},"defaultConfiguration":{"level":"warning","enabled":true}}"#), "{s}");
     assert!(s.contains(r#""columnKind":"unicodeCodePoints""#), "{s}");
     assert!(s.contains(r#"{"ruleId":"UnusedImport","ruleIndex":0,"level":"warning","message":{"text":"The [a.b.Unused] import is never referenced"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"A.groovy"},"region":{"startLine":1,"startColumn":1,"endLine":1,"endColumn":18}}}]}"#), "{s}");
-    assert!(s.contains(r#"{"ruleId":"ParseError","ruleIndex":16,"level":"warning","message":{"text":"expected `}` to close the `{` on line 1"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"Broken.groovy"},"region":{"startLine":1,"startColumn":10,"endLine":1,"endColumn":10}}}]}"#), "{s}");
+    // ParseError comes after every rule in the table
+    let parse = format!(
+        r#"{{"ruleId":"ParseError","ruleIndex":{},"level":"warning","message":{{"text":"expected `}}` to close the `{{` on line 1"}},"locations":[{{"physicalLocation":{{"artifactLocation":{{"uri":"Broken.groovy"}},"region":{{"startLine":1,"startColumn":10,"endLine":1,"endColumn":10}}}}}}]}}"#,
+        groovyfmt::lint::RULES.len()
+    );
+    assert!(s.contains(&parse), "{s}");
     assert_eq!(s.matches("\"ruleId\"").count(), 3);
 
     for (args, msg) in [
@@ -697,6 +707,31 @@ fn diffs_never_print_control_characters_or_workflow_commands() {
         );
     }
     assert!(out.contains("--- a/e/Ok.groovy\n"), "{out}");
+    // names that would split or forge the `---` / `+++` header lines
+    for name in [
+        "f/x\n+++ b/other.groovy",
+        "f/a\rb.groovy",
+        "f/a\tb.groovy",
+        "f/x##[e].groovy",
+    ] {
+        d.write(name, UGLY);
+    }
+    let o = run(&d.0, &["--check", "--diff", "f"], None);
+    assert_eq!(o.status.code(), Some(1));
+    let out = stdout(&o);
+    assert_eq!(out.matches("# groovyfmt: f/").count(), 4, "{out}");
+    assert!(
+        out.lines().all(|l| l.starts_with("# groovyfmt: ")),
+        "{out:?}"
+    );
+    assert!(!out.contains("##["), "{out}");
+    // CR LF content diffs as it is
+    d.write("g/W.groovy", "class W {\r\ndef f() {}\r\n}\r\n");
+    let o = run(&d.0, &["--check", "--diff", "g"], None);
+    assert_eq!(
+        stdout(&o),
+        "--- a/g/W.groovy\n+++ b/g/W.groovy\n@@ -1,3 +1,3 @@\n class W {\r\n-def f() {}\r\n+    def f() {}\r\n }\r\n"
+    );
     assert!(!out.contains("##["), "{out}");
     assert!(!out.chars().any(|c| c.is_control() && c != '\n'), "{out:?}");
     assert!(
