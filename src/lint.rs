@@ -1175,7 +1175,15 @@ mod tests {
             );
             assert_eq!(lint(&src).expect("parses").len(), n);
         };
-        crate::scaling::assert_scales("imports against comment text", run, 7_500, 4, 8);
+        // up to 10 MB, the largest file linted
+        crate::scaling::assert_scales_up_to(
+            "imports against comment text",
+            run,
+            7_500,
+            60_000,
+            4,
+            8,
+        );
     }
 
     #[test]

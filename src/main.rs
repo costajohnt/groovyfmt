@@ -1228,12 +1228,15 @@ fn fmt(files: &[PathBuf], links: &HashMap<PathBuf, PathBuf>, cfgs: &Configs, a: 
                 out.file(path, "skipped", Some(why), parse_diagnostics(diag));
             }
             Ok(Ok(Some((written, patch)))) => {
-                changed += 1;
+                // a file whose write failed is an error, not reformatted
                 if let Err(e) = written {
                     eprintln!("groovyfmt: {}: {e}", shown(path));
                     failed = true;
                     out.error(path, &e.to_string());
-                } else if let Some(patch) = patch {
+                    continue;
+                }
+                changed += 1;
+                if let Some(patch) = patch {
                     print_raw(&patch);
                 } else if !out.text() {
                     let status = if check {

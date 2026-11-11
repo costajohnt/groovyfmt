@@ -440,10 +440,6 @@ fn neighbors(lines: &[(String, &str)], i: usize, indent: &str) -> Vec<usize> {
     v
 }
 
-/// A respaced line, the last gap that is an aligned run of spaces before code, if any, and
-/// for each token after a blank that moved: (gap, old column, new column, first char).
-type Respaced = (String, Option<usize>, Vec<(usize, usize, usize, char)>);
-
 /// Lines longer than this many bytes are left as re-indented. Alignment is looked up by
 /// column, so every line's characters are indexed once per sweep; with lines this short,
 /// and columns looked up no further than `COLS`, a sweep is linear in the file.
@@ -467,6 +463,31 @@ fn aligned_at(line: &[char], col: usize, ch: char) -> bool {
     same_at(line, col, ch) && col > 0 && line[col - 1].is_whitespace()
 }
 
+/// Whether `line` has a `:` at column `col` after a key of other than `len` characters: keys
+/// of different lengths padded to line their colons up (`9 :` over `10:`). Keys of the same
+/// length (`access :` over `access:`) line up only by coincidence.
+fn colon_column(line: &[char], col: usize, len: usize) -> bool {
+    if !same_at(line, col, ':') {
+        return false;
+    }
+    let before = &line[..col];
+    let end = before.len() - before.iter().rev().take_while(|c| **c == ' ').count();
+    let key = &before[..end];
+    let n = match key.last() {
+        Some(&q @ ('\'' | '"')) => key[..end - 1]
+            .iter()
+            .rev()
+            .position(|&c| c == q)
+            .map_or(0, |p| p + 2),
+        _ => key
+            .iter()
+            .rev()
+            .take_while(|c| c.is_alphanumeric() || **c == '_' || **c == '$')
+            .count(),
+    };
+    n > 0 && n != len
+}
+
 /// Whether `line` has, at column `col`, something `ch` could be aligned with: a token after
 /// a blank (`x  = 1` over `foo = 2`), or `ch` itself starting a token (`name   :` over
 /// `version:`).
@@ -480,22 +501,169 @@ fn token_at(line: &[char], col: usize, ch: char) -> bool {
     }
 }
 
+/// One line being respaced: where its text comes from and which gaps it holds.
+struct Row<'s> {
+    /// index into `lines`
+    line: usize,
+    /// its indent, as written
+    pad: String,
+    /// the text before each of its gaps, and after the last
+    segs: Vec<&'s str>,
+    /// `segs` in characters
+    seg_cols: Vec<usize>,
+    /// its gaps, in `gaps`
+    gaps: std::ops::Range<usize>,
+}
+
+/// A layout of a row: each gap's width, the column of the token after it, and the last gap
+/// that is a run of two or more spaces before code (alignment the line is laid out around).
+struct Layout {
+    widths: Vec<usize>,
+    cols: Vec<usize>,
+    anchor: Option<usize>,
+}
+
+/// A nearby line for `lay`: its text by column, and the columns of its tokens that stay put
+/// when it is respaced with every gap as its rule wants (all of them, for a line that isn't
+/// respaced).
+type Near<'a> = (&'a [char], &'a [bool]);
+
+/// What `lay` needs to know about each gap besides its rule.
+struct GapInfo {
+    tab: bool,
+    /// the first character after the gap
+    ch: char,
+    /// a comment follows the gap
+    comment: bool,
+}
+
+/// Lay out `row` from its gaps' widths in `base`: the first `freeze` gaps stay as they are;
+/// each other gap becomes what its rule wants unless it is kept because what follows it lines
+/// up with something in `near` (a run of two or more spaces; a single space before a key's
+/// `:`, against the `:` of a key of another length). A run kept for alignment absorbs the
+/// shift of the changes before it on the line, so what it lines up keeps its column; a run
+/// the rules leave as written (before a trailing comment) absorbs it only when what follows
+/// lines up with a token on a nearby line that stays where it is, and otherwise moves with
+/// the line, as the lines around it do. With `forced`, a gap changed once stays changed (and
+/// is recorded as such); without it, nothing is remembered.
+fn lay(
+    row: &Row,
+    here: (&[Gap], &[GapInfo]),
+    base: &[usize],
+    freeze: usize,
+    forced: Option<&[Cell<bool>]>,
+    near: &[Near],
+) -> Layout {
+    let (gs, info) = here;
+    let mut col = row.pad.chars().count();
+    let mut shift = 0isize;
+    let mut out = Layout {
+        widths: Vec::with_capacity(gs.len()),
+        cols: Vec::with_capacity(gs.len()),
+        anchor: None,
+    };
+    for (k, (x, at)) in gs.iter().zip(info).enumerate() {
+        col += row.seg_cols[k];
+        let w = base[k];
+        let ruled = match x.want {
+            _ if at.tab || k < freeze => w,
+            Want::Keep => w,
+            Want::Zero => 0,
+            Want::One => 1,
+            Want::Collapse => w.min(1),
+        };
+        let kept = if at.tab || w < 2 {
+            w
+        } else {
+            (w as isize - shift).max(1) as usize
+        };
+        let ch = at.ch;
+        let aligned = ruled != w
+            && !forced.is_some_and(|f| f[k].get())
+            && ((w == 1
+                && ruled == 0
+                && x.rule == "colon"
+                && near
+                    .iter()
+                    .any(|n| colon_column(n.0, col + 1, row.seg_cols[k])))
+                || (kept >= 2 && near.iter().any(|n| token_at(n.0, col + kept, ch))));
+        let stays = |c: usize| {
+            near.iter()
+                .any(|n| token_at(n.0, c, ch) && n.1.get(c).copied().unwrap_or(false))
+        };
+        let to = if ruled == w {
+            if kept == w || stays(col + kept) {
+                kept
+            } else {
+                w
+            }
+        } else if aligned {
+            kept
+        } else {
+            ruled
+        };
+        if ruled != w
+            && !aligned
+            && let Some(f) = forced
+        {
+            f[k].set(true);
+        }
+        shift += to as isize - w as isize;
+        if to >= 2 && !at.comment {
+            out.anchor = Some(k);
+        }
+        col += to;
+        out.widths.push(to);
+        out.cols.push(col);
+    }
+    out
+}
+
+/// The text of `row` with its gaps `widths` wide (a gap holding a tab is kept as written).
+fn text_of(row: &Row, gs: &[Gap], info: &[GapInfo], src: &str, widths: &[usize]) -> String {
+    let mut s = row.pad.clone();
+    for (k, seg) in row.segs.iter().enumerate() {
+        s.push_str(seg);
+        if let (Some(x), Some(&w)) = (gs.get(k), widths.get(k)) {
+            if info[k].tab {
+                s.push_str(&src[x.start..x.end]);
+            } else {
+                s.extend(std::iter::repeat_n(' ', w));
+            }
+        }
+    }
+    s
+}
+
 /// Respace `lines` (the re-indented output, each with its terminator) in place. `bodies[i]`
 /// is, for a line holding source text, the source offset of that text and the length of the
 /// indent written before it; `None` for blank lines and lines kept verbatim. False, with
 /// `lines` as they were, when the sweeps below don't settle.
 ///
-/// Whether a run of spaces is alignment depends on the lines around it, which may change
-/// too, so lines are respaced against their neighbors' current text until nothing changes:
-/// formatting the result again then finds every kept run still aligned.
+/// Whether spacing is alignment depends on the lines around it, which may change too, so
+/// lines are respaced against their neighbors' current text until nothing changes. Every
+/// decision is made from the current text alone, never from what a line was before, so
+/// formatting the result again makes the same decisions and changes nothing:
 ///
-/// Termination: the state is the set of gaps that have been changed (`forced`) and where each
-/// line is held (`held`); both only grow and are bounded by the number of gaps. A gap not
-/// forced is either kept because it lines up, or forced in that sweep. So in a sweep that
-/// changes no state every line's text is a function of the state alone, and the next sweep
-/// reproduces it and stops: there are at most two sweeps per state change. In practice two
-/// or three sweeps settle a file; if `MAX_SWEEPS` don't, the file is skipped rather than
-/// written half-respaced.
+/// - a gap that isn't frozen (below) is kept only if what follows it lines up with the
+///   current text around it (`lay`); otherwise it gets its rule's width, and stays that way
+///   (`forced`). In the result, every kept gap lines up with the result.
+/// - a line keeps its spacing up to (and including) a gap, its freeze point, when that gap is
+///   one of its candidates (`candidates`), worked out from the current text of it and its
+///   neighbors: the last run of two or more spaces that lines up when the line is respaced
+///   freely, or a `=`, `:` or comment respacing would move out of line with the same token
+///   on a nearby line that stays where it is. A line's freeze point starts above every gap
+///   and only moves down, each sweep to its highest candidate not above where it was. In the
+///   result, each freeze point is a candidate of the result's own text, so formatting it
+///   again finds it again (or a higher one, which keeps the same text).
+///
+/// Termination: the state is the set of gaps that have been changed (`forced`, which only
+/// grows) and each line's freeze point (which only moves down); both are bounded by the
+/// number of gaps. A gap neither frozen nor forced is kept because it lines up, or forced in
+/// that sweep. So in a sweep that changes no state every line's text is a function of the
+/// state alone, and the next sweep reproduces it and stops: there are at most two sweeps per
+/// state change. In practice two to four sweeps settle a file; if `MAX_SWEEPS` don't, the
+/// file is skipped rather than written half-respaced.
 pub(crate) fn respace(
     src: &str,
     tree: &Tree,
@@ -513,8 +681,19 @@ fn respace_capped(
     max_sweeps: usize,
 ) -> bool {
     let gaps = gaps(src, tree);
-    // (line, indent length, source offset of its text, its gaps) for lines that may change
-    let mut todo = Vec::new();
+    let info: Vec<GapInfo> = gaps
+        .iter()
+        .map(|x| {
+            let after = &src[x.end..];
+            GapInfo {
+                tab: src[x.start..x.end].contains('\t'),
+                ch: after.chars().next().unwrap_or(' '),
+                comment: after.starts_with("//") || after.starts_with("/*"),
+            }
+        })
+        .collect();
+    // the lines that may change
+    let mut rows: Vec<Row> = Vec::new();
     let mut g = 0;
     for (i, body) in bodies.iter().enumerate() {
         let Some((pos, pad)) = *body else { continue };
@@ -532,88 +711,121 @@ fn respace_capped(
                 .iter()
                 .any(|x| x.want != Want::Keep || x.end - x.start > 1)
         {
-            todo.push((i, pad, pos, first..g));
+            let mut segs = Vec::with_capacity(here.len() + 1);
+            let mut from = pos;
+            for x in here {
+                segs.push(&src[from..x.start]);
+                from = x.end;
+            }
+            segs.push(&src[from..end]);
+            rows.push(Row {
+                line: i,
+                pad: lines[i].0[..pad].to_string(),
+                seg_cols: segs.iter().map(|s| s.chars().count()).collect(),
+                segs,
+                gaps: first..g,
+            });
         }
     }
-    let original: Vec<String> = todo.iter().map(|t| lines[t.0].0.clone()).collect();
-    let original_cols: Vec<Vec<char>> = original.iter().map(|s| cols(s)).collect();
-    // indents don't change, so neither do the lines each line is compared with
-    let near: Vec<Vec<usize>> = todo
+    let original: Vec<String> = rows.iter().map(|r| lines[r.line].0.clone()).collect();
+    let source: Vec<Vec<usize>> = rows
         .iter()
-        .map(|&(i, pad, ..)| neighbors(lines, i, &lines[i].0[..pad]))
+        .map(|r| {
+            gaps[r.gaps.clone()]
+                .iter()
+                .map(|x| x.end - x.start)
+                .collect()
+        })
+        .collect();
+    // indents don't change, so neither do the lines each line is compared with
+    let near: Vec<Vec<usize>> = rows
+        .iter()
+        .map(|r| neighbors(lines, r.line, &r.pad))
         .collect();
     let mut needed = vec![false; lines.len()];
     for &j in near.iter().flatten() {
         needed[j] = true;
     }
     let mut of_line = vec![None; lines.len()];
-    for (k, t) in todo.iter().enumerate() {
-        of_line[t.0] = Some(k);
+    for (k, r) in rows.iter().enumerate() {
+        of_line[r.line] = Some(k);
     }
-    // A run kept for alignment can later lose what it lined up with; once a gap has been
-    // changed it stays changed.
     let forced: Vec<Cell<bool>> = gaps.iter().map(|_| Cell::new(false)).collect();
-    // A line laid out in columns (`[ 4,  4,  3]` over `[10,  9,  8]`) keeps its spacing up to
-    // its last aligned run of code. A line whose changes would move a `=`, `:` or comment out
-    // of line with the same token on a nearby line keeps its spacing up to that token, unless
-    // that line moves the same way; once held, a line stays held, so a group of lines lined
-    // up with each other either all change or all stay.
-    // ponytail: other tokens that line up are coincidences in similar lines and don't count
-    let mut held: Vec<Option<usize>> = vec![None; todo.len()];
+    // each row's gaps' current widths, and the gap after which it is frozen
+    let mut current = source.clone();
+    let mut freeze = vec![usize::MAX; rows.len()];
     for _ in 0..max_sweeps {
         let grid: Vec<Vec<char>> = lines
             .iter()
             .zip(&needed)
             .map(|(l, &n)| if n { cols(&l.0) } else { Vec::new() })
             .collect();
-        let line = |k: usize, freeze: usize| {
-            let (_, pad, pos, ref r) = todo[k];
-            let near: Vec<&[char]> = near[k].iter().map(|&j| grid[j].as_slice()).collect();
-            let at = (original[k].as_str(), pad, pos);
-            respace_line(
-                src,
-                at,
-                (&gaps[r.clone()], &forced[r.clone()]),
-                &near,
-                freeze,
-            )
+        let here = |k: usize| {
+            let r = rows[k].gaps.clone();
+            (&gaps[r.clone()], &info[r])
         };
-        // every line respaced on its own against the current text around it
-        let free: Vec<Respaced> = (0..todo.len()).map(|k| line(k, 0)).collect();
-        let free_cols: Vec<Vec<char>> = free
-            .iter()
-            .zip(&todo)
-            .map(|(f, t)| if needed[t.0] { cols(&f.0) } else { Vec::new() })
+        // where each row's tokens are now, and where they'd go with the row respaced freely
+        let now: Vec<Layout> = (0..rows.len())
+            .map(|k| lay(&rows[k], here(k), &current[k], usize::MAX, None, &[]))
             .collect();
-        let was = held.clone();
-        let texts: Vec<String> = free
+        // the columns where a token stays put with every gap of its line as its rule wants
+        let fixed: Vec<Vec<bool>> = grid
             .iter()
             .enumerate()
-            .map(|(k, f)| {
-                let breaks = |&(_, ocol, ncol, ch): &(usize, usize, usize, char)| {
-                    matches!(ch, '=' | ':' | '/')
-                        && near[k].iter().any(|&j| {
-                            let (orig, next) = match of_line[j] {
-                                Some(kj) if was[kj].is_some() => (&original_cols[kj], &grid[j]),
-                                Some(kj) => (&original_cols[kj], &free_cols[kj]),
-                                None => (&grid[j], &grid[j]),
-                            };
-                            aligned_at(orig, ocol, ch) && !same_at(next, ncol, ch)
-                        })
-                };
-                let moved = f.2.iter().filter(|m| breaks(m)).map(|m| m.0).max();
-                held[k] = held[k].max(moved);
-                match held[k].max(f.1) {
-                    Some(a) => line(k, a + 1).0,
-                    None => f.0.clone(),
+            .map(|(j, g)| match of_line[j] {
+                Some(k) if !g.is_empty() => {
+                    let ruled = lay(&rows[k], here(k), &current[k], 0, None, &[]);
+                    let mut f = vec![false; g.len()];
+                    let first = rows[k].pad.chars().count();
+                    let stay = std::iter::once((first, first))
+                        .chain(now[k].cols.iter().copied().zip(ruled.cols.iter().copied()));
+                    for (at, to) in stay {
+                        if at == to && at < f.len() {
+                            f[at] = true;
+                        }
+                    }
+                    f
                 }
+                _ => vec![true; g.len()],
             })
             .collect();
-        let mut changed = held != was;
-        for (k, text) in texts.into_iter().enumerate() {
-            let i = todo[k].0;
-            if text != lines[i].0 {
-                lines[i].0 = text;
+        let near_of = |k: usize| -> Vec<Near> {
+            near[k]
+                .iter()
+                .map(|&j| (grid[j].as_slice(), fixed[j].as_slice()))
+                .collect()
+        };
+        let free: Vec<Layout> = (0..rows.len())
+            .map(|k| lay(&rows[k], here(k), &current[k], 0, None, &near_of(k)))
+            .collect();
+        let cands = candidates(&rows, &info, &current, &now, &free, &near, &grid, &of_line);
+        let mut changed = false;
+        for k in 0..rows.len() {
+            let below = cands[k]
+                .iter()
+                .map(|&c| c + 1)
+                .filter(|&c| c <= freeze[k])
+                .max()
+                .unwrap_or(0);
+            changed |= below != freeze[k];
+            freeze[k] = below;
+            let before: Vec<bool> = forced[rows[k].gaps.clone()].iter().map(Cell::get).collect();
+            let l = lay(
+                &rows[k],
+                here(k),
+                &source[k],
+                below,
+                Some(&forced[rows[k].gaps.clone()]),
+                &near_of(k),
+            );
+            changed |= forced[rows[k].gaps.clone()]
+                .iter()
+                .zip(&before)
+                .any(|(f, &b)| f.get() != b);
+            if l.widths != current[k] {
+                let (gs, inf) = here(k);
+                lines[rows[k].line].0 = text_of(&rows[k], gs, inf, src, &l.widths);
+                current[k] = l.widths;
                 changed = true;
             }
         }
@@ -621,82 +833,76 @@ fn respace_capped(
             return true;
         }
     }
-    for (k, t) in todo.iter().enumerate() {
-        lines[t.0].0.clone_from(&original[k]);
+    for (k, r) in rows.iter().enumerate() {
+        lines[r.line].0.clone_from(&original[k]);
     }
     false
 }
 
-/// `line` (the re-indented text of a line, which starts at source offset `pos` after its
-/// indent) with its gaps respaced, judging alignment against the current text of the lines
-/// around it (`near`), except the first `freeze` gaps, which stay as they are.
-fn respace_line(
-    src: &str,
-    (line, pad, pos): (&str, usize, usize),
-    (here, forced): (&[Gap], &[Cell<bool>]),
-    near: &[&[char]],
-    freeze: usize,
-) -> Respaced {
-    let mut text = String::with_capacity(line.len() + 8);
-    text.push_str(&line[..pad]);
-    // columns in the output and in `line`
-    let mut col = text.chars().count();
-    let mut ocol = col;
-    let (mut from, mut shift, mut anchor, mut moved) = (pos, 0isize, None, Vec::new());
-    for (k, x) in here.iter().enumerate() {
-        let before = &src[from..x.start];
-        text.push_str(before);
-        col += before.chars().count();
-        ocol += before.chars().count();
-        let gap = &src[x.start..x.end];
-        let w = gap.len();
-        let tab = gap.contains('\t');
-        let ruled = match x.want {
-            _ if tab || k < freeze => w,
-            Want::Keep => w,
-            Want::Zero => 0,
-            Want::One => 1,
-            Want::Collapse => w.min(1),
-        };
-        // a run of spaces that stays absorbs the shift from earlier changes on the line,
-        // so what it aligns keeps its column
-        let kept = if tab || w < 2 {
-            w
-        } else {
-            (w as isize - shift).max(1) as usize
-        };
-        let ch = src[x.end..].chars().next().unwrap_or(' ');
-        // `9 :` over `10:`: a single space can line up a colon too
-        let aligned = ruled != w
-            && !forced[k].get()
-            && ((w == 1
-                && ruled == 0
-                && x.rule == "colon"
-                && near.iter().any(|n| same_at(n, col + 1, ch)))
-                || (kept >= 2 && near.iter().any(|n| token_at(n, col + kept, ch))));
-        let to = if ruled == w || aligned { kept } else { ruled };
-        if ruled != w && !aligned {
-            forced[k].set(true);
+/// For each row, the gaps it may be frozen after, judged from the current text alone: the
+/// last run of spaces that lines up when the row is respaced freely (`free`), and each gap
+/// before a `=`, `:` or `/` that respacing freely would move out of line with the same token
+/// on a nearby line, when that line keeps it where it is: it doesn't move it, moves it
+/// elsewhere, or is itself frozen at it. Lines whose tokens line up and would all move the
+/// same way aren't frozen, so they move together.
+#[allow(clippy::too_many_arguments)]
+fn candidates(
+    rows: &[Row],
+    info: &[GapInfo],
+    current: &[Vec<usize>],
+    now: &[Layout],
+    free: &[Layout],
+    near: &[Vec<usize>],
+    grid: &[Vec<char>],
+    of_line: &[Option<usize>],
+) -> Vec<Vec<usize>> {
+    let mut out: Vec<Vec<usize>> = free
+        .iter()
+        .map(|f| f.anchor.into_iter().collect())
+        .collect();
+    // (row, gap) pairs frozen so far, and those waiting on another pair
+    let mut queue: Vec<(usize, usize)> = Vec::new();
+    let mut waiting: std::collections::HashMap<(usize, usize), Vec<(usize, usize)>> =
+        std::collections::HashMap::new();
+    let mut held: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
+    for (k, r) in rows.iter().enumerate() {
+        for g in 0..r.gaps.len() {
+            let ch = info[r.gaps.start + g].ch;
+            let (at, to) = (now[k].cols[g], free[k].cols[g]);
+            if !matches!(ch, '=' | ':' | '/') || current[k][g] == 0 || at == to {
+                continue;
+            }
+            for &j in &near[k] {
+                if !aligned_at(&grid[j], at, ch) {
+                    continue;
+                }
+                // the token lined up with it on line j, if that line may move it
+                let other = of_line[j].and_then(|kj| {
+                    let gj = now[kj].cols.binary_search(&at).ok()?;
+                    (free[kj].cols[gj] != at).then_some((kj, gj, free[kj].cols[gj]))
+                });
+                match other {
+                    Some((kj, gj, there)) if there == to => {
+                        waiting.entry((kj, gj)).or_default().push((k, g));
+                    }
+                    _ => {
+                        if held.insert((k, g)) {
+                            queue.push((k, g));
+                        }
+                    }
+                }
+            }
         }
-        shift += to as isize - w as isize;
-        let comment = src[x.end..].starts_with("//") || src[x.end..].starts_with("/*");
-        if to >= 2 && !comment {
-            anchor = Some(k);
-        }
-        if w >= 1 && col + to != ocol + w {
-            moved.push((k, ocol + w, col + to, ch));
-        }
-        ocol += w;
-        if to == w {
-            text.push_str(gap);
-        } else {
-            text.push_str(&" ".repeat(to));
-        }
-        col += to;
-        from = x.end;
     }
-    text.push_str(&src[from..pos + line.len() - pad]);
-    (text, anchor, moved)
+    while let Some(p) = queue.pop() {
+        out[p.0].push(p.1);
+        for q in waiting.remove(&p).unwrap_or_default() {
+            if held.insert(q) {
+                queue.push(q);
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -918,10 +1124,17 @@ mod tests {
         }
         // a lone run isn't alignment
         assert_eq!(fmt("def z  = 3\n"), "def z = 3\n");
-        // lines that change the same way keep their columns lined up
+        // lines that change the same way keep their columns lined up: the comments move
+        // together, since neither has a comment that stays to line up with
         assert_eq!(
             fmt("def fooAB(a,b) {2}   //-> case A\ndef fooAD(a,c) {2}   //-> case D\n"),
-            "def fooAB(a, b) { 2 } //-> case A\ndef fooAD(a, c) { 2 } //-> case D\n"
+            "def fooAB(a, b) { 2 }   //-> case A\ndef fooAD(a, c) { 2 }   //-> case D\n"
+        );
+        // the same, where the last row's comment has more room (no comma): every row
+        // changes, and the comments stay in one column
+        assert_eq!(
+            fmt("m = [\n    0 : 1, // a\n    1 : 1, // b\n    5 : 2  // c\n]\n"),
+            "m = [\n    0: 1, // a\n    1: 1, // b\n    5: 2  // c\n]\n"
         );
         // a change before an aligned comment keeps the comment's column
         assert_eq!(
@@ -935,6 +1148,31 @@ mod tests {
         );
         // each run is judged on its own: the `=` column stays, the run after it goes
         assert_eq!(fmt("x  = 1\nyy = 2\nz  =  3\n"), "x  = 1\nyy = 2\nz  = 3\n");
+    }
+
+    #[test]
+    fn colons_in_one_column_by_coincidence_are_not_alignment() {
+        // the same key with one space each lines up only because the keys are the same length
+        assert_eq!(
+            fmt("f(\n    access :1,\n    access :2,\n)\n"),
+            "f(\n    access: 1,\n    access: 2,\n)\n"
+        );
+        // nor over the same key a column later, with no space
+        assert_eq!(
+            fmt("x = [\n    [p: 'ab', access :1],\n    [p: 'abc', access:2],\n]\n"),
+            "x = [\n    [p: 'ab', access: 1],\n    [p: 'abc', access: 2],\n]\n"
+        );
+        // reduced from streamaserver/streama's application.groovy, where a row was left half
+        // respaced against a row that then changed, and a second run changed it again: every
+        // row ends up the same way (`fmt` checks a second pass changes nothing)
+        let rows = "x = [\n  [pattern:'/userActivity/**',  access :['A']],\n  [pattern:'/monitoring/**',  access :['A']],\n  [pattern:'/**/favicon.ico', access :['B']],\n  [pattern:'/api/currentUser',  access :['B']],\n  [pattern:'/api/v1/dash/**',  access :['C']]\n]\n";
+        assert_eq!(
+            fmt(rows),
+            "x = [\n    [pattern: '/userActivity/**', access: ['A']],\n    [pattern: '/monitoring/**', access: ['A']],\n    [pattern: '/**/favicon.ico', access: ['B']],\n    [pattern: '/api/currentUser', access: ['B']],\n    [pattern: '/api/v1/dash/**', access: ['C']]\n]\n"
+        );
+        // a key padded to line its colon up with a longer one's is alignment
+        let padded = "def m = [\n    id  : 1,\n    name: 2,\n    nam : 3,\n]\n";
+        assert_eq!(fmt(padded), padded);
     }
 
     #[test]
@@ -973,27 +1211,36 @@ mod tests {
 
     #[test]
     fn long_lines_and_many_aligned_runs_stay_linear() {
-        // alignment is looked up by column; walking each line from its start per lookup was
-        // quadratic in the line, times the sweeps
-        let row = |pad: usize| {
-            let r: String = (0..90)
+        use crate::scaling::assert_scales_up_to;
+        // `runs` assignments on a line, each run of spaces lining up with the line above
+        let row = |runs: usize, pad: usize| {
+            let r: String = (0..runs)
                 .map(|i| format!("v{i}{}  = {i}; ", "x".repeat(pad)))
                 .collect();
             r.trim_end().to_string() + "\n"
         };
-        let run = |n: usize| {
-            // over the line limit: left as re-indented
-            let long = format!("x = [{}a:b]\n", "a:b,".repeat(n * 50));
-            assert_eq!(fmt(&long), long);
-            // every run lines up with the rows around it: kept
-            let aligned = row(0).repeat(n / 3);
+        // rows whose runs all line up (kept), then rows that line up only here and there
+        // (sweeps settle: `fmt` checks a second pass changes nothing)
+        let rows = |rows: usize, runs: usize| {
+            let aligned = row(runs, 0).repeat(rows);
             assert_eq!(fmt(&aligned), aligned);
-            // rows that line up only here and there: sweeps settle (`fmt` checks a second
-            // pass changes nothing)
-            let ragged: String = (0..n / 3).map(|i| row(i % 3)).collect();
+            let ragged: String = (0..rows).map(|i| row(runs, i % 3)).collect();
             fmt(&ragged);
         };
-        crate::scaling::assert_scales("long lines and aligned runs", run, 250, 4, 8);
+        // more rows: linear, up to about 10 MB, the largest file formatted. From 2,000 rows,
+        // where a pass over the whole file per row is a fair part of the cost, not from the
+        // size that first costs `MIN_COST`, where it hides behind respacing the rows
+        assert_scales_up_to("rows of aligned runs", |n| rows(n, 10), 2_000, 80_000, 4, 8);
+        // longer rows: alignment is looked up by column, and walking each line from its start
+        // per lookup was quadratic in the line, times the sweeps. A line over `MAX_LINE`
+        // keeps its spacing, so a row can't grow past 64 runs: the calls repeat instead
+        assert_scales_up_to("runs per row", |n| rows(20, n), 4, 64, 4, 8);
+        // a line over the limit: left as re-indented, in time linear in its length
+        let long = |n: usize| {
+            let long = format!("x = [{}a:b]\n", "a:b,".repeat(n));
+            assert_eq!(fmt(&long), long);
+        };
+        assert_scales_up_to("a line over the limit", long, 1_000, 2_000_000, 4, 8);
     }
 
     #[test]

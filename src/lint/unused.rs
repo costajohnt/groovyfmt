@@ -541,6 +541,7 @@ mod tests {
             assert_eq!(count("UnusedPrivateMethod"), n);
             assert_eq!(count("UnusedVariable"), 0);
         };
-        crate::scaling::assert_scales("unused symbols", run, 1_000, 4, 8);
+        // n blocks deep: no deeper than four times what was measured to take minutes
+        crate::scaling::assert_scales_up_to("unused symbols", run, 1_000, 16_000, 4, 8);
     }
 }

@@ -514,7 +514,8 @@ mod tests {
     #[test]
     fn stacked_double_stars_stay_polynomial() {
         // exponential backtracking took minutes on 22 stars; a config from a fork PR could
-        // hang CI. Twice the stars may cost at most 8 times as much (it is quadratic: 4x).
+        // hang CI. Four times the stars may cost at most 32 times as much: it is quadratic
+        // (16x), and anything cubic or worse fails.
         let run = |stars: usize| {
             let pat: Vec<&str> = std::iter::repeat_n(["**", "a"], stars)
                 .flatten()
@@ -529,7 +530,7 @@ mod tests {
             };
             assert!(!cfg.excluded(&Path::new("/p").join(path.join("/"))));
         };
-        crate::scaling::assert_scales("stacked **", run, 11, 2, 8);
+        crate::scaling::assert_scales("stacked **", run, 11, 4, 32);
         assert!(
             segment("*b", "*xb"),
             "a literal * in a name doesn't stop a star"

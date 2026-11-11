@@ -134,69 +134,102 @@ pub(crate) mod scaling {
         Some(Duration::from_millis(ticks * 10))
     }
 
-    /// How long `f(n)` takes: this thread's CPU time where available, else wall time, which
-    /// counts whatever else the machine is doing too, so the fastest of three runs.
-    fn cost(f: &impl Fn(usize), n: usize) -> Duration {
+    /// How long `reps` calls of `f(n)` take: this thread's CPU time where available, else
+    /// wall time, which counts whatever else the machine is doing too, so the fastest of
+    /// three tries.
+    fn cost(f: &impl Fn(usize), n: usize, reps: usize) -> Duration {
+        let run = || (0..reps).for_each(|_| f(n));
         let (cpu, wall) = (thread_cpu(), Instant::now());
-        f(n);
+        run();
         match (cpu, thread_cpu()) {
             (Some(a), Some(b)) => b.saturating_sub(a),
             _ => (0..2)
                 .map(|_| {
                     let t = Instant::now();
-                    f(n);
+                    run();
                     t.elapsed()
                 })
                 .fold(wall.elapsed(), Duration::min),
         }
     }
 
-    /// Assert that `f` on `k` times the input `n` costs at most `bound` times what it costs
-    /// on `n`: under 8x for 4x the input passes anything linear (or n log n) and fails
-    /// anything quadratic (16x). Below 50 ms a cost counts as 50 ms, the clock's resolution
-    /// with room to spare, and a failure is measured again once, so a burst of noise in
-    /// either run can't fail it.
+    /// The least the smaller measurement may cost: ten ticks of the coarsest clock used
+    /// (Linux's thread CPU time counts in 10 ms), so a tick either way is noise, not a ratio.
+    const MIN_COST: Duration = Duration::from_millis(100);
+
+    /// Assert that `f` on `k` times the input costs at most `bound` times what it costs on
+    /// the input: under 8x for 4x the input passes anything linear (or n log n) and fails
+    /// anything quadratic (16x). The input starts at `n` and doubles until a run costs
+    /// `MIN_COST`, so the comparison is between costs the clock measures well, however fast
+    /// the machine, and the growing part of the cost outweighs the fixed one. A failure is
+    /// measured again once, so a burst of noise in either run can't fail it.
     pub fn assert_scales(what: &str, f: impl Fn(usize), n: usize, k: usize, bound: u32) {
-        const FLOOR: Duration = Duration::from_millis(50);
+        assert_scales_up_to(what, f, n, usize::MAX, k, bound);
+    }
+
+    /// `assert_scales` for a workload with a hard limit: the input grows only while `k`
+    /// times it stays within `max`; past that, each measurement repeats the call until the
+    /// smaller one costs `MIN_COST`.
+    pub fn assert_scales_up_to(
+        what: &str,
+        f: impl Fn(usize),
+        mut n: usize,
+        max: usize,
+        k: usize,
+        bound: u32,
+    ) {
+        assert!(n * k <= max, "{what}: {k} x {n} is over the limit {max}");
+        while n * k * 2 <= max && cost(&f, n, 1) < MIN_COST {
+            n *= 2;
+        }
+        let mut reps = 1;
+        while cost(&f, n, reps) < MIN_COST {
+            reps *= 2;
+        }
         let mut seen = (Duration::ZERO, Duration::ZERO);
         for _ in 0..2 {
-            let small = cost(&f, n).max(FLOOR);
-            let big = cost(&f, n * k);
+            let small = cost(&f, n, reps);
+            let big = cost(&f, n * k, reps);
             if big <= small * bound {
                 return;
             }
             seen = (small, big);
         }
         panic!(
-            "{what}: {k}x the input took {:?} against {:?}, over {bound}x",
-            seen.1, seen.0
+            "{what}: {k}x the input ({n} to {}, {reps} runs each) took {:?} against {:?}, over {bound}x",
+            n * k,
+            seen.1,
+            seen.0
         );
     }
 
     fn linear(n: usize) {
-        std::hint::black_box((0..n as u64 * 100_000).fold(0u64, |a, b| a ^ b));
+        std::hint::black_box((0..n as u64 * 1_000).fold(0u64, |a, b| a ^ b));
     }
 
     fn quadratic(n: usize) {
-        let n = n as u64 * 100;
+        let n = n as u64 * 10;
         std::hint::black_box((0..n * n).fold(0u64, |a, b| a ^ b));
     }
 
     #[test]
     fn linear_work_passes() {
-        assert_scales("linear", linear, 40, 4, 8);
+        assert_scales("linear", linear, 1, 4, 8);
+        assert_scales_up_to("linear, capped", linear, 1, 8, 4, 8);
     }
 
     #[test]
     #[should_panic(expected = "over 8x")]
     fn quadratic_work_fails() {
-        // Start from a size that costs more than the 50 ms floor on this machine: on a fast
-        // one, size 20 sat under the floor and 16 times its real cost still passed.
-        let mut n = 20;
-        while cost(&quadratic, n) < Duration::from_millis(100) {
-            n *= 2;
-        }
-        assert_scales("quadratic", quadratic, n, 4, 8);
+        // from a size far below the clock's resolution, however fast the machine
+        assert_scales("quadratic", quadratic, 1, 4, 8);
+    }
+
+    #[test]
+    #[should_panic(expected = "over 8x")]
+    fn quadratic_work_at_a_hard_limit_fails() {
+        // can't grow: the repeated calls still show 16x
+        assert_scales_up_to("quadratic, capped", quadratic, 8, 32, 4, 8);
     }
 }
 

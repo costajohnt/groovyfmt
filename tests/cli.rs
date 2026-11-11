@@ -1971,6 +1971,99 @@ fn write_and_walk_failures_exit_2() {
     assert!(stderr(&c).contains("locked"), "{}", stderr(&c));
 }
 
+/// A file with an unused import, which `--lint --fix` removes.
+const UNUSED_IMPORT: &str = "import a.b.Unused\n\nclass B {\n}\n";
+
+/// The runs of `failed_writes_are_errors_not_counted*`, made while writing in `dir` fails:
+/// formatting `A.groovy` and fixing `B.groovy`, as text and as JSON.
+fn failed_write_runs(dir: &Path) -> [Output; 4] {
+    [
+        run(dir, &["A.groovy"], None),
+        run(dir, &["--output-format", "json", "A.groovy"], None),
+        run(dir, &["--lint", "--fix", "B.groovy"], None),
+        run(
+            dir,
+            &["--lint", "--fix", "--output-format", "json", "B.groovy"],
+            None,
+        ),
+    ]
+}
+
+/// What every platform must report for `failed_write_runs`: an error for the file, nothing
+/// reformatted or fixed, and the file as it was.
+fn assert_failed_writes(d: &Dir, runs: &[Output; 4], why: &str) {
+    let [fmt, fmt_json, fix, fix_json] = runs;
+    for o in runs {
+        assert_eq!(o.status.code(), Some(2), "{}", stderr(o));
+    }
+    assert_eq!(
+        stderr(fmt),
+        format!("groovyfmt: A.groovy: {why}\nreformatted 0 of 1 files\n")
+    );
+    assert_eq!(
+        stdout(fmt_json),
+        format!(
+            "{{\"version\":1,\"files\":[\n{{\"path\":\"A.groovy\",\"status\":\"error\",\"skip_reason\":\"{why}\",\"diagnostics\":[]}}\n],\"summary\":{{\"files\":1,\"unchanged\":0,\"would_reformat\":0,\"reformatted\":0,\"fixed\":0,\"skipped\":0,\"errors\":1,\"diagnostics\":0}}}}\n"
+        )
+    );
+    assert!(
+        stderr(fix).starts_with(&format!("groovyfmt: B.groovy: {why}\n"))
+            && stderr(fix).contains("\nfixed 0 violations in 0 files\n"),
+        "{}",
+        stderr(fix)
+    );
+    assert!(
+        stdout(fix_json).contains(&format!(
+            "{{\"path\":\"B.groovy\",\"status\":\"error\",\"skip_reason\":\"{why}\",\"diagnostics\":[]}}"
+        )) && stdout(fix_json).contains(r#""reformatted":0,"fixed":0,"skipped":0,"errors":1,"#),
+        "{}",
+        stdout(fix_json)
+    );
+    assert_eq!(d.read("A.groovy"), UGLY);
+    assert_eq!(d.read("B.groovy"), UNUSED_IMPORT);
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_writes_are_errors_not_counted() {
+    // a read-only directory: the files can be read but not replaced
+    use std::os::unix::fs::PermissionsExt;
+    let d = Dir::new("rodir");
+    d.write("A.groovy", UGLY);
+    d.write("B.groovy", UNUSED_IMPORT);
+    let mode = |m| std::fs::set_permissions(&d.0, std::fs::Permissions::from_mode(m)).unwrap();
+    mode(0o555);
+    // root writes anywhere: nothing to test then
+    if std::fs::write(d.0.join("probe"), "").is_ok() {
+        mode(0o755);
+        return;
+    }
+    let runs = failed_write_runs(&d.0);
+    mode(0o755);
+    assert_failed_writes(&d, &runs, "Permission denied (os error 13)");
+}
+
+#[cfg(windows)]
+#[test]
+fn failed_writes_are_errors_not_counted_on_windows() {
+    let d = Dir::new("winro");
+    let files = [
+        d.write("A.groovy", UGLY),
+        d.write("B.groovy", UNUSED_IMPORT),
+    ];
+    let writable = std::fs::metadata(&files[0]).unwrap().permissions();
+    let mut read_only = writable.clone();
+    read_only.set_readonly(true);
+    for p in &files {
+        std::fs::set_permissions(p, read_only.clone()).unwrap();
+    }
+    let runs = failed_write_runs(&d.0);
+    for p in &files {
+        std::fs::set_permissions(p, writable.clone()).unwrap();
+    }
+    assert_failed_writes(&d, &runs, "file is read-only");
+}
+
 const TWO: &str = "class A {\n  def f() {\n    println 'x'\n  }\n}\n";
 
 /// The `config:` lines `-v` printed.
@@ -2236,7 +2329,8 @@ fn windows_read_only_and_held_files_are_errors_and_stay_whole() {
     drop(held);
     assert_eq!(w.status.code(), Some(2), "{}", stderr(&w));
     assert!(
-        stderr(&w).starts_with("groovyfmt: Held.groovy: "),
+        stderr(&w).starts_with("groovyfmt: Held.groovy: ")
+            && stderr(&w).ends_with("\nreformatted 0 of 1 files\n"),
         "{}",
         stderr(&w)
     );

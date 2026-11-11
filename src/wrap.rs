@@ -1343,35 +1343,40 @@ mod tests {
     }
 
     #[test]
-    fn adversarial_input_stays_fast() {
-        let t = std::time::Instant::now();
-        // a 500,000-character line of nested calls: formatted without wrapping
-        let n = 100_000;
-        let deep = format!("{}b{}\n", "f(a, ".repeat(n), ")".repeat(n));
-        assert!(deep.len() >= 500_000);
-        let _ = format(&deep, &at(100));
-        assert_eq!(
-            super::last_report().fallback,
-            Some("nesting too deep to wrap")
-        );
-        // nesting the passes can't finish: formatted without wrapping
-        let n = 200;
-        let deep = format!("{}b{}\n", "f(alpha, ".repeat(n), ")".repeat(n));
-        assert_eq!(format(&deep, &at(40)), Outcome::Unchanged);
-        assert_eq!(
-            super::last_report().fallback,
-            Some("wrapping did not settle")
-        );
-        // a flat 500,000-character argument list: one pass
-        let flat = format!("f({}x)\n", "alpha, ".repeat(72_000));
-        assert!(flat.len() > 500_000);
-        let out = fmt_with(&flat, &at(100));
-        assert_eq!(out.lines().count(), 72_003);
-        // 10,000 long chains
-        let chains =
-            "def x = alpha.beta(gamma).delta(epsilon).zeta(eta).theta(iota)\n".repeat(10_000);
-        let out = fmt_with(&chains, &at(40));
-        assert_eq!(out.lines().count(), 40_000);
-        assert!(t.elapsed().as_secs() < 60, "{:?}", t.elapsed());
+    fn adversarial_input_stays_linear() {
+        use crate::scaling::assert_scales;
+        // a line of n nested calls, too deep to wrap: formatted without wrapping
+        let deep = |n: usize| {
+            let deep = format!("{}b{}\n", "f(a, ".repeat(n), ")".repeat(n));
+            let _ = format(&deep, &at(100));
+            assert_eq!(
+                super::last_report().fallback,
+                Some("nesting too deep to wrap")
+            );
+        };
+        assert_scales("nesting too deep", deep, 2_000, 4, 8);
+        // n lines nested deeper than the passes can finish: formatted without wrapping
+        let unsettled = |n: usize| {
+            let line = format!("{}b{}\n", "f(alpha, ".repeat(200), ")".repeat(200));
+            assert_eq!(format(&line.repeat(n), &at(40)), Outcome::Unchanged);
+            assert_eq!(
+                super::last_report().fallback,
+                Some("wrapping did not settle")
+            );
+        };
+        assert_scales("passes that don't finish", unsettled, 1, 4, 8);
+        // a flat argument list: one pass
+        let flat = |n: usize| {
+            let flat = format!("f({}x)\n", "alpha, ".repeat(n));
+            assert_eq!(fmt_with(&flat, &at(100)).lines().count(), n + 3);
+        };
+        assert_scales("flat list", flat, 1_000, 4, 8);
+        // long chains
+        let chains = |n: usize| {
+            let chains =
+                "def x = alpha.beta(gamma).delta(epsilon).zeta(eta).theta(iota)\n".repeat(n);
+            assert_eq!(fmt_with(&chains, &at(40)).lines().count(), 4 * n);
+        };
+        assert_scales("chains", chains, 100, 4, 8);
     }
 }

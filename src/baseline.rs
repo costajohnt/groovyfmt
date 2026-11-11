@@ -449,7 +449,7 @@ mod tests {
             }
             assert_eq!(stale, n);
         };
-        crate::scaling::assert_scales("baseline matching", run, 25_000, 4, 8);
+        crate::scaling::assert_scales_up_to("baseline matching", run, 25_000, MAX_ENTRIES, 4, 8);
         // and the entry count is bounded
         let too_many = format!(
             "{{\"version\":1,\"entries\":[{}]}}",
