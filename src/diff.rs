@@ -178,13 +178,17 @@ pub fn format_lines(src: &str, style: &Style, ranges: &[(usize, usize)]) -> Outc
 /// keeps every non-blank line, in order, changing only its leading and trailing whitespace,
 /// and drops some blank lines, so each source line pairs with the formatted line holding the
 /// same text, or with none. `None` if they don't pair up that way.
+///
+/// A blank line formatting drops is kept, emptied, so no line is added or removed: line
+/// numbers after a range stay put, and running again with the same ranges changes nothing.
 fn keep_outside(src: &str, out: &str, ranges: &[(usize, usize)]) -> Option<String> {
     let mut formatted = out.split_inclusive('\n').peekable();
     let mut s = String::with_capacity(src.len());
     for (i, line) in src.split_inclusive('\n').enumerate() {
+        let eol = &line[line.trim_end_matches(['\r', '\n']).len()..];
         let paired = formatted
             .next_if(|f| f.trim() == line.trim())
-            .or_else(|| line.trim().is_empty().then_some(""))?;
+            .or_else(|| line.trim().is_empty().then_some(eol))?;
         let n = i + 1;
         s.push_str(if ranges.iter().any(|&(a, b)| a <= n && n <= b) {
             paired
@@ -232,19 +236,23 @@ mod tests {
         assert_eq!(out, "class A {\ndef f() {\n        println 1\n}\n\n\n\n}\n");
         // stable with the same ranges
         assert_eq!(format_lines(&out, &style, &[(3, 3)]), Outcome::Unchanged);
-        // every line: the same as formatting the whole file
-        let Outcome::Formatted(all) = format(src, &style) else {
+        // every line: formatting the whole file, except that no line is removed
+        let Outcome::Formatted(all) = format_lines(src, &style, &[(1, 100)]) else {
             panic!()
         };
         assert_eq!(
-            format_lines(src, &style, &[(1, 100)]),
-            Outcome::Formatted(all)
+            all,
+            "class A {\n    def f() {\n        println 1\n    }\n\n\n\n}\n"
         );
-        // blank-line runs collapse inside a range only
-        let Outcome::Formatted(out) = format_lines(src, &style, &[(5, 7)]) else {
+        // blank lines in a range are emptied, never dropped, so later lines keep their
+        // numbers: a second range after them still names the same line
+        let src = "class A {\ndef f() {\n  \n\t\n\nprintln 1\n}\n}";
+        let ranges = [(3, 5), (6, 6)];
+        let Outcome::Formatted(out) = format_lines(src, &style, &ranges) else {
             panic!()
         };
-        assert_eq!(out, "class A {\ndef f() {\nprintln 1   \n}\n\n}\n");
+        assert_eq!(out, "class A {\ndef f() {\n\n\n\n        println 1\n}\n}");
+        assert_eq!(format_lines(&out, &style, &ranges), Outcome::Unchanged);
         assert_eq!(format_lines(src, &style, &[(1, 1)]), Outcome::Unchanged);
     }
 }
