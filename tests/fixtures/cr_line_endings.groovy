@@ -1,0 +1,1 @@
+// classic Mac line endings: a lone CR ends each lineclass Cr {// a line comment ends at the CRdef f() {return 1 // trailing}}

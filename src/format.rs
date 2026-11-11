@@ -75,6 +75,13 @@ impl Style {
 /// Format `src`. Lines between `// groovyfmt: off` and `// groovyfmt: on` stay as they are
 /// (see `diff::off_lines`), which formats the rest as `--lines` does.
 pub fn format(src: &str, style: &Style) -> Outcome {
+    // classic Mac line endings (a lone `\r`, no `\n`): formatted as `\n`, kept as `\r`
+    if src.contains('\r') && !src.contains('\n') {
+        return match format(&src.replace('\r', "\n"), style) {
+            Outcome::Formatted(out) => Outcome::Formatted(out.replace('\n', "\r")),
+            other => other,
+        };
+    }
     if crate::diff::off_lines(src).is_empty() {
         format_with(src, style, None, reindent)
     } else {
@@ -713,6 +720,8 @@ mod tests {
         );
         let crlf = "class A {\r\ndef f() {}\r\n}\r\n";
         assert_eq!(fmt(crlf), "class A {\r\n    def f() {}\r\n}\r\n");
+        let cr = "class A { // a\rdef f() {}\r}\r";
+        assert_eq!(fmt(cr), "class A { // a\r    def f() {}\r}\r");
     }
 
     #[test]

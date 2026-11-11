@@ -1136,7 +1136,8 @@ mod tests {
             "/x $N y/",
             "$/x $N y/$",
         ] {
-            let src = format!("import a.N\nimport a.M\nprintln {s}\nM.go()\n");
+            // in parentheses: Groovy reads `println /x/` as a division
+            let src = format!("import a.N\nimport a.M\nprintln({s})\nM.go()\n");
             assert_eq!(rules(&src), vec![], "{s}");
         }
         // escaped, or in a string that doesn't interpolate: not a use

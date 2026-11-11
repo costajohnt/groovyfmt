@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- The grammar pin moves to tree-sitter-groovy 9129e32. Newly accepted: several divisions inside GString interpolations on one line (`"${a/1000f},${b/1000f}"`); a slashy string starting with `=` (`split(/=/, 2)`); an empty map as an index (`render [:] as JSON`, which Groovy reads as `render[:]`); command calls on a safe-navigation or spread-dot receiver with a positional first argument or as a value (`resolver?.setLocale request, response, l`, `def saved = [a, b]*.save flush: true`), with a ternary first argument (`menuIcon ext == 'pdf' ? A : B, m`), and on a dotted receiver as a call's first argument (`form(new Spec().ui new Attachment(), { })`, where the command takes the rest of the arguments); `final` before a parameter annotation; and files with classic Mac line endings (a lone CR), whose line comments now end at the CR and which keep their CR line endings when formatted. A `/` right after an operand on its line is now always division, as in Groovy, so `x = a/2 + b/2` no longer reads `/2 + b/` as a slashy string. On the 23,766-file corpus nothing changes (85 skipped, same output); across five trial directories of 38,413 files, skipped files go from 265 to 253 and no file that parsed before fails now.
+
 ## 0.9.1 (2026-11-10)
 
 The first published release of the 0.9 line: 0.9.0 was tagged but its release run failed on macOS, so no 0.9.0 binaries exist. Everything listed under 0.9.0 below is in this release.
