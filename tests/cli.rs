@@ -1328,6 +1328,81 @@ fn indent_after_labels_from_config() {
 }
 
 #[test]
+fn normalize_spacing_from_config() {
+    let d = Dir::new("spacing");
+    let src = "if(x){\nfoo (a,b)\n}\n";
+    assert_eq!(
+        stdout(&run(&d.0, &["--stdin"], Some(src))),
+        "if(x){\n    foo (a,b)\n}\n",
+        "off by default"
+    );
+    d.write(".groovyfmt.toml", "normalize_spacing = true\n");
+    assert_eq!(
+        stdout(&run(&d.0, &["--stdin"], Some(src))),
+        "if (x) {\n    foo(a, b)\n}\n"
+    );
+    d.write(".groovyfmt.toml", "normalize_spacing = 1\n");
+    let o = run(&d.0, &["--stdin"], Some(src));
+    assert_eq!(o.status.code(), Some(2));
+    assert!(stderr(&o).contains("`normalize_spacing` must be true or false"));
+}
+
+#[test]
+fn normalize_spacing_with_lines_diff_fix_and_json() {
+    let d = Dir::new("spacingmodes");
+    d.write(".groovyfmt.toml", "normalize_spacing = true\n");
+    let src = "class A {\ndef f() {\nfoo(a,b)\nbar(c,d)\n}\n}\n";
+
+    // --lines: only the range changes, spacing included, and a re-run changes nothing
+    d.write("L.groovy", src);
+    let o = run(&d.0, &["--lines", "3-3", "L.groovy"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    let want = "class A {\ndef f() {\n        foo(a, b)\nbar(c,d)\n}\n}\n";
+    assert_eq!(d.read("L.groovy"), want);
+    let o = run(&d.0, &["--check", "--lines", "3-3", "L.groovy"], None);
+    assert_eq!(o.status.code(), Some(0), "stable: {}", stdout(&o));
+
+    // --check --diff: the patch applies to give the formatted file
+    d.write("D.groovy", src);
+    let o = run(&d.0, &["--check", "--diff", "D.groovy"], None);
+    assert_eq!(o.status.code(), Some(1));
+    d.write("D.patch", &stdout(&o));
+    let formatted = stdout(&run(&d.0, &["--stdin"], Some(src)));
+    assert!(formatted.contains("foo(a, b)"), "{formatted}");
+    let applied = Command::new("git")
+        .args(["apply", "D.patch"])
+        .current_dir(&d.0)
+        .output()
+        .unwrap();
+    assert!(applied.status.success(), "{:?}", applied);
+    assert_eq!(d.read("D.groovy"), formatted);
+
+    // --lint --fix, then formatting: the fix's checks pass on a file that also gets spacing
+    // changes, and formatting it twice changes nothing the second time
+    d.write("F.groovy", "import a.B\ndef x=foo(a,b);\n");
+    let o = run(&d.0, &["--lint", "--fix", "F.groovy"], None);
+    assert_eq!(d.read("F.groovy"), "def x=foo(a,b)\n", "{}", stderr(&o));
+    assert_eq!(run(&d.0, &["F.groovy"], None).status.code(), Some(0));
+    assert_eq!(d.read("F.groovy"), "def x = foo(a, b)\n");
+    let o = run(&d.0, &["--check", "F.groovy"], None);
+    assert_eq!(o.status.code(), Some(0), "idempotent");
+
+    // a spacing-only change is a file to reformat in JSON
+    d.write("J.groovy", "foo(a,b)\n");
+    let o = run(
+        &d.0,
+        &["--check", "--output-format", "json", "J.groovy"],
+        None,
+    );
+    assert_eq!(o.status.code(), Some(1));
+    assert!(
+        stdout(&o).contains(&json_file("J.groovy", "would_reformat")),
+        "{}",
+        stdout(&o)
+    );
+}
+
+#[test]
 fn errors_exit_2_with_specific_messages() {
     // each case in its own directory, so one failure mode can't mask another
     let cases: &[(&str, Option<&str>, &[&str], &str)] = &[

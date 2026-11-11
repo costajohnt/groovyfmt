@@ -168,14 +168,23 @@ pub fn format_lines(src: &str, style: &Style, ranges: &[(usize, usize)]) -> Outc
     let (before, after) = (crate::parse(src), crate::parse(&kept));
     if after.root_node().has_error()
         || crate::format::tokens(src, &before) != crate::format::tokens(&kept, &after)
+        || (style.normalize_spacing
+            && crate::format::shape(&before) != crate::format::shape(&after))
     {
         return Outcome::Skipped("token mismatch after formatting");
     }
     Outcome::Formatted(kept)
 }
 
+/// Whether two lines hold the same text apart from spaces and tabs (and line ending).
+fn same_but_spaces(a: &str, b: &str) -> bool {
+    let text = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    text(a) == text(b)
+}
+
 /// `out` (the formatted `src`) for the lines in `ranges`, `src` for the others. Formatting
-/// keeps every non-blank line, in order, changing only its leading and trailing whitespace,
+/// keeps every non-blank line, in order, changing only its spaces and tabs (the leading and
+/// trailing ones, and with `normalize_spacing` those between tokens),
 /// and drops some blank lines, so each source line pairs with the formatted line holding the
 /// same text, or with none. `None` if they don't pair up that way.
 ///
@@ -187,7 +196,7 @@ fn keep_outside(src: &str, out: &str, ranges: &[(usize, usize)]) -> Option<Strin
     for (i, line) in src.split_inclusive('\n').enumerate() {
         let eol = &line[line.trim_end_matches(['\r', '\n']).len()..];
         let paired = formatted
-            .next_if(|f| f.trim() == line.trim())
+            .next_if(|f| same_but_spaces(f, line))
             .or_else(|| line.trim().is_empty().then_some(eol))?;
         let n = i + 1;
         s.push_str(if ranges.iter().any(|&(a, b)| a <= n && n <= b) {
@@ -254,5 +263,30 @@ mod tests {
         assert_eq!(out, "class A {\ndef f() {\n\n\n\n        println 1\n}\n}");
         assert_eq!(format_lines(&out, &style, &ranges), Outcome::Unchanged);
         assert_eq!(format_lines(src, &style, &[(1, 1)]), Outcome::Unchanged);
+    }
+
+    #[test]
+    fn only_the_given_lines_change_with_normalize_spacing() {
+        let style = Style {
+            normalize_spacing: true,
+            ..Style::default()
+        };
+        // lines pair up across spacing changes; outside the range nothing moves, inside it
+        // the `=` column lined up with the line above stays and the rest is respaced
+        let src = "x  = f(a,b)\nyy = g(c,d)\nz  =  h(e,f)\n";
+        for (range, want) in [
+            ((1, 1), "x  = f(a, b)\nyy = g(c,d)\nz  =  h(e,f)\n"),
+            ((3, 3), "x  = f(a,b)\nyy = g(c,d)\nz  = h(e, f)\n"),
+        ] {
+            let Outcome::Formatted(out) = format_lines(src, &style, &[range]) else {
+                panic!("{range:?}")
+            };
+            assert_eq!(out, want, "{range:?}");
+            assert_eq!(
+                format_lines(&out, &style, &[range]),
+                Outcome::Unchanged,
+                "{range:?}"
+            );
+        }
     }
 }
