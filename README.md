@@ -484,13 +484,57 @@ Exit codes: 0 clean, 1 something to fix (parse error, lint violation, or formatt
 2 a usage or I/O error.
 ```
 
+### Language server
+
+An agent or tool that speaks the Language Server Protocol can run `groovyfmt --lsp` instead of the CLI ([Editors](#editors)). It publishes parse errors and lint violations for each document it opens, with the same rules, config and positions as `--syntax` and `--lint`, returns formatting as a text edit that changes only whitespace, and offers the `--lint --fix` fixes as code actions. It never writes a file: the edits go back to the client, which applies them.
+
 ### pre-commit
 
 To check the same things before each commit, use the hooks in [pre-commit](#pre-commit).
 
 ## Editors
 
-Neovim and VS Code call `groovyfmt --stdin`, which prints nothing and exits 2 when it can't format the buffer, so a parse error never replaces your code.
+`groovyfmt --lsp` is a language server on stdin and stdout. An editor that speaks the Language Server Protocol gets formatting (whole file and selection), parse errors and lint violations as you type, and the `--lint --fix` fixes as code actions ("Fix all auto-fixable problems", kind `source.fixAll.groovyfmt`, and a quick fix per fixable violation), all from the binary the CLI uses. Each document gets the config `--stdin-filepath` would find for its path, read again on every request, so an edited `.groovyfmt.toml` applies right away; an excluded file gets no diagnostics and no edits, and a buffer that doesn't parse gets its parse errors and no edits. `--config` and `--indent` apply as on the command line. It is a formatter and linter server, not a Groovy language server: no completion, hover, go-to-definition or rename. Only `file:` documents are served, so an unsaved buffer with no path gets nothing.
+
+- **Neovim** 0.11 or later, with the built-in client:
+  ```lua
+  vim.lsp.config("groovyfmt", {
+    cmd = { "groovyfmt", "--lsp" },
+    filetypes = { "groovy" },
+    root_markers = { ".groovyfmt.toml", "groovyfmt.toml", ".git" },
+  })
+  vim.lsp.enable("groovyfmt")
+  ```
+  `vim.lsp.buf.format()` formats; `vim.lsp.buf.code_action({ context = { only = { "source.fixAll" } }, apply = true })` applies the fixes.
+- **VS Code** has no groovyfmt extension, and VS Code itself only runs language servers that an extension starts. A generic client such as [Generic LSP Client](https://github.com/llllvvuu/vscode-glspc) (`llllvvuu.glspc`) can start it, in `settings.json`:
+  ```json
+  "glspc.serverCommand": "groovyfmt",
+  "glspc.serverCommandArguments": ["--lsp"],
+  "glspc.languageId": "groovy"
+  ```
+  To fix on save, add `"editor.codeActionsOnSave": { "source.fixAll.groovyfmt": "explicit" }`.
+- **Helix** (`languages.toml`; Helix knows Groovy, `*.gradle` and Jenkinsfiles but has no Groovy language server by default):
+  ```toml
+  [language-server.groovyfmt]
+  command = "groovyfmt"
+  args = ["--lsp"]
+
+  [[language]]
+  name = "groovy"
+  language-servers = ["groovyfmt"]
+  auto-format = true
+  ```
+- **Zed** can't add a language server from settings alone; it starts the ones its extensions declare. With the [Groovy extension](https://github.com/valentinegb/zed-groovy), which declares a server named `groovy`, point that server at groovyfmt in `settings.json` (this replaces the extension's own server):
+  ```json
+  "lsp": {
+    "groovy": { "binary": { "path": "/usr/local/bin/groovyfmt", "arguments": ["--lsp"] } }
+  },
+  "languages": {
+    "Groovy": { "formatter": "language_server", "format_on_save": "on" }
+  }
+  ```
+
+Without a language server client, call `groovyfmt --stdin`, which prints nothing and exits 2 when it can't format the buffer, so a parse error never replaces your code.
 
 Add `--stdin-filepath <path>` (it requires `--stdin`) to tell groovyfmt which file the buffer belongs to. The config is then found by walking up from that file's directory, as for a file named on the command line, instead of from the working directory; the path names the buffer in error messages, and if the path matches `exclude` the buffer comes back unchanged with exit 0. The file doesn't have to exist yet.
 

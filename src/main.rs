@@ -1,3 +1,4 @@
+use groovyfmt::MAX_FILE_BYTES;
 use groovyfmt::config::{self, Config, Resolver};
 use groovyfmt::diff;
 use groovyfmt::fix::{self, Fix};
@@ -35,6 +36,9 @@ Modes:
                            With --stdin: find the config as if formatting PATH (which
                            need not exist), name it in messages, and if PATH is
                            excluded, echo stdin unchanged
+      --lsp                Serve the Language Server Protocol on stdin/stdout (for
+                           editors and coding agents): formatting, diagnostics and
+                           fixes, each file with its own config
       --suggest-style      Try a few indent styles without writing anything and print
                            the .groovyfmt.toml lines for the one that changes the
                            fewest files (a table of all of them goes to stderr)
@@ -109,6 +113,7 @@ enum Mode {
     Stdin,
     Rules,
     Explain(String),
+    Lsp,
     SuggestStyle,
     // development diagnostics, not in --help
     Stats,
@@ -125,10 +130,6 @@ fn die(msg: impl std::fmt::Display) -> ! {
 /// Set when a directory couldn't be read during the walk, or an argument was refused; the
 /// run then exits 2.
 static WALK_FAILED: AtomicBool = AtomicBool::new(false);
-
-/// Files larger than this are skipped: generated or vendored code, and a guard against
-/// a crafted input exhausting memory.
-const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 
 /// One line to stdout. Write errors are ignored, so `groovyfmt --check | head -1` stops
 /// printing quietly instead of panicking; the exit status still reflects the results.
@@ -189,6 +190,7 @@ fn parse_args() -> Args {
                 set_mode(&mut a, Mode::Explain(rule));
             }
             "--suggest-style" => set_mode(&mut a, Mode::SuggestStyle),
+            "--lsp" => set_mode(&mut a, Mode::Lsp),
             "--stats" => set_mode(&mut a, Mode::Stats),
             "--errors" => set_mode(&mut a, Mode::Errors),
             "--tree" => set_mode(&mut a, Mode::Tree),
@@ -286,7 +288,10 @@ fn parse_args() -> Args {
     if a.indent.is_some() && a.mode == Mode::SuggestStyle {
         die("--indent can't be combined with --suggest-style, which tries the indents itself");
     }
-    if a.paths.is_empty() && a.mode != Mode::Stdin {
+    if a.mode == Mode::Lsp && !a.paths.is_empty() {
+        die("--lsp takes no paths (the editor sends the documents)");
+    }
+    if a.paths.is_empty() && !matches!(a.mode, Mode::Stdin | Mode::Lsp) {
         a.paths.push(PathBuf::from("."));
     }
     a
@@ -939,6 +944,13 @@ fn main() {
         Mode::Rules => rules(&one_config(&mut res, &a)),
         Mode::Explain(ref rule) => explain(rule, &one_config(&mut res, &a)),
         Mode::Stdin => stdin(&mut res, &a),
+        // the --config file, read once; any other config is read afresh for each request
+        Mode::Lsp => groovyfmt::lsp::run(
+            a.config
+                .as_ref()
+                .map(|p| Config::load(p).unwrap_or_else(|e| die(e))),
+            a.indent,
+        ),
         _ => {
             // only write mode and --fix rewrite; reading through a named link is reading its target
             let write = a.mode == Mode::Write || (a.fix && !a.diff);
