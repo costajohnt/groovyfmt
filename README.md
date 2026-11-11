@@ -76,6 +76,25 @@ Whitespace only:
 
 Formatting is safe by construction. The output is parsed again and its token stream compared with the input's; if anything other than whitespace would change, or the input doesn't parse cleanly, the file is left untouched (`-v` lists these). Running it twice changes nothing the second time.
 
+### Spacing within lines
+
+With `normalize_spacing = true` in the config, groovyfmt also fixes the spaces between tokens on each line. It never adds or removes a line break and never touches strings, GString interpolations or comments. The style:
+
+- one space around binary operators, assignment (`=`, `+=`), `?` and `:` in a ternary, `?:`, `->`, `**`, `as`, `in` and `instanceof`
+- one space after a comma and none before it; none before a `;`, one after it inside a `for (…)`
+- no space inside `(…)` or `[…]`, and none inside `<…>` of a generic type (`Map<String, Integer>`)
+- no space between a call, constructor, annotation or method declaration and its `(` (`foo(x)`, `new Foo()`, `@Ann(x)`, `def f(a)`), one after `if`, `for`, `while`, `switch`, `catch` and `synchronized`
+- one space before a `{`, inside a one-line `{ … }` and around `else`, `catch` and `finally` after a `}`
+- in map entries, named arguments, labels and `case x:`, no space before the `:` and one after it in map entries and named arguments
+- no space after a prefix operator (`-x`, `!x`, `*args`) or before a postfix one (`i++`), around `::`, or before the `[` of an array type (`String[]`), and one after a cast (`(String) x`)
+- any other run of spaces becomes one
+
+Some spacing is left as written because changing it could change what the code means or how it reads: member access (`.`, `?.`, `*.`, `.&`), ranges (`1..n`), a subscript after a space (`a [1]`), a call with a space before `(` whose result is used further (`foo (x).bar()`, `foo (x) + 1`, which Groovy may read as a command call), a binary operator with a space before it and none after (`a -b`, `println -1`), `<` and `>` comparisons chained like a generic type (`x as Kind<Path>[]`), a closure parameter's default (`{ int b=2 -> }`), and closures that look like template placeholders (`{{name}}`, `${x}` outside a string, a closure standing alone as a statement).
+
+Alignment is kept. A run of two or more spaces, or a tab, stays when the token after it lines up with a token on a nearby line: the line above or below, or a line indented the same way within 20 lines (an `=` column, map keys and values across nested values, Gradle dependency columns, trailing comments). A single space before a map key's `:` stays when it lines up colons (`9 :` over `10:`). When something earlier on the line gets shorter or longer, a run before a trailing comment absorbs the difference so the comment doesn't move, and on a line laid out in columns (`[ 4,  4,  3]` over `[10,  9,  8]`) nothing before its last aligned column changes. Spock data tables are never touched: every statement from a `where:` label to the end of its block keeps its spacing exactly. A gap next to a comment is kept too.
+
+Besides the token check, spacing output must parse to the same tree shape as the input; if it doesn't, the file is formatted without spacing changes instead.
+
 ### Lint rules
 
 Named after their [CodeNarc](https://codenarc.org/) equivalents so existing configurations map across. Files that don't parse are not linted, which keeps false positives out.
@@ -110,6 +129,7 @@ indent = 4                  # spaces per block level, 1 to 16
 continuation_indent = 8     # arguments, literals, continued lines (default: same as indent)
 use_tabs = false            # true: indent with tabs, one per indent level
 indent_after_labels = false # true: indent Spock when:/then: blocks under their label
+normalize_spacing = false   # true: also fix the spaces between tokens within a line
 exclude = ["generated/**", "**/*.gsh"] # skip these files and directories
 
 [lint]                      # rule = true/false; unlisted rules keep their default

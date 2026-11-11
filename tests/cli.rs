@@ -531,6 +531,26 @@ fn indent_after_labels_from_config() {
 }
 
 #[test]
+fn normalize_spacing_from_config() {
+    let d = Dir::new("spacing");
+    let src = "if(x){\nfoo (a,b)\n}\n";
+    assert_eq!(
+        stdout(&run(&d.0, &["--stdin"], Some(src))),
+        "if(x){\n    foo (a,b)\n}\n",
+        "off by default"
+    );
+    d.write(".groovyfmt.toml", "normalize_spacing = true\n");
+    assert_eq!(
+        stdout(&run(&d.0, &["--stdin"], Some(src))),
+        "if (x) {\n    foo(a, b)\n}\n"
+    );
+    d.write(".groovyfmt.toml", "normalize_spacing = 1\n");
+    let o = run(&d.0, &["--stdin"], Some(src));
+    assert_eq!(o.status.code(), Some(2));
+    assert!(stderr(&o).contains("`normalize_spacing` must be true or false"));
+}
+
+#[test]
 fn errors_exit_2_with_specific_messages() {
     // each case in its own directory, so one failure mode can't mask another
     let cases: &[(&str, Option<&str>, &[&str], &str)] = &[

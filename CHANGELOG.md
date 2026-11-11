@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `normalize_spacing` config option (off by default): also fix the spaces between tokens within a line, in a conventional Groovy and Java style (one space around binary operators and after commas, `if (`, `foo(x)`, `[a: 1]`, `{ x }`, no space inside parentheses and brackets). It never moves a line break and never touches strings or comments. Alignment is kept: a run of spaces stays when the next token lines up with one on a nearby line, a line whose changes would move an aligned `=`, `:` or comment out of its column is left as it is up to that column, and Spock `where:` blocks are left exactly as written, as is spacing that could change how Groovy reads the code (`a -b`, `foo (x).bar()`, `a [1]`). The output must parse to the same tree shape as the input, or the file is formatted without spacing changes. On the 23,766-file corpus it changes 34,952 more lines in 4,435 files than formatting without it; formatting twice changes nothing, and no file is skipped that isn't skipped without it. With the option off, output is unchanged.
+
 ## 0.8.0 (2026-11-10)
 
 ### Changed
