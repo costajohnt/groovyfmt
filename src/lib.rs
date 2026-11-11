@@ -6,6 +6,7 @@ pub mod json;
 pub mod lint;
 pub mod lsp;
 pub mod report;
+mod spacing;
 pub mod syntax;
 
 use std::path::Path;
@@ -155,11 +156,83 @@ mod tests {
             "superclass",
             "method_declaration",
             "quoted_identifier",
+            // spacing.rs
+            "expression_statement",
+            "named_argument",
+            "argument_list",
+            "formal_parameters",
+            "formal_parameter",
+            "closure_parameters",
+            "type_arguments",
+            "type_parameters",
+            "array_type",
+            "dimension",
+            "dimension_expression",
+            "method_reference_expression",
+            "unary_expression",
+            "update_expression",
+            "unary_update_expression",
+            "spread_arguments",
+            "ternary_expression",
+            "elvis_expression",
+            "cast_expression",
+            "parenthesized_type_cast",
+            "object_creation_expression",
+            "lambda_expression",
+            "variable_declarator",
+            "local_variable_declaration",
+            "field_declaration",
+            "multi_assignment_declaration",
+            "multi_assignment_expression",
+            "switch_default",
+            "switch_arrow_case",
+            "switch_expression",
+            "quoted_identifier",
+            "power_expression",
+            "membership_expression",
+            "instanceof_expression",
+            "spaceship_expression",
+            "regex_find_expression",
+            "regex_match_expression",
+            "identity_expression",
+            "logical_implication_expression",
+            "return_statement",
+            "list_literal",
+            "do_while_statement",
+            "synchronized_statement",
         ];
         for k in named {
             assert_ne!(lang.id_for_node_kind(k, true), 0, "missing node kind {k}");
         }
-        for k in [";", "=", "==", "{", "}", "|", "||", "<<"] {
+        for k in [
+            ";",
+            "=",
+            "==",
+            "{",
+            "}",
+            "(",
+            ")",
+            "[",
+            "]",
+            ",",
+            ":",
+            "?",
+            "->",
+            "::",
+            "<",
+            ">",
+            "|",
+            "||",
+            "else",
+            "catch",
+            "finally",
+            "while",
+            "if",
+            "for",
+            "switch",
+            "synchronized",
+            "<<",
+        ] {
             assert_ne!(lang.id_for_node_kind(k, false), 0, "missing token {k}");
         }
         let fields = [
@@ -182,6 +255,7 @@ mod tests {
             "arguments",
             "closure",
             "statement",
+            "base",
         ];
         for f in fields {
             assert!(lang.field_id_for_name(f).is_some(), "missing field {f}");

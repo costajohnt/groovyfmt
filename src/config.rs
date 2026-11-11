@@ -9,6 +9,7 @@
 //! continuation_indent = 8     # arguments, literals, continued lines (default: indent)
 //! use_tabs = false            # a tab per `indent` columns of leading indentation
 //! indent_after_labels = false # indent Spock when:/then: blocks under their label
+//! normalize_spacing = false   # also fix the spaces between tokens within a line
 //! exclude = ["generated/**"]  # globs relative to this file's directory
 //!
 //! [lint]                      # rule name = on/off; omitted rules use their default
@@ -72,6 +73,10 @@ impl Config {
                 }
                 ("use_tabs", toml::Value::Boolean(b)) => cfg.style.use_tabs = *b,
                 ("use_tabs", _) => return Err("`use_tabs` must be true or false".into()),
+                ("normalize_spacing", toml::Value::Boolean(b)) => cfg.style.normalize_spacing = *b,
+                ("normalize_spacing", _) => {
+                    return Err("`normalize_spacing` must be true or false".into());
+                }
                 ("lint", toml::Value::Table(rules)) => {
                     for (rule, on) in rules {
                         if !RULES.iter().any(|r| r.name == rule) {
@@ -99,7 +104,7 @@ impl Config {
                 }
                 (other, _) => {
                     return Err(format!(
-                        "unknown key `{other}` (expected `indent`, `continuation_indent`, `use_tabs`, `indent_after_labels`, `exclude` or `[lint]`)"
+                        "unknown key `{other}` (expected `indent`, `continuation_indent`, `use_tabs`, `indent_after_labels`, `normalize_spacing`, `exclude` or `[lint]`)"
                     ));
                 }
             }
@@ -344,6 +349,18 @@ mod tests {
             Config::parse("use_tabs = 1")
                 .unwrap_err()
                 .contains("`use_tabs` must be true or false")
+        );
+        assert!(!Config::default().style.normalize_spacing);
+        assert!(
+            Config::parse("normalize_spacing = true")
+                .unwrap()
+                .style
+                .normalize_spacing
+        );
+        assert!(
+            Config::parse("normalize_spacing = \"yes\"")
+                .unwrap_err()
+                .contains("`normalize_spacing` must be true or false")
         );
         assert!(!c.rule_enabled("UnusedImport"));
         assert!(c.rule_enabled("UnnecessaryGString"));
