@@ -10,6 +10,7 @@
 - `--strict`: with `--check`, `--lint` or when formatting in place, list the files that were skipped (they don't parse, aren't UTF-8, are over 10 MB or nest too deeply) and exit 1 if there are any. Without it a skipped file never affects the exit status, so CI can pass on files nothing checked.
 - `--` ends the options: every argument after it is a path, even one starting with `-`.
 - `--syntax` only parses, and reports each place groovyfmt could not parse as `path:line:col: could not parse: <message>` (up to 10 per file, then a count of the rest), exiting 1 if any file doesn't parse. The message names a bracket left open, or quotes the text the grammar stopped at and where it was. `-v` and `--strict` print the same lines under each file skipped for a parse error, and `--stdin` prints them after its error.
+- `--output-format json` for `--check`, `--lint`, `--syntax` and formatting in place: one JSON document on stdout with each file's status, skip reason and diagnostics (with end positions) and a summary, in a versioned schema documented in the README. `--output-format sarif` for `--lint` and `--syntax`: a SARIF 2.1.0 log for GitHub code scanning. File names and quoted source are escaped so they can't act as terminal escapes or workflow commands.
 
 ### Changed
 

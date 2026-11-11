@@ -12,6 +12,9 @@ pub const MAX_REPORTED: usize = 10;
 pub struct SyntaxError {
     pub line: usize, // 1-based
     pub col: usize,  // 1-based, in characters
+    /// Where the reported token ends (where it starts, for a missing one).
+    pub end_line: usize,
+    pub end_col: usize,
     pub message: String,
 }
 
@@ -44,16 +47,27 @@ fn describe(src: &str, n: Node) -> SyntaxError {
     } else {
         unexpected(src, n, &context)
     };
-    let p = at.start_position();
     // tree-sitter columns count bytes; report characters, as lint does
-    let line = src.split('\n').nth(p.row).unwrap_or("");
-    let col = line
-        .get(..p.column)
-        .map_or(p.column, |prefix| prefix.chars().count())
-        + 1;
+    let pos = |p: tree_sitter::Point| {
+        let line = src.split('\n').nth(p.row).unwrap_or("");
+        let col = line
+            .get(..p.column)
+            .map_or(p.column, |prefix| prefix.chars().count());
+        (p.row + 1, col + 1)
+    };
+    let (line, col) = pos(at.start_position());
+    // an unparsed run can span many lines; only its first token is pointed at
+    let end = if at.is_error() {
+        at.start_position()
+    } else {
+        at.end_position()
+    };
+    let (end_line, end_col) = pos(end);
     SyntaxError {
-        line: p.row + 1,
+        line,
         col,
+        end_line,
+        end_col,
         message,
     }
 }

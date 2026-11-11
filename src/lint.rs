@@ -98,7 +98,10 @@ pub const RULES: &[Rule] = &[
 #[derive(Debug, PartialEq)]
 pub struct Violation {
     pub line: usize, // 1-based
-    pub col: usize,  // 1-based
+    pub col: usize,  // 1-based, in characters
+    /// Where the flagged node ends: the line, and the column just after its last character.
+    pub end_line: usize,
+    pub end_col: usize,
     pub rule: &'static str,
     pub message: String,
 }
@@ -155,22 +158,27 @@ pub fn lint(src: &str) -> Result<Vec<Violation>, &'static str> {
     }
     // tree-sitter columns count bytes; report characters, as editors and GitHub do
     let lines: Vec<&str> = src.split('\n').collect();
+    let chars = |line: usize, col: usize| {
+        lines
+            .get(line - 1)
+            .and_then(|l| l.get(..col - 1))
+            .map_or(col, |prefix| prefix.chars().count() + 1)
+    };
     for x in &mut v {
-        if let Some(l) = lines.get(x.line - 1) {
-            x.col = l
-                .get(..x.col - 1)
-                .map_or(x.col, |prefix| prefix.chars().count() + 1);
-        }
+        x.col = chars(x.line, x.col);
+        x.end_col = chars(x.end_line, x.end_col);
     }
     v.sort_by_key(|x| (x.line, x.col));
     Ok(v)
 }
 
 fn at(n: Node, rule: &'static str, message: String) -> Violation {
-    let p = n.start_position();
+    let (p, e) = (n.start_position(), n.end_position());
     Violation {
         line: p.row + 1,
         col: p.column + 1,
+        end_line: e.row + 1,
+        end_col: e.column + 1,
         rule,
         message,
     }
@@ -693,8 +701,13 @@ mod tests {
         // `é` is two bytes; the `;` is the 12th character but the 13th byte
         let v = lint("def s = 'é';\n").expect("parses");
         assert_eq!(
-            (v[0].rule, v[0].line, v[0].col),
-            ("UnnecessarySemicolon", 1, 12)
+            (v[0].rule, v[0].line, v[0].col, v[0].end_line, v[0].end_col),
+            ("UnnecessarySemicolon", 1, 12, 1, 13)
+        );
+        let v = lint("try { f() } catch (é) {\n}\n").expect("parses");
+        assert_eq!(
+            (v[0].rule, v[0].line, v[0].col, v[0].end_line, v[0].end_col),
+            ("EmptyCatchBlock", 1, 13, 2, 2)
         );
     }
 
