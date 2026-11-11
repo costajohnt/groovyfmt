@@ -117,9 +117,9 @@ Named after their [CodeNarc](https://codenarc.org/) equivalents so existing conf
 
 | Rule | Default | Flags |
 |---|---|---|
-| UnusedImport | on | an import whose name (or alias) never appears in code or comments |
+| UnusedImport | on | an import whose name (or alias) never appears in code or as a word in a comment |
 | DuplicateImport | on | the same import twice |
-| UnnecessarySemicolon | on | a `;` at the end of a line |
+| UnnecessarySemicolon | on | a `;` at the end of a line, unless the next line starts with `{` (without the `;` that closure would become an argument of the statement before) |
 | EmptyCatchBlock | on | an empty `catch`, unless the parameter is named `ignore` or `ignored` |
 | EmptyIfStatement | on | an `if` with an empty block |
 | EmptyElseBlock | on | an `else` with an empty block |
@@ -128,11 +128,11 @@ Named after their [CodeNarc](https://codenarc.org/) equivalents so existing conf
 | EmptyWhileStatement | on | a `while` loop with an empty block |
 | EmptyForStatement | on | a `for` loop with an empty block |
 | DuplicateMapKey | on | a map literal with the same constant key twice (`a:` and `'a':` count as the same); the later entry wins |
-| DuplicateCaseStatement | on | two `case` labels for the same constant |
-| AssignmentInConditional | on | `if (x = 1)`, where `==` was probably meant; `while (x = next())` is a common idiom and is exempt |
+| DuplicateCaseStatement | on | two `case` labels for the same constant (`'a'` and `"a"` count as the same) |
+| AssignmentInConditional | on | `if (x = 1)`, where `==` was probably meant; `while (x = next())` is a common idiom and is exempt, and so is an assignment in extra parentheses, `if ((m = re.matcher(s)))` |
 | ConstantIfExpression | on | an `if` whose condition is a literal, so one branch never runs |
 | UnnecessaryGString | off | a double-quoted string with nothing to interpolate (noisy where double quotes are the house style) |
-| ComparisonWithSelf | off | a variable compared with itself (GORM `where { title == title }` and Spock equality checks do this on purpose) |
+| ComparisonWithSelf | off | a variable compared with itself (Spock equality checks do this on purpose); not inside a GORM where query (`Book.where { title == title }`, `@Where`), where the left side is the domain property |
 
 A block holding only a comment doesn't count as empty.
 
