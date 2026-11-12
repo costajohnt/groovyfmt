@@ -3,6 +3,13 @@ name: CI
 # Runs on every pull request and every push to main, so a break on macOS or in
 # an install channel shows up before a release tag is pushed rather than at it.
 # scripts/ci-local.sh runs the Linux half of this on your own machine.
+#
+# Hosted macOS runners are scarce: with five macOS jobs per run, one was often
+# cancelled unassigned ("The job was not acquired by Runner of type hosted")
+# and marked a good commit red. So pull requests and pushes run one macOS job,
+# test (macos-latest). The macOS release builds run for a tag and for a manual
+# run; the macOS action and npm jobs run for a manual run. Before tagging:
+# gh workflow run ci.yml --ref main
 on:
   pull_request:
   push:
@@ -60,17 +67,21 @@ jobs:
   # release.yml publishes the archives this job uploads.
   build:
     name: build (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
+    # Windows is cross-compiled with mingw-w64 and smoke-tested under Wine: no Windows runner.
+    runs-on: ${{ contains(matrix.target, 'apple') && 'macos-latest' || matrix.target == 'aarch64-unknown-linux-musl' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest }
-          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
-          - { target: aarch64-apple-darwin, os: macos-latest }
-          - { target: x86_64-apple-darwin, os: macos-latest }
-          # Cross-compiled with mingw-w64 and smoke-tested under Wine: no Windows runner.
-          - { target: x86_64-pc-windows-gnu, os: ubuntu-latest }
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+          - x86_64-pc-windows-gnu
+        # The macOS targets build only for a tag or a manual run (see the top of this file).
+        exclude:
+          - target: ${{ (github.ref_type == 'tag' || github.event_name == 'workflow_dispatch') && 'none' || 'aarch64-apple-darwin' }}
+          - target: ${{ (github.ref_type == 'tag' || github.event_name == 'workflow_dispatch') && 'none' || 'x86_64-apple-darwin' }}
     env:
       TARGET: ${{ matrix.target }}
     steps:
@@ -163,6 +174,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        # macOS only on a manual run (see the top of this file).
+        exclude:
+          - os: ${{ github.event_name == 'workflow_dispatch' && 'none' || 'macos-latest' }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -234,6 +248,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        # macOS only on a manual run (see the top of this file).
+        exclude:
+          - os: ${{ github.event_name == 'workflow_dispatch' && 'none' || 'macos-latest' }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:

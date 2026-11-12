@@ -36,7 +36,13 @@ jobs:
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" groovyfmt-*.tar.gz* groovyfmt-*.zip* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+        run: |
+          # ci.yml leaves the macOS builds out of some runs; a tag must have all five.
+          shopt -s nullglob
+          set -- groovyfmt-*.tar.gz groovyfmt-*.zip
+          printf '%s\n' "$@"
+          test "$#" -eq 5
+          gh release create "$GITHUB_REF_NAME" groovyfmt-*.tar.gz* groovyfmt-*.zip* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
 
   # Off until the repository variable PUBLISH_NPM is 'true'. Needs the repository
   # public and a trusted publisher on npmjs.com for each package; no token
