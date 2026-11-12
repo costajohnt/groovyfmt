@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `--lint` (and `--lsp`) could die of a stack overflow, losing the results for every file in the run, on a Spock `where:` row of tens of thousands of cells or a Jenkinsfile with thousands of nested blocks (`dir { dir { ... } }`, stages in stages, `allOf` in `allOf`). Data table cells are now counted without recursion, and Jenkins blocks nested more than 64 deep are not checked. Lint output on the corpus is unchanged.
+
 ## 0.9.2 (2026-11-12)
 
 ### Fixed

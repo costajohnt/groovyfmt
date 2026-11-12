@@ -258,24 +258,24 @@ fn is_or(e: Node, src: &str) -> bool {
             .is_some_and(|o| matches!(text(o, src), "|" | "||"))
 }
 
+/// Iterative: a row of n cells is a `|` tree n deep, too deep to recurse on.
 fn cells(e: Node, src: &str) -> usize {
-    let mut e = e;
-    while e.kind() == "parenthesized_expression" {
-        match e.named_child(0) {
-            Some(x) => e = x,
-            None => return 1,
+    let (mut n, mut todo) = (0, vec![e]);
+    while let Some(mut e) = todo.pop() {
+        while e.kind() == "parenthesized_expression"
+            && let Some(x) = e.named_child(0)
+        {
+            e = x;
+        }
+        match (
+            e.child_by_field_name("left"),
+            e.child_by_field_name("right"),
+        ) {
+            (Some(l), Some(r)) if is_or(e, src) => todo.extend([l, r]),
+            _ => n += 1,
         }
     }
-    if !is_or(e, src) {
-        return 1;
-    }
-    match (
-        e.child_by_field_name("left"),
-        e.child_by_field_name("right"),
-    ) {
-        (Some(l), Some(r)) => cells(l, src) + cells(r, src),
-        _ => 1,
-    }
+    n
 }
 
 #[cfg(test)]
@@ -368,6 +368,12 @@ mod tests {
         assert_eq!(
             rules(body),
             vec![("SpockDataTableColumns", 8), ("SpockDataTableColumns", 9)]
+        );
+        // a row 50,000 cells wide is a `|` tree that deep: counted without a stack overflow
+        let row = vec!["a"; 50_000].join(" | ");
+        assert_eq!(
+            rules(&format!("expect:\nx\nwhere:\n{row}\n{row} | b")),
+            vec![("SpockDataTableColumns", 7)]
         );
     }
 }
