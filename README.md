@@ -260,7 +260,7 @@ The general rules are named after their [CodeNarc](https://codenarc.org/) equiva
 
 | Rule | Default | Flags |
 |---|---|---|
-| UnusedImport | on | an import whose name (or alias) never appears in code or as a word in a comment; not an annotated import (`@Library`, `@Grab`), which is there for its annotation |
+| UnusedImport | on | an import whose name (or alias) never appears in code or as a word in a comment; not an annotated import (`@Library`, `@Grab`), which is there for its annotation. A static import of `getX`, `setX` or `isX` counts as used where the property `x` appears |
 | DuplicateImport | on | the same import twice |
 | UnnecessarySemicolon | on | a `;` at the end of a line, unless the next line starts with `{` (without the `;` that closure would become an argument of the statement before), `++` or `--` |
 | EmptyCatchBlock | on | an empty `catch`, unless the parameter is named `ignore` or `ignored` |
@@ -322,7 +322,7 @@ A name counts as used wherever it appears outside comments: as a name, or as a w
 |---|---|---|
 | UnusedPrivateField | on | a private field whose name appears nowhere else in the file; not `serialVersionUID`, an annotated field (`@Delegate`, `@Autowired`; `@SuppressWarnings` and `@Deprecated` don't count), or a field of a class whose annotation reads fields (`includeFields`, `@Entity`, `@Builder`) |
 | UnusedPrivateMethod | on | a private method whose name appears nowhere else in the file (for `getX`, `isX` and `setX`, nor the property `x`); not an annotated method, or one called by name: `methodMissing`, `readObject` and the like, Spock's `setup` / `cleanup` / `setupSpec` / `cleanupSpec`, GPars' `afterStart` / `afterStop` / `onException` / `onInterrupt` / `onTimeout` |
-| UnusedVariable | on | a local variable whose name doesn't appear after its declaration in its block, closure or switch; not a script's top-level variable, `_`, an annotated one (`@Field`), or a part of `def (a, b) = ...`. Assigning it counts as a use |
+| UnusedVariable | on | a local variable whose name doesn't appear after its declaration in its block, closure or switch; not a script's top-level variable, `_`, `ignore` or `ignored`, Spock's `IOException e = thrown()` (there for its type), an annotated one (`@Field`), or a part of `def (a, b) = ...`. Assigning it counts as a use |
 
 #### Jenkinsfiles
 
@@ -349,7 +349,7 @@ In `*.gradle` files.
 
 | Rule | Default | Flags |
 |---|---|---|
-| GradleRemovedConfiguration | on | `compile`, `runtime`, `testCompile` or `testRuntime` dependencies, removed in Gradle 7.0 (the message names the replacement); not when the build declares a configuration of that name itself |
+| GradleRemovedConfiguration | on | `compile`, `runtime`, `testCompile` or `testRuntime` dependencies, removed in Gradle 7.0 (the message names the replacement); not when the build declares a configuration of that name itself, or when the nearest `gradle/wrapper/gradle-wrapper.properties` (in the script's directory or above) pins a Gradle below 7.0, which still has them |
 | GradleJcenter | on | `jcenter()`, deprecated in Gradle 7.0 and removed in 9.0 |
 | GradleLeftShiftTask | on | `task name << { }`, removed in Gradle 5.0 |
 | GradleDynamicVersion | off | a `+` or `latest.*` dependency version (off by default: whether to pin is a policy choice) |
