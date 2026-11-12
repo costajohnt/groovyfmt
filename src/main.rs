@@ -56,6 +56,10 @@ Options:
                            --fix fixes it and how to turn it off
       --strict             List skipped files (unparseable, not UTF-8, too large) and
                            exit 1 if there are any, so CI can't pass on unchecked files
+      --force              Read every file named here as Groovy, whatever its name
+                           (by default one that isn't *.groovy, *.gradle, *.gvy, *.gy,
+                           *.gsh, Jenkinsfile, Jenkinsfile.*, *.jenkinsfile or a
+                           groovy #! script is skipped)
       --diff               With --check, or --lint --fix: print a unified diff of the
                            changes (for git apply / patch -p1) and write nothing
       --lines <A-B>        Change only lines A to B (repeatable; one file or --stdin)
@@ -207,6 +211,7 @@ fn parse_args() -> Args {
             "-v" | "--verbose" => a.verbose = true,
             "--strict" => a.strict = true,
             "--fix" => a.fix = true,
+            "--force" => FORCE.store(true, Ordering::Relaxed),
             "--diff" => a.diff = true,
             "--lines" => {
                 let v = value("--lines");
@@ -524,6 +529,28 @@ fn par_map<T: Send>(
 
 const NOT_UTF8: &str = "not valid UTF-8";
 
+/// `--force`: a file named on the command line is read as Groovy whatever its name.
+static FORCE: AtomicBool = AtomicBool::new(false);
+
+/// Whether a file is Groovy by its name or first line: a name a directory walk takes
+/// (`is_groovy_file`), a pipeline named `Jenkinsfile.*` or `*.jenkinsfile`, or a script whose
+/// shebang runs groovy. Only files named on the command line can fail this; a Makefile or
+/// YAML file there (`groovyfmt *`) would parse as labels and lose its indentation.
+fn is_groovy(path: &Path, bytes: &[u8]) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    // Windows drops trailing dots and spaces: `A.groovy.` opens A.groovy
+    let name = if cfg!(windows) {
+        name.trim_end_matches(['.', ' '])
+    } else {
+        name
+    };
+    let first = bytes.split(|&b| b == b'\n').next().unwrap_or_default();
+    groovyfmt::is_groovy_file(Path::new(name))
+        || name.starts_with("Jenkinsfile.")
+        || name.ends_with(".jenkinsfile")
+        || (first.starts_with(b"#!") && first.windows(6).any(|w| w == b"groovy"))
+}
+
 /// File contents, or `Ok(Err(reason))` for a file that is skipped rather than failing the
 /// run: not UTF-8, not a regular file, or larger than `MAX_FILE_BYTES`. The checks run on
 /// the opened handle, so a file swapped for something else after the walk is still caught.
@@ -550,6 +577,10 @@ fn read_as(path: &Path, name: &Path) -> Result<Result<(String, FileId), &'static
     if bytes.len() as u64 > MAX_FILE_BYTES {
         return Ok(Err("larger than 10 MB"));
     }
+    // a named symlink counts by either name
+    if !FORCE.load(Ordering::Relaxed) && !is_groovy(name, &bytes) && !is_groovy(path, &bytes) {
+        return Ok(Err("not a Groovy file"));
+    }
     let id = file_id(&meta, &bytes);
     Ok(String::from_utf8(bytes)
         .map(|src| (src, id))
@@ -557,26 +588,15 @@ fn read_as(path: &Path, name: &Path) -> Result<Result<(String, FileId), &'static
 }
 
 /// What a write checks to be sure the path still names the file that was read
-/// (`still_read`). On unix, the device and inode.
-#[cfg(unix)]
-type FileId = (u64, u64);
+/// (`still_read`): the size, the last write time, a hash of the contents and, on unix, the
+/// device and inode. Before writing, the file is read again and all of them must match, so a
+/// file rewritten in place since (an editor saving it) keeps its newer text, and a file swapped
+/// in since must at least hold the same text. Windows has no inode in std (the volume serial
+/// number and file index are behind the unstable `windows_by_handle`), so there the rest has
+/// to do. The hash is std's SipHash, not a cryptographic one; a collision needs a local
+/// attacker racing the write, who could write the file directly anyway.
+type FileId = (u64, u64, u64, (u64, u64));
 
-#[cfg(unix)]
-fn file_id(m: &std::fs::Metadata, _: &[u8]) -> FileId {
-    use std::os::unix::fs::MetadataExt;
-    (m.dev(), m.ino())
-}
-
-/// Elsewhere (Windows), std has no stable file identity (the volume serial number and file
-/// index are behind the unstable `windows_by_handle`), so: the size, the last write time and
-/// a hash of the contents. Before writing, the file is read again and all three must match,
-/// so a file swapped in since must at least hold the same text. The hash is std's SipHash,
-/// not a cryptographic one; a collision needs a local attacker racing the write, who could
-/// write the file directly anyway.
-#[cfg(not(unix))]
-type FileId = (u64, u64, u64);
-
-#[cfg(not(unix))]
 fn file_id(m: &std::fs::Metadata, bytes: &[u8]) -> FileId {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -586,19 +606,24 @@ fn file_id(m: &std::fs::Metadata, bytes: &[u8]) -> FileId {
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map_or(0, |d| d.as_nanos() as u64);
-    (m.len(), modified, h.finish())
+    (m.len(), modified, h.finish(), node(m))
 }
 
-/// Whether `path`, with metadata `m`, is still the file read as `read`.
 #[cfg(unix)]
-fn still_read(_: &Path, m: &std::fs::Metadata, read: FileId) -> std::io::Result<bool> {
-    Ok(file_id(m, &[]) == read)
+fn node(m: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    (m.dev(), m.ino())
 }
 
 #[cfg(not(unix))]
+fn node(_: &std::fs::Metadata) -> (u64, u64) {
+    (0, 0)
+}
+
+/// Whether `path`, with metadata `m`, is still the file read as `read`.
 fn still_read(path: &Path, m: &std::fs::Metadata, read: FileId) -> std::io::Result<bool> {
-    // the size first, so a file swapped for a huge one isn't read
-    Ok(m.len() == read.0 && file_id(m, &std::fs::read(path)?) == read)
+    // the size and inode first, so a file swapped for a huge one isn't read
+    Ok(m.len() == read.0 && node(m) == read.3 && file_id(m, &std::fs::read(path)?) == read)
 }
 
 fn changed() -> std::io::Error {
@@ -1588,14 +1613,7 @@ fn lint_files(
 /// Write `contents` to `path`, a new file or one replaced atomically, as formatting does.
 fn write_new(path: &Path, contents: &str) -> std::io::Result<()> {
     match std::fs::symlink_metadata(path) {
-        Ok(m) => {
-            // elsewhere than unix the identity includes the contents (`file_id`)
-            #[cfg(unix)]
-            let id = file_id(&m, &[]);
-            #[cfg(not(unix))]
-            let id = file_id(&m, &std::fs::read(path)?);
-            write_atomic(path, contents, id)
-        }
+        Ok(m) => write_atomic(path, contents, file_id(&m, &std::fs::read(path)?)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
             let tmp = path.with_file_name(tmp_name(seq));
@@ -1921,6 +1939,34 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         let _ = std::fs::remove_dir_all(&d);
         r.unwrap();
+        assert_eq!(text, "new\n");
+    }
+
+    /// An editor or file watcher rewrites the file in place between the read and the write:
+    /// the same file (same inode on unix), the same size, other text. The newer text stays.
+    #[test]
+    fn a_file_rewritten_in_place_since_the_read_is_not_overwritten() {
+        let _lock = TMP_NAMES.lock();
+        let d = std::env::temp_dir().join(format!("groovyfmt-rewrite-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let a = d.join("A.groovy");
+        std::fs::write(&a, "old\n").unwrap();
+        let (_, read) = read_as(&a, &a).unwrap().unwrap();
+        #[cfg(unix)]
+        let ino = |p: &Path| std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(p).unwrap());
+        #[cfg(unix)]
+        let before = ino(&a);
+        // truncates and writes the same file
+        std::fs::write(&a, "new\n").unwrap();
+        #[cfg(unix)]
+        assert_eq!(ino(&a), before);
+        let renamed = write_atomic(&a, "fmt\n", read).map_err(|e| e.to_string());
+        let in_place = write_in_place(&a, read, "fmt\n").map_err(|e| e.to_string());
+        let text = std::fs::read_to_string(&a).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+        let changed = Err("file changed while formatting".to_string());
+        assert_eq!((renamed, in_place), (changed.clone(), changed));
         assert_eq!(text, "new\n");
     }
 
