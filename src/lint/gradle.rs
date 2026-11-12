@@ -105,17 +105,45 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
 
 /// The major Gradle version of the nearest `gradle/wrapper/gradle-wrapper.properties` in
 /// the script's directory or above it (`distributionUrl=.../gradle-6.9-bin.zip` is 6). A
-/// build pinned below 7.0 runs a Gradle that still has the removed configurations.
+/// build pinned below 7.0 runs a Gradle that still has the removed configurations. Like the
+/// search for `.groovyfmt.toml`, the walk goes up to the filesystem root, so a wrapper in a
+/// directory above the project counts when the project has none. A path that doesn't exist
+/// (an unsaved editor buffer) is walked as written.
 fn wrapper_major(path: &Path) -> Option<u32> {
     let dir = path
         .parent()
         .filter(|d| !d.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-    let props = dir.ancestors().find_map(|d| {
-        std::fs::read_to_string(d.join("gradle/wrapper/gradle-wrapper.properties")).ok()
-    })?;
-    major_version(&props)
+    let props = dir
+        .ancestors()
+        .map(|d| d.join("gradle/wrapper/gradle-wrapper.properties"))
+        .find(|p| p.is_file())?;
+    major_version(&read_small(&props)?)
+}
+
+/// The real file is a few hundred bytes.
+const MAX_WRAPPER_BYTES: u64 = 64 * 1024;
+
+/// `p` if it is a regular file of at most `MAX_WRAPPER_BYTES`, in UTF-8. A FIFO or device
+/// is never opened (opening a FIFO waits for a writer); one swapped in between the check and
+/// the open is the race the source reads accept too (see `write_in_place`).
+fn read_small(p: &Path) -> Option<String> {
+    use std::io::Read;
+    let ok = |m: std::fs::Metadata| m.is_file() && m.len() <= MAX_WRAPPER_BYTES;
+    if !std::fs::metadata(p).is_ok_and(ok) {
+        return None;
+    }
+    let f = std::fs::File::open(p).ok()?;
+    if !f.metadata().is_ok_and(ok) {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    f.take(MAX_WRAPPER_BYTES + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > MAX_WRAPPER_BYTES {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
 }
 
 fn major_version(props: &str) -> Option<u32> {
@@ -275,6 +303,21 @@ mod tests {
         assert_eq!((run(&root), run(&sub), run(&sub.join("x"))), (1, 0, 0));
         wrapper(&sub, "7.0-rc-1");
         assert_eq!(run(&sub), 1);
+        // an oversized file isn't read: the report stays
+        let props = sub.join("gradle/wrapper/gradle-wrapper.properties");
+        let mut big = b"distributionUrl=https\\://x/gradle-6.9-bin.zip\n".to_vec();
+        big.resize(super::MAX_WRAPPER_BYTES as usize + 1, b'#');
+        std::fs::write(&props, big).unwrap();
+        assert_eq!(run(&sub), 1);
+        // a FIFO is never opened (the open would wait for a writer, hanging this test): the
+        // walk passes it by and finds the 8.5 wrapper above
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(&props).unwrap();
+            let made = std::process::Command::new("mkfifo").arg(&props).status();
+            assert!(made.is_ok_and(|s| s.success()), "mkfifo");
+            assert_eq!(run(&sub), 1);
+        }
         std::fs::remove_dir_all(&root).unwrap();
     }
 
