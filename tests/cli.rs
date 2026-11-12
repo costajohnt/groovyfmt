@@ -2939,3 +2939,220 @@ fn baseline_options_need_lint() {
         assert_eq!(run(&d.0, args, None).status.code(), Some(2), "{args:?}");
     }
 }
+
+/// The UnusedPrivateMethod and UnusedPrivateField reports of a `--lint` run, as
+/// `file:line: name`.
+fn unused_private(o: &Output) -> Vec<String> {
+    stdout(o)
+        .lines()
+        .filter(|l| l.contains(": UnusedPrivate"))
+        .map(|l| {
+            let mut parts = l.split(':');
+            let (file, line) = (parts.next().unwrap(), parts.next().unwrap());
+            let name = l
+                .split("The private ")
+                .nth(1)
+                .unwrap()
+                .split(' ')
+                .nth(1)
+                .unwrap();
+            format!("{file}:{line}: {name}")
+        })
+        .collect()
+}
+
+/// A project (a directory holding `.git`) with `files` in it.
+fn project(name: &str, files: &[(&str, &str)]) -> Dir {
+    let d = Dir::new(name);
+    d.write(".git/HEAD", "ref: refs/heads/main\n");
+    for (rel, text) in files {
+        d.write(rel, text);
+    }
+    d
+}
+
+#[test]
+fn private_members_used_from_another_file_are_not_reported() {
+    // reduced from real projects where another file uses the member; each owner also has
+    // one that nothing uses, which is still reported
+    let cases: &[(&str, &str, &str, &str)] = &[
+        // a method called on the class's instances
+        (
+            "ClassGenerator.groovy",
+            "class ClassGenerator {\n    private def generateMethods(a) { a }\n    private def neverCalled() { 1 }\n}\n",
+            "AppGenerator.groovy",
+            "class AppGenerator {\n    def run() {\n        List<ClassGenerator> classes = [new ClassGenerator()]\n        classes.each({ it.generateMethods(1) })\n    }\n}\n",
+        ),
+        (
+            "MethodGenerator.groovy",
+            "class MethodGenerator {\n    private def addEvents() { 1 }\n    private def neverCalled() { 1 }\n}\n",
+            "ClassGenerator.groovy",
+            "class ClassGenerator {\n    def gen(List<MethodGenerator> ms) {\n        ms.each { it.addEvents() }\n    }\n}\n",
+        ),
+        // a Grails service, through its bean name
+        (
+            "PostProcessingService.groovy",
+            "class PostProcessingService {\n    private List getLayerSampleInfo(String t) { [t] }\n    private List neverCalled() { [] }\n}\n",
+            "OccurrenceController.groovy",
+            "class OccurrenceController {\n    def postProcessingService\n    def show() {\n        [info: postProcessingService.getLayerSampleInfo('x')]\n    }\n}\n",
+        ),
+        // two methods of a class mixed in with @Mixin, called without a receiver
+        (
+            "BaseController.groovy",
+            "class BaseController {\n    private authenticatedAccount(Closure c) { c(1) }\n    private authenticatedAdminPage(Closure c) { c(1, 2) }\n    private neverCalled() { 1 }\n}\n",
+            "AccountController.groovy",
+            "@Mixin(BaseController)\nclass AccountController {\n    def index() {\n        authenticatedAccount { a ->\n            a\n        }\n    }\n    def page() {\n        authenticatedAdminPage({ a, p -> p })\n    }\n}\n",
+        ),
+        // fields read from another class
+        (
+            "Repository.groovy",
+            "class Repository {\n    private List packages = []\n    private int neverRead\n}\n",
+            "Sync.groovy",
+            "class Sync {\n    def check(Repository existingRepo) {\n        existingRepo.packages.size()\n    }\n}\n",
+        ),
+        (
+            "Constants.groovy",
+            "class Constants {\n    private static final int DEFAULT_HEALTHY_THRESHOLD = 2\n    private static final int neverRead = 3\n}\n",
+            "OpSpec.groovy",
+            "class OpSpec {\n    def 'uses it'() {\n        expect:\n        Constants.DEFAULT_HEALTHY_THRESHOLD == 2\n    }\n}\n",
+        ),
+        // a fixture's field another spec asserts on by name
+        (
+            "SimpleBean.groovy",
+            "class SimpleBean {\n    private String privateField = 'x'\n    private String neverRead\n}\n",
+            "BeanMarshallerSpec.groovy",
+            "class BeanMarshallerSpec {\n    def 'private fields are left out'() {\n        given:\n        def json = marshal(new SimpleBean())\n        expect:\n        !json.containsKey('privateField')\n    }\n}\n",
+        ),
+    ];
+    for (i, (owner, owner_src, user, user_src)) in cases.iter().enumerate() {
+        let d = project(
+            &format!("xfile{i}"),
+            &[(owner, owner_src), (user, user_src)],
+        );
+        let all = unused_private(&run(&d.0, &["--lint"], None));
+        assert_eq!(all.len(), 1, "{owner}: {all:?}");
+        assert!(
+            all[0].ends_with(" neverCalled") || all[0].ends_with(" neverRead"),
+            "{all:?}"
+        );
+        // the same answer whichever files are named: the project is the other files
+        assert_eq!(unused_private(&run(&d.0, &["--lint", owner], None)), all);
+        assert_eq!(
+            unused_private(&run(&d.0, &["--lint", owner, user], None)),
+            all
+        );
+        // without the other file, the member is unused
+        std::fs::remove_file(d.0.join(user)).unwrap();
+        let alone = unused_private(&run(&d.0, &["--lint", owner], None));
+        assert_eq!(
+            alone.len(),
+            if owner == &"BaseController.groovy" {
+                3
+            } else {
+                2
+            },
+            "{alone:?}"
+        );
+    }
+}
+
+#[test]
+fn private_members_need_a_file_that_names_their_class() {
+    let d = project(
+        "xfile-names",
+        &[
+            (
+                "src/A.groovy",
+                "class A {\n    private void run() { }\n    private int count\n}\n",
+            ),
+            // another class with the same names: not a use
+            (
+                "src/B.groovy",
+                "class B {\n    def run() { }\n    def f(x) { x.count + x.run() }\n}\n",
+            ),
+            // a copy of A in another module calls its own `run`
+            (
+                "other/A.groovy",
+                "class A {\n    private void run() { }\n    def f() { this.run() }\n}\n",
+            ),
+        ],
+    );
+    let want = ["src/A.groovy:2: run", "src/A.groovy:3: count"];
+    assert_eq!(unused_private(&run(&d.0, &["--lint"], None)), want);
+    assert_eq!(
+        unused_private(&run(&d.0, &["--lint", "src/A.groovy"], None)),
+        want
+    );
+    assert_eq!(
+        unused_private(&run(&d.0.join("src"), &["--lint", "A.groovy"], None)),
+        ["A.groovy:2: run", "A.groovy:3: count"]
+    );
+    // a suppression comment and a baseline still hold back what is reported
+    d.write(
+        "src/A.groovy",
+        "class A {\n    private void run() { } // groovyfmt-ignore UnusedPrivateMethod\n    private int count\n}\n",
+    );
+    assert_eq!(
+        unused_private(&run(&d.0, &["--lint"], None)),
+        ["src/A.groovy:3: count"]
+    );
+    let o = run(&d.0, &["--lint", "--write-baseline"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    let base = ["--lint", "--baseline", ".groovyfmt-baseline.json"];
+    let o = run(&d.0, &[&base[..], &["src/A.groovy"]].concat(), None);
+    assert_eq!(o.status.code(), Some(0), "{}", stdout(&o));
+    assert!(stderr(&o).contains("1 in the baseline"), "{}", stderr(&o));
+}
+
+#[test]
+fn excluded_files_and_files_past_the_caps_decide_nothing() {
+    let owner = "class A {\n    private void run() { }\n}\n";
+    let user = "class B {\n    def f(A a) { a.run() }\n}\n";
+    // an excluded file is not the project's, and a use there doesn't count
+    let d = project(
+        "xfile-exclude",
+        &[("A.groovy", owner), ("gen/B.groovy", user)],
+    );
+    assert_eq!(
+        unused_private(&run(&d.0, &["--lint", "A.groovy"], None)),
+        [] as [&str; 0]
+    );
+    d.write(".groovyfmt.toml", "exclude = [\"gen\"]\n");
+    assert_eq!(
+        unused_private(&run(&d.0, &["--lint", "A.groovy"], None)),
+        ["A.groovy:2: run"]
+    );
+    // a file over the size limit can't be scanned, so the rules stay quiet
+    let d = project("xfile-cap", &[("A.groovy", owner)]);
+    assert_eq!(
+        unused_private(&run(&d.0, &["--lint", "A.groovy"], None)),
+        ["A.groovy:2: run"]
+    );
+    d.write("Big.groovy", &" ".repeat(10 * 1024 * 1024 + 1));
+    let o = run(&d.0, &["--lint", "A.groovy"], None);
+    assert_eq!(unused_private(&o), [] as [&str; 0], "{}", stdout(&o));
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinks_out_of_the_project_are_not_followed() {
+    let d = Dir::new("xfile-link");
+    d.write(
+        "outside/B.groovy",
+        "class B {\n    def f(A a) { a.run() }\n}\n",
+    );
+    d.write("proj/.git/HEAD", "");
+    d.write(
+        "proj/A.groovy",
+        "class A {\n    private void run() { }\n}\n",
+    );
+    std::os::unix::fs::symlink(d.0.join("outside"), d.0.join("proj/dir")).unwrap();
+    std::os::unix::fs::symlink(d.0.join("outside/B.groovy"), d.0.join("proj/L.groovy")).unwrap();
+    let proj = d.0.join("proj");
+    let want = ["A.groovy:2: run"];
+    assert_eq!(
+        unused_private(&run(&proj, &["--lint", "A.groovy"], None)),
+        want
+    );
+    assert_eq!(unused_private(&run(&proj, &["--lint", "."], None)), want);
+}

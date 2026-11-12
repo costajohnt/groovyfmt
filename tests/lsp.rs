@@ -777,6 +777,37 @@ fn garbage_bytes_end_the_session_cleanly() {
     }
 }
 
+#[test]
+fn private_members_used_in_other_files_match_the_cli_and_follow_saves() {
+    let d = Dir::new("elsewhere");
+    d.write(".git/HEAD", "");
+    let text = "class A {\n    private void run() { }\n    private int count\n}\n";
+    let path = d.write("src/A.groovy", text);
+    d.write("src/B.groovy", "class B {\n    def f(A a) { a.run() }\n}\n");
+    let u = uri(&path);
+    let mut srv = Server::start(&d.0);
+    srv.initialize("[]");
+    let codes = |ds: &[Value]| -> Vec<String> { summary(ds).into_iter().map(|d| d.0).collect() };
+    assert_eq!(codes(&srv.open(&u, text)), ["UnusedPrivateField"]);
+    let (_, lint) = cli(&d.0, &["--lint", "src/A.groovy"], "");
+    assert!(
+        lint.contains("UnusedPrivateField") && !lint.contains("UnusedPrivateMethod"),
+        "{lint}"
+    );
+    // B stops using it; a save makes the server look at the other files again
+    d.write("src/B.groovy", "class B {\n    def f(A a) { a }\n}\n");
+    srv.notify(
+        "textDocument/didSave",
+        &format!("{{\"textDocument\":{{\"uri\":{}}}}}", js(&u)),
+    );
+    assert_eq!(
+        codes(&srv.diagnostics(&u)),
+        ["UnusedPrivateMethod", "UnusedPrivateField"]
+    );
+    srv.notify("exit", "null");
+    srv.finish();
+}
+
 /// A fix-all code action's resulting text, if the server offers one.
 fn fix_all(srv: &mut Server, u: &str, text: &str) -> Option<String> {
     let range0 = "{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":0}}";
