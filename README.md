@@ -500,7 +500,7 @@ The action installs the release binary for the runner (Linux or macOS, x64 or ar
 - run: groovyfmt --lint --output-format github
 ```
 
-`--output-format github` turns findings into annotations on the pull request diff. Without `version`, the action installs the release named by the `Cargo.toml` at the ref you use, so a release tag installs that release and `main` the latest one.
+`--output-format github` turns findings into annotations on the pull request diff. Without `version`, the action installs the release named by the `Cargo.toml` at the ref you use, so a release tag installs that release. A ref whose version has no release fails with a message naming it: `main` between a version bump and its release, or `v0.9.0`, whose release run failed. For the newest release, set `version: latest`.
 
 On a Windows runner the action's steps run in bash (Git Bash, which GitHub's Windows images have) and unpack the `.zip` with PowerShell's `Expand-Archive`; later steps find `groovyfmt` on `PATH` in `pwsh`, `cmd` or `bash`. This has not run on a GitHub Windows runner yet.
 

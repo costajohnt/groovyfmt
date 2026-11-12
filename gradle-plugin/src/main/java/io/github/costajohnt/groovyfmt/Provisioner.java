@@ -273,8 +273,10 @@ final class Provisioner {
                 continue;
             }
             if (status != 200) {
-                String hint = status == 404 || status == 401 || status == 403
-                        ? (token == null ? ". While the repository is private, set GROOVYFMT_GITHUB_TOKEN (or GITHUB_TOKEN) to a token that can read it." : ". Check that the token can read " + REPO + ".")
+                String hint = status == 404
+                        ? ". That release may not exist (a plugin built from a commit ahead of the last release asks for an unreleased version); set groovyfmt { version = '...' } to one listed at https://github.com/" + REPO + "/releases."
+                        : status == 401 || status == 403
+                        ? (token == null ? ". GitHub may be limiting anonymous downloads; set GROOVYFMT_GITHUB_TOKEN (or GITHUB_TOKEN)." : ". Check that the token can read " + REPO + ".")
                         : "";
                 throw new GradleException("groovyfmt: downloading " + stripQuery(current) + " failed with HTTP " + status + hint);
             }

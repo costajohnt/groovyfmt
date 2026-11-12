@@ -195,6 +195,36 @@ jobs:
         with:
           version: ${{ steps.setup.outputs.version }}
           args: --check --output-format github ci-sample/A.groovy
+      # No version input: the release named by the action ref's Cargo.toml. First a ref at
+      # the latest release, then one whose version has no release (a tag whose release run
+      # failed, or main ahead of the last release), which must fail rather than install another.
+      - name: the action ref's Cargo.toml names the latest release
+        env:
+          INSTALLED: ${{ steps.setup.outputs.version }}
+        run: |
+          sed -i.bak "s/^version = \".*\"$/version = \"${INSTALLED#v}\"/" Cargo.toml
+          grep -x "version = \"${INSTALLED#v}\"" Cargo.toml
+      - id: from-ref
+        uses: ./
+        with:
+          args: ""
+      - name: it installed that release
+        env:
+          INSTALLED: ${{ steps.setup.outputs.version }}
+          GOT: ${{ steps.from-ref.outputs.version }}
+        run: test "$GOT" = "$INSTALLED"
+      - name: the action ref's Cargo.toml names a version with no release
+        run: |
+          sed -i.bak 's/^version = ".*"$/version = "0.0.0"/' Cargo.toml
+          grep -x 'version = "0.0.0"' Cargo.toml
+      - id: no-release
+        continue-on-error: true
+        uses: ./
+        with:
+          args: ""
+      - name: the install failed
+        if: steps.no-release.outcome != 'failure'
+        run: exit 1
 
   npm:
     name: npm (${{ matrix.os }})

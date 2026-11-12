@@ -103,6 +103,10 @@ const PIPELINE_ONLY_OPTIONS: &[&str] = &[
 ];
 /// The ways a stage can say what it runs; it needs exactly one.
 const RUNS: &[&str] = &["steps", "stages", "parallel", "matrix"];
+/// Blocks nested deeper than this (`dir { dir { ... } }`, stages in stages, `allOf` in
+/// `anyOf`) aren't checked: the checks recurse, and a worker thread's stack is 2 MiB.
+/// Real pipelines nest a few levels.
+const MAX_DEPTH: usize = 64;
 
 /// A statement read as a method call: `name args`, `name(args)`, `name(args) { body }`,
 /// `name { body }` or a bare `name`.
@@ -299,11 +303,14 @@ fn pipeline(src: &str, p: Node, v: &mut Vec<Violation>) {
             ));
         }
     }
-    children(src, &secs, false, v);
+    children(src, &secs, false, 0, v);
 }
 
 /// Checks the sections found in a pipeline, stage or matrix.
-fn children(src: &str, secs: &[Call], in_stage: bool, v: &mut Vec<Violation>) {
+fn children(src: &str, secs: &[Call], in_stage: bool, depth: usize, v: &mut Vec<Violation>) {
+    if depth > MAX_DEPTH {
+        return;
+    }
     for c in secs {
         // the validator rejects these when empty
         if matches!(
@@ -333,21 +340,21 @@ fn children(src: &str, secs: &[Call], in_stage: bool, v: &mut Vec<Violation>) {
             "options" => options(src, c, in_stage, v),
             "when" => {
                 if let Some(b) = c.body {
-                    when(src, b, v);
+                    when(src, b, depth + 1, v);
                 }
             }
             "post" => {
                 if let Some(b) = c.body {
                     for cond in sections(src, b, POST, "post { }", v) {
                         if let Some(b) = cond.body {
-                            steps(src, b, v);
+                            steps(src, b, depth + 1, v);
                         }
                     }
                 }
             }
             "stages" | "parallel" => {
                 if let Some(b) = c.body {
-                    stages(src, c.name, b, v);
+                    stages(src, c.name, b, depth + 1, v);
                 }
             }
             "matrix" => {
@@ -362,12 +369,12 @@ fn children(src: &str, secs: &[Call], in_stage: bool, v: &mut Vec<Violation>) {
                             "matrix { } has no `stages`, which it requires".into(),
                         ));
                     }
-                    children(src, &secs, true, v);
+                    children(src, &secs, true, depth + 1, v);
                 }
             }
             "steps" => {
                 if let Some(b) = c.body {
-                    steps(src, b, v);
+                    steps(src, b, depth + 1, v);
                 }
             }
             _ => {}
@@ -375,7 +382,7 @@ fn children(src: &str, secs: &[Call], in_stage: bool, v: &mut Vec<Violation>) {
     }
 }
 
-fn stages(src: &str, what: &str, body: Node, v: &mut Vec<Violation>) {
+fn stages(src: &str, what: &str, body: Node, depth: usize, v: &mut Vec<Violation>) {
     let mut names = HashSet::new();
     let mut any = false;
     for s in statements(body) {
@@ -402,7 +409,7 @@ fn stages(src: &str, what: &str, body: Node, v: &mut Vec<Violation>) {
             continue;
         }
         any = true;
-        if let Some(n) = stage(src, &c, v)
+        if let Some(n) = stage(src, &c, depth, v)
             && !names.insert(n.clone())
         {
             v.push(at(
@@ -424,7 +431,7 @@ fn stages(src: &str, what: &str, body: Node, v: &mut Vec<Violation>) {
 }
 
 /// Checks a stage; returns its name when it's a valid literal.
-fn stage(src: &str, c: &Call, v: &mut Vec<Violation>) -> Option<String> {
+fn stage(src: &str, c: &Call, depth: usize, v: &mut Vec<Violation>) -> Option<String> {
     let name = match c.args.first() {
         None => {
             v.push(at(
@@ -476,13 +483,16 @@ fn stage(src: &str, c: &Call, v: &mut Vec<Violation>) -> Option<String> {
             ),
         ));
     }
-    children(src, &secs, true, v);
+    children(src, &secs, true, depth, v);
     name
 }
 
 /// Plain Groovy statements directly in `steps { }` (or a post condition) are rejected: only
 /// steps may go there, and code needs a `script { }` around it.
-fn steps(src: &str, body: Node, v: &mut Vec<Violation>) {
+fn steps(src: &str, body: Node, depth: usize, v: &mut Vec<Violation>) {
+    if depth > MAX_DEPTH {
+        return;
+    }
     let all = statements(body);
     for &s in &all {
         // steps the validator blocks in steps (BlockedStepsAndMethodCalls)
@@ -505,7 +515,7 @@ fn steps(src: &str, body: Node, v: &mut Vec<Violation>) {
             && c.name != "script"
             && let Some(b) = c.body
         {
-            steps(src, b, v);
+            steps(src, b, depth + 1, v);
             continue;
         }
         let what = match s.kind() {
@@ -532,7 +542,10 @@ fn steps(src: &str, body: Node, v: &mut Vec<Violation>) {
     }
 }
 
-fn when(src: &str, body: Node, v: &mut Vec<Violation>) {
+fn when(src: &str, body: Node, depth: usize, v: &mut Vec<Violation>) {
+    if depth > MAX_DEPTH {
+        return;
+    }
     for s in statements(body) {
         let Some(c) = call(s, src) else {
             v.push(at(
@@ -558,7 +571,7 @@ fn when(src: &str, body: Node, v: &mut Vec<Violation>) {
         } else if matches!(c.name, "allOf" | "anyOf" | "not")
             && let Some(b) = c.body
         {
-            when(src, b, v);
+            when(src, b, depth + 1, v);
         }
     }
 }
@@ -842,5 +855,38 @@ mod tests {
                 ("JenkinsAgentForm", 13),
             ]
         );
+    }
+
+    #[test]
+    fn deep_nesting_is_checked_to_a_limit_without_overflowing() {
+        // a mistake n blocks down: found at 3, not checked at 5,000, and no stack overflow
+        let nest = |open: &str, inner: &str, close: &str, n| {
+            format!("{}{inner}{}", open.repeat(n), close.repeat(n))
+        };
+        let stage = |body: &str| {
+            format!("pipeline {{\n agent any\n stages {{\n  stage('a') {{ {body} }}\n }}\n}}\n")
+        };
+        for (n, found) in [(3, true), (5_000, false)] {
+            for (src, rule) in [
+                (
+                    in_steps(&nest("dir('x') { ", "def y = 1", " }", n)),
+                    "JenkinsScriptRequired",
+                ),
+                (
+                    stage(&nest("stages { stage('s') { ", "x = 1", " } }", n)),
+                    "JenkinsStatementOutsideSection",
+                ),
+                (
+                    stage(&format!(
+                        "when {{ {} }}\n   steps {{ echo 'a' }}",
+                        nest("allOf { ", "onBranch 'x'", " }", n)
+                    )),
+                    "JenkinsUnknownWhenCondition",
+                ),
+            ] {
+                let v = rules(&src);
+                assert_eq!(v.iter().any(|r| r.0 == rule), found, "{rule} {n}: {v:?}");
+            }
+        }
     }
 }

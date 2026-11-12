@@ -589,6 +589,34 @@ fn lint_fix_json_reports_fixed_files() {
     assert!(s.ends_with(&(r#""summary":{"files":2,"unchanged":1,"would_reformat":0,"reformatted":0,"fixed":1,"skipped":0,"errors":0,"diagnostics":3}}"#.to_owned() + "\n")), "{s}");
 }
 
+#[test]
+fn lint_survives_a_huge_data_table_row_and_deeply_nested_steps() {
+    // both used to overflow a worker's stack, aborting the run and losing every file's results
+    let d = Dir::new("lintdeep");
+    let row = vec!["a"; 50_000].join("|");
+    d.write(
+        "BigSpec.groovy",
+        &format!("class BigSpec extends Specification {{\n    def \"f\"() {{\n        expect:\n        x\n        where:\n        {row}\n    }}\n}}\n"),
+    );
+    let steps = format!(
+        "{}echo 'hi'{}",
+        "dir('x') { ".repeat(5_000),
+        " }".repeat(5_000)
+    );
+    d.write(
+        "Jenkinsfile",
+        &format!("pipeline {{\n    agent any\n    stages {{\n        stage('a') {{\n            steps {{\n                {steps}\n            }}\n        }}\n    }}\n}}\n"),
+    );
+    d.write("A.groovy", "import a.Unused\n");
+    let o = run(&d.0, &["--lint"], None);
+    assert_eq!(o.status.code(), Some(1), "{}", stderr(&o));
+    assert!(
+        stdout(&o).contains("A.groovy:1:1: UnusedImport"),
+        "{}",
+        stdout(&o)
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn lint_fix_writes_like_formatting_does() {

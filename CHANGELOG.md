@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `--lint` (and `--lsp`) could die of a stack overflow, losing the results for every file in the run, on a Spock `where:` row of tens of thousands of cells or a Jenkinsfile with thousands of nested blocks (`dir { dir { ... } }`, stages in stages, `allOf` in `allOf`). Data table cells are now counted without recursion, and Jenkins blocks nested more than 64 deep are not checked. Lint output on the corpus is unchanged.
+- The GitHub Action, with no `version` input, failed with only `release not found` when the version in its ref's `Cargo.toml` has no release (`@v0.9.0`, whose release run failed, or `@main` after a version bump and before its release). It still fails there rather than install a release the ref didn't name, but the error now names the missing release and says to use a release tag or `version: latest`. The README no longer says `main` installs the latest release, and the CI `action` job now runs the action from a ref at the latest release and from one with no release. The Gradle plugin's message for a missing release (HTTP 404) no longer says the repository is private; it says the release may not exist and how to pick one.
+
 ## 0.9.2 (2026-11-12)
 
 ### Fixed
