@@ -9,7 +9,8 @@ inputs:
   version:
     description: >-
       Release to install, such as 0.8.0 or v0.8.0, or "latest". Default: the
-      release matching the version of the action ref you use (its Cargo.toml).
+      release matching the version of the action ref you use (its Cargo.toml),
+      which fails if that version has no release.
     required: false
     default: ""
   args:
@@ -50,9 +51,13 @@ runs:
             exit 1 ;;
         esac
         version=$INPUT_VERSION
+        from="the version input"
         if [ -z "$version" ]; then
-          # ponytail: a release tag's Cargo.toml version equals the tag (check-release-tag.sh), so this is the action ref's release.
+          # A release tag's Cargo.toml version equals the tag (check-release-tag.sh), so this is the
+          # action ref's release. A tag whose release run failed, or a branch ahead of the last
+          # release, has none: that fails below rather than install a release the ref didn't name.
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$GITHUB_ACTION_PATH/Cargo.toml" | head -n 1)
+          from="the Cargo.toml of the action ref"
         fi
         if [ "$version" = latest ]; then
           tag=$(gh release view --repo "$repo" --json tagName --jq .tagName)
@@ -60,6 +65,10 @@ runs:
           tag=v${version#v}
         else
           echo "::error::version must be like 0.8.0, v0.8.0 or latest"
+          exit 1
+        fi
+        if ! gh release view "$tag" --repo "$repo" --json tagName > /dev/null; then
+          echo "::error::No groovyfmt release $tag (the version from $from) at https://github.com/$repo/releases. Use the action at a release tag, or set version to latest or to a version that has a release."
           exit 1
         fi
         # Windows gets a .zip; every step here runs in bash, which is Git Bash on Windows runners
