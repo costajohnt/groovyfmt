@@ -288,11 +288,16 @@ pub(super) fn check(
                         && uses(&idx, name, all.clone(), at_node.start_byte()) == 0
                         && !maybe_dynamic(name)
                     {
-                        v.push(at(
-                            at_node,
-                            "UnusedPrivateField",
-                            format!("The private field {name} is never used; remove it, or use it"),
-                        ));
+                        v.push(Violation {
+                            owner: owner(src, d),
+                            ..at(
+                                at_node,
+                                "UnusedPrivateField",
+                                format!(
+                                    "The private field {name} is never used; remove it, or use it"
+                                ),
+                            )
+                        });
                     }
                 }
             }
@@ -316,11 +321,16 @@ pub(super) fn check(
                 if uses(&idx, name, all.clone(), n.start_byte()) + property_uses == 0
                     && !maybe_dynamic(name)
                 {
-                    v.push(at(
-                        n,
-                        "UnusedPrivateMethod",
-                        format!("The private method {name} is never called; remove it, or call it"),
-                    ));
+                    v.push(Violation {
+                        owner: owner(src, d),
+                        ..at(
+                            n,
+                            "UnusedPrivateMethod",
+                            format!(
+                                "The private method {name} is never called; remove it, or call it"
+                            ),
+                        )
+                    });
                 }
             }
             _ => {
@@ -330,6 +340,27 @@ pub(super) fn check(
             }
         }
     }
+}
+
+/// The name of the class, trait, enum, interface or record declaring `d`.
+fn owner(src: &str, d: Node) -> Option<String> {
+    let mut p = d.parent();
+    while let Some(x) = p {
+        if matches!(
+            x.kind(),
+            "class_declaration"
+                | "trait_declaration"
+                | "enum_declaration"
+                | "interface_declaration"
+                | "record_declaration"
+        ) {
+            return x
+                .child_by_field_name("name")
+                .map(|n| text(n, src).to_string());
+        }
+        p = x.parent();
+    }
+    None
 }
 
 /// `final ClassNode name` with no value: the grammar reads `ClassNode` as the declared
@@ -374,14 +405,14 @@ fn wanted(src: &str, decls: &[Node]) -> Vec<String> {
 }
 
 /// `Foo` for `getFoo`, `isFoo` and `setFoo`.
-fn property(name: &str) -> Option<&str> {
+pub(super) fn property(name: &str) -> Option<&str> {
     ["get", "is", "set"]
         .iter()
         .find_map(|p| name.strip_prefix(p))
         .filter(|r| r.starts_with(|c: char| c.is_ascii_uppercase()))
 }
 
-fn lcfirst(s: &str) -> String {
+pub(super) fn lcfirst(s: &str) -> String {
     let mut c = s.chars();
     c.next()
         .map_or_else(String::new, |f| f.to_lowercase().chain(c).collect())
@@ -401,7 +432,8 @@ fn declarators<'a>(src: &'a str, d: Node<'a>) -> Vec<(&'a str, Node<'a>)> {
 }
 
 /// UnusedVariable: a local whose name never appears after it in its scope (the enclosing
-/// block, closure or switch, which ends at `end`). `_` is exempt; so are tuple declarations
+/// block, closure or switch, which ends at `end`). `_`, `ignore` and `ignored` are exempt, as
+/// is Spock's `E e = thrown()`; so are tuple declarations
 /// (`def (a, b) = f()`), where an unused part is usually deliberate, and a script's
 /// top-level variables, which snippets and `evaluate`d scripts leave for the reader.
 fn local(
@@ -412,10 +444,11 @@ fn local(
     v: &mut Vec<Violation>,
 ) {
     for (name, n) in declarators(src, d) {
-        if name == "_" {
+        // `ignored` says it on purpose, as for EmptyCatchBlock
+        if matches!(name, "_" | "ignore" | "ignored") {
             continue;
         }
-        if uses(idx, name, n.end_byte()..end, usize::MAX) == 0 {
+        if uses(idx, name, n.end_byte()..end, usize::MAX) == 0 && !spock_thrown(src, n) {
             v.push(at(
                 n,
                 "UnusedVariable",
@@ -423,6 +456,20 @@ fn local(
             ));
         }
     }
+}
+
+/// Spock's `IOException e = thrown()`: the declared type is the exception expected, so the
+/// variable is there for its type.
+fn spock_thrown(src: &str, name: Node) -> bool {
+    name.parent()
+        .and_then(|p| p.child_by_field_name("value"))
+        .is_some_and(|v| {
+            v.kind() == "method_invocation"
+                && v.child_by_field_name("function")
+                    .is_some_and(|f| text(f, src) == "thrown")
+                && v.child_by_field_name("arguments")
+                    .is_none_or(|a| a.named_child_count() == 0)
+        })
 }
 
 #[cfg(test)]
@@ -500,6 +547,15 @@ mod tests {
                 "UnusedVariable"
             ),
             vec![5]
+        );
+        // Spock's `E e = thrown()` is there for its type; `thrown(E)` and other calls are not,
+        // and `ignored` is unused on purpose
+        assert_eq!(
+            rules(
+                "def f() {\n  IOException e = thrown()\n  def x = thrown(IOException)\n  def y = other()\n  def ignored = g()\n}\n",
+                "UnusedVariable"
+            ),
+            vec![3, 4]
         );
         // a use before the declaration is another variable
         assert_eq!(

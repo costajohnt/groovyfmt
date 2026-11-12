@@ -343,6 +343,9 @@ struct Server {
     utf8: bool,
     /// Open `file:` documents by URI.
     docs: HashMap<String, Doc>,
+    /// The projects' other files, as on the command line; read again after a save or a
+    /// change the client watched
+    projects: lint::Projects,
 }
 
 type Reply = Result<String, (i32, String)>;
@@ -390,10 +393,11 @@ impl Server {
             ) {
                 (_, Err(e)) => vec![diag(0, 0, 1, "baseline", &e)],
                 (Ok(vs), Ok(base)) => {
-                    let vs: Vec<_> = vs
+                    let mut vs: Vec<_> = vs
                         .into_iter()
                         .filter(|v| cfg.rule_enabled(v.rule))
                         .collect();
+                    self.projects.filter(&doc.path, &doc.text, &mut vs);
                     // what the config's baseline holds is not reported, as on the command line
                     let vs = match &base {
                         Some((b, rel)) => b.filter(rel, &doc.text, vs).0,
@@ -666,9 +670,14 @@ impl Server {
                     self.notify_diagnostics(&uri, None, "");
                 }
             }
-            "textDocument/didSave" => self.publish(&uri),
+            // a file on disk changed: what the other files use may have too
+            "textDocument/didSave" => {
+                self.projects.clear();
+                self.publish(&uri);
+            }
             // a config may have changed: diagnostics again for every open document
             "workspace/didChangeConfiguration" | "workspace/didChangeWatchedFiles" => {
+                self.projects.clear();
                 let uris: Vec<String> = self.docs.keys().cloned().collect();
                 for u in uris {
                     self.publish(&u);
@@ -701,6 +710,7 @@ fn respond(id: &str, reply: Reply) {
 /// Serve until `exit` or the end of input: exit status 0 after `shutdown`, else 1.
 pub fn run(fixed: Option<Config>, indent: Option<usize>) -> i32 {
     let mut s = Server {
+        projects: lint::Projects::new(fixed.clone()),
         fixed,
         indent,
         initialized: false,

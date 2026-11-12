@@ -379,7 +379,7 @@ pub const RULES: &[Rule] = &[
     Rule {
         name: "UnusedPrivateField",
         default: true,
-        description: "a private field whose name appears nowhere else in the file (not one with an annotation, serialVersionUID, or in a class whose annotation reads fields)",
+        description: "a private field whose name appears nowhere else in the file, nor in another file of the project that names its class (not one with an annotation, serialVersionUID, or in a class whose annotation reads fields)",
         why: "A private field nothing reads is dead state: left over from a refactoring, or a sign that the code meant to use it doesn't.",
         bad: "class Client {\n    private int retries = 3\n    def get(url) { url.toURL().text }\n}",
         good: "class Client {\n    def get(url) { url.toURL().text }\n}",
@@ -388,7 +388,7 @@ pub const RULES: &[Rule] = &[
     Rule {
         name: "UnusedPrivateMethod",
         default: true,
-        description: "a private method whose name appears nowhere else in the file (for getX/isX/setX, nor the property x)",
+        description: "a private method whose name appears nowhere else in the file (for getX/isX/setX, nor the property x), nor in another file of the project that names its class",
         why: "A private method nothing calls is dead code that still has to be read and maintained.",
         bad: "class Client {\n    def get(url) { url.toURL().text }\n    private String trimmed(s) { s.trim() }\n}",
         good: "class Client {\n    def get(url) { url.toURL().text }\n}",
@@ -397,7 +397,7 @@ pub const RULES: &[Rule] = &[
     Rule {
         name: "UnusedVariable",
         default: true,
-        description: "a local variable whose name never appears after its declaration in its block (not a script's top-level variable, `_`, an annotated one, or a `def (a, b)` tuple)",
+        description: "a local variable whose name never appears after its declaration in its block (not a script's top-level variable, `_`, `ignored`, Spock's `E e = thrown()`, an annotated one, or a `def (a, b)` tuple)",
         why: "A variable nothing reads is dead code, or the sign of a typo: the code meant to use it and uses something else.",
         bad: "def total(items) {\n    def count = items.size()\n    items.sum()\n}",
         good: "def total(items) {\n    items.sum()\n}",
@@ -498,7 +498,7 @@ pub const RULES: &[Rule] = &[
     Rule {
         name: "GradleRemovedConfiguration",
         default: true,
-        description: "compile, runtime, testCompile or testRuntime dependencies (removed in Gradle 7.0)",
+        description: "compile, runtime, testCompile or testRuntime dependencies (removed in Gradle 7.0), unless the Gradle wrapper pins an older Gradle",
         why: "`compile`, `runtime`, `testCompile` and `testRuntime` were removed in Gradle 7.0; the build fails on a current Gradle.",
         bad: "dependencies {\n    compile 'org.slf4j:slf4j-api:2.0.9'\n}",
         good: "dependencies {\n    implementation 'org.slf4j:slf4j-api:2.0.9'\n}",
@@ -562,12 +562,15 @@ pub const RULES: &[Rule] = &[
 ];
 
 mod basic;
+mod elsewhere;
 mod gradle;
 mod imports;
 mod jenkins;
 mod spock;
 mod suppress;
 mod unused;
+
+pub use elsewhere::Projects;
 
 #[derive(Debug, PartialEq)]
 pub struct Violation {
@@ -584,6 +587,9 @@ pub struct Violation {
     /// The bytes of the flagged code, so `--fix` can tell a report that goes with a deleted
     /// line (an unused import that is also unnecessary) from one that changed.
     pub span: std::ops::Range<usize>,
+    /// UnusedPrivateField and UnusedPrivateMethod: the type declaring the member (`None`
+    /// at a script's top level), which another file must name to use it
+    pub owner: Option<String>,
 }
 
 pub fn lint(src: &str) -> Result<Vec<Violation>, &'static str> {
@@ -728,6 +734,7 @@ fn at(n: Node, rule: &'static str, message: String) -> Violation {
         message,
         fix: None,
         span: n.byte_range(),
+        owner: None,
     }
 }
 
@@ -803,7 +810,11 @@ fn imports(src: &str, tree: &Tree, v: &mut Vec<Violation>) {
         let symbol = d
             .child_by_field_name("alias")
             .map_or_else(|| name.rsplit('.').next().unwrap_or(name), |a| text(a, src));
-        if !symbol.is_empty() && !used.contains(symbol) {
+        // `import static a.B.getFoo` also serves the property `foo` (Groovy's
+        // StaticImportVisitor looks up getFoo / setFoo for it)
+        let property_used = full.starts_with("import static ")
+            && unused::property(symbol).is_some_and(|p| used.contains(unused::lcfirst(p).as_str()));
+        if !symbol.is_empty() && !used.contains(symbol) && !property_used {
             v.push(Violation {
                 fix,
                 ..at(
@@ -1184,6 +1195,13 @@ mod tests {
             4,
             8,
         );
+    }
+
+    #[test]
+    fn static_accessor_import_used_as_a_property() {
+        // hoist-core ClusterTask: `traceContextService.capture()` resolves to getTraceContextService()
+        let src = "import static a.U.getSvc\nimport static a.U.setOut\nimport static a.U.getGone\nimport a.getThing\nsvc.go()\nout = 1\nthing\n";
+        assert_eq!(rules(src), vec![("UnusedImport", 3), ("UnusedImport", 4)]);
     }
 
     #[test]
