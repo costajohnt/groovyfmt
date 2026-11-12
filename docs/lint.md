@@ -266,7 +266,7 @@ The language server honors the config's baseline too. What it holds isn't publis
 
 ### Adopting lint in an existing repository
 
-1. `groovyfmt --lint --rules` and turn off, in `.groovyfmt.toml`, any rule the project doesn't want.
+1. `groovyfmt --rules` and turn off, in `.groovyfmt.toml`, any rule the project doesn't want.
 2. `groovyfmt --lint --fix` to remove what can be removed safely.
 3. `groovyfmt --lint --write-baseline` and commit `.groovyfmt-baseline.json`.
 4. Add `baseline = ".groovyfmt-baseline.json"` to `.groovyfmt.toml`.

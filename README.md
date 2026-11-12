@@ -179,7 +179,7 @@ The grammar in `grammar/` is a copy, so don't edit it here. To change it:
 3. Run `scripts/update-grammar.sh <checkout> [rev]` here. The checkout must be clean, and `rev` defaults to its HEAD.
 4. Compare `--stats` and `--lint` on the corpus before and after.
 
-Releases: push a `v*` tag on `main` matching the `Cargo.toml` version and with a CHANGELOG heading. The release workflow publishes only after those checks, fmt, clippy, the tests on stable and Rust 1.90, and a build and smoke test of all the release binaries pass. [Releasing](https://github.com/costajohnt/groovyfmt/blob/main/docs/releasing.md) has the details.
+Releases: push a `v*` tag on `main` matching the `Cargo.toml` version and with a CHANGELOG heading. The release workflow publishes only after those checks, fmt, clippy, the tests on stable and Rust 1.90, and a build and smoke test of all five release binaries pass. [Releasing](https://github.com/costajohnt/groovyfmt/blob/main/docs/releasing.md) has the details.
 
 ## License
 
