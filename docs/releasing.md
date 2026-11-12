@@ -3,7 +3,8 @@
 ## A release
 
 1. Bump `version` in `Cargo.toml` (and `Cargo.lock`), add a `## <version> (<date>)` heading to `CHANGELOG.md`, merge to `main`.
-2. Tag the merge commit `v<version>` and push the tag.
+2. Run `gh workflow run ci.yml --ref main` and wait for it to pass. Pull requests and pushes skip the two macOS release builds and the macOS action and npm jobs (hosted macOS runners are scarce); this run has them, so a macOS break shows up before the tag does.
+3. Tag the merge commit `v<version>` and push the tag.
 
 `release.yml` then checks the tag (`check`), runs all of `ci.yml` on it (`ci`), and creates the GitHub release with the five archives and their `.sha256` files (`release`): a `.tar.gz` for each Linux and macOS target and a `.zip` for Windows. The pre-commit hooks (`.pre-commit-hooks.yaml`) and the GitHub Action (`action.yml`) need nothing more: they are used straight from the tag.
 
