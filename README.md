@@ -81,6 +81,14 @@ What to expect (each checked on Windows Server 2022 unless it says otherwise):
 
 Not checked yet: desktop Windows 10 and 11, Windows on ARM, antivirus or indexer locks on a file being replaced, PowerShell 7, and Git for Windows.
 
+### crates.io
+
+Rust 1.90+ and a C compiler:
+
+```sh
+cargo install --locked groovyfmt
+```
+
 ### Build from source
 
 Rust 1.90+ and a C compiler:
