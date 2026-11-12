@@ -379,7 +379,7 @@ pub const RULES: &[Rule] = &[
     Rule {
         name: "UnusedPrivateField",
         default: true,
-        description: "a private field whose name appears nowhere else in the file (not one with an annotation, serialVersionUID, or in a class whose annotation reads fields)",
+        description: "a private field whose name appears nowhere else in the file, nor in another file of the project that names its class (not one with an annotation, serialVersionUID, or in a class whose annotation reads fields)",
         why: "A private field nothing reads is dead state: left over from a refactoring, or a sign that the code meant to use it doesn't.",
         bad: "class Client {\n    private int retries = 3\n    def get(url) { url.toURL().text }\n}",
         good: "class Client {\n    def get(url) { url.toURL().text }\n}",
@@ -388,7 +388,7 @@ pub const RULES: &[Rule] = &[
     Rule {
         name: "UnusedPrivateMethod",
         default: true,
-        description: "a private method whose name appears nowhere else in the file (for getX/isX/setX, nor the property x)",
+        description: "a private method whose name appears nowhere else in the file (for getX/isX/setX, nor the property x), nor in another file of the project that names its class",
         why: "A private method nothing calls is dead code that still has to be read and maintained.",
         bad: "class Client {\n    def get(url) { url.toURL().text }\n    private String trimmed(s) { s.trim() }\n}",
         good: "class Client {\n    def get(url) { url.toURL().text }\n}",
@@ -562,12 +562,15 @@ pub const RULES: &[Rule] = &[
 ];
 
 mod basic;
+mod elsewhere;
 mod gradle;
 mod imports;
 mod jenkins;
 mod spock;
 mod suppress;
 mod unused;
+
+pub use elsewhere::Projects;
 
 #[derive(Debug, PartialEq)]
 pub struct Violation {
@@ -584,6 +587,9 @@ pub struct Violation {
     /// The bytes of the flagged code, so `--fix` can tell a report that goes with a deleted
     /// line (an unused import that is also unnecessary) from one that changed.
     pub span: std::ops::Range<usize>,
+    /// UnusedPrivateField and UnusedPrivateMethod: the type declaring the member (`None`
+    /// at a script's top level), which another file must name to use it
+    pub owner: Option<String>,
 }
 
 pub fn lint(src: &str) -> Result<Vec<Violation>, &'static str> {
@@ -728,6 +734,7 @@ fn at(n: Node, rule: &'static str, message: String) -> Violation {
         message,
         fix: None,
         span: n.byte_range(),
+        owner: None,
     }
 }
 

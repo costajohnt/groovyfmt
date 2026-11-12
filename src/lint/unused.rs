@@ -288,11 +288,16 @@ pub(super) fn check(
                         && uses(&idx, name, all.clone(), at_node.start_byte()) == 0
                         && !maybe_dynamic(name)
                     {
-                        v.push(at(
-                            at_node,
-                            "UnusedPrivateField",
-                            format!("The private field {name} is never used; remove it, or use it"),
-                        ));
+                        v.push(Violation {
+                            owner: owner(src, d),
+                            ..at(
+                                at_node,
+                                "UnusedPrivateField",
+                                format!(
+                                    "The private field {name} is never used; remove it, or use it"
+                                ),
+                            )
+                        });
                     }
                 }
             }
@@ -316,11 +321,16 @@ pub(super) fn check(
                 if uses(&idx, name, all.clone(), n.start_byte()) + property_uses == 0
                     && !maybe_dynamic(name)
                 {
-                    v.push(at(
-                        n,
-                        "UnusedPrivateMethod",
-                        format!("The private method {name} is never called; remove it, or call it"),
-                    ));
+                    v.push(Violation {
+                        owner: owner(src, d),
+                        ..at(
+                            n,
+                            "UnusedPrivateMethod",
+                            format!(
+                                "The private method {name} is never called; remove it, or call it"
+                            ),
+                        )
+                    });
                 }
             }
             _ => {
@@ -330,6 +340,27 @@ pub(super) fn check(
             }
         }
     }
+}
+
+/// The name of the class, trait, enum, interface or record declaring `d`.
+fn owner(src: &str, d: Node) -> Option<String> {
+    let mut p = d.parent();
+    while let Some(x) = p {
+        if matches!(
+            x.kind(),
+            "class_declaration"
+                | "trait_declaration"
+                | "enum_declaration"
+                | "interface_declaration"
+                | "record_declaration"
+        ) {
+            return x
+                .child_by_field_name("name")
+                .map(|n| text(n, src).to_string());
+        }
+        p = x.parent();
+    }
+    None
 }
 
 /// `final ClassNode name` with no value: the grammar reads `ClassNode` as the declared

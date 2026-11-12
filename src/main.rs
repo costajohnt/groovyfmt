@@ -1075,10 +1075,18 @@ fn main() {
                             None => PathBuf::from(baseline::DEFAULT_FILE),
                         }
                     });
-                    lint_files(&files, &links, &cfgs, &a, false, writing.as_deref())
+                    lint_files(
+                        &files,
+                        &links,
+                        &cfgs,
+                        &a,
+                        false,
+                        writing.as_deref(),
+                        res.fixed(),
+                    )
                 }
                 Mode::Syntax => syntax(&files, &a),
-                Mode::LintStats => lint_files(&files, &links, &cfgs, &a, true, None),
+                Mode::LintStats => lint_files(&files, &links, &cfgs, &a, true, None, res.fixed()),
                 Mode::Stats => stats(&files, &cfgs),
                 Mode::SuggestStyle => suggest_style(&files, &cfgs),
                 Mode::Errors => errors(&files),
@@ -1343,8 +1351,11 @@ fn lint_files(
     a: &Args,
     stats_only: bool,
     writing: Option<&Path>,
+    fixed: Option<Config>,
 ) -> i32 {
     let t = Instant::now();
+    // each project's other files, which may use a private member reported as unused
+    let projects = lint::Projects::new(fixed);
     let mut out = Out::new(a);
     // each file's baseline and its path in it; each baseline file is read once, and one that
     // can't be read or isn't a valid baseline is an error
@@ -1427,6 +1438,7 @@ fn lint_files(
         let text = new_text.as_deref().unwrap_or(&src);
         let cfg = &cfgs[p];
         r.violations.retain(|v| cfg.rule_enabled(v.rule));
+        projects.filter(real, text, &mut r.violations);
         if let Some((b, rel)) = bases.get(&p) {
             if writing.is_some() {
                 r.keys = Some((rel.clone(), baseline::keys(text, &r.violations)));

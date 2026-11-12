@@ -267,6 +267,11 @@ impl Resolver {
         r
     }
 
+    /// The `--config` file's config, which governs every file.
+    pub fn fixed(&self) -> Option<Config> {
+        self.fixed.as_deref().cloned()
+    }
+
     /// Whether `path` (named on the command line, or by `--stdin-filepath`) is excluded:
     /// by its own config, or by a config above it that would have pruned it in a walk from
     /// there. Each config decides down to the directory holding the next config below it,
