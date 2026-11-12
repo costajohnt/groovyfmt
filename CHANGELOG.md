@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- On Linux and macOS, a file rewritten in place between groovyfmt's read and its write (an editor or a file watcher saving it, same inode) was overwritten with the formatted old text. The check before the write compared only the device and inode; it now also compares the size, the modification time and the contents read again, as on Windows, so the newer text stays and the file is reported as `file changed while formatting` (exit 2).
+
 ## 0.9.2 (2026-11-12)
 
 ### Fixed
