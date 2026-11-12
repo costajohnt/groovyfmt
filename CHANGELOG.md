@@ -15,7 +15,7 @@
 
 ### Changed
 
-- The README is now a short front page: what groovyfmt is, why it is safe to run, install, quick start, and a few lines per topic. The reference material moved, unchanged in substance, to `docs/`: `usage.md` (command line), `formatting.md`, `configuration.md`, `lint.md`, `output-formats.md`, `ci.md`, `editors.md`, `agents.md`, `windows.md` and `coverage.md`. The README now lists `cargo install groovyfmt` (0.9.2 is on crates.io), drops the stale private-repository note for pre-commit, updates the pipeline-library lint example to today's output, and dates the npm-groovy-lint benchmark to the build that had 14 rules on by default (0.9.2 has 46). `--help` points at `docs/output-formats.md` for the JSON schema.
+- The README is now a short front page: what groovyfmt is, why it is safe to run, install, quick start, and a few lines per topic. The reference material moved, unchanged in substance, to `docs/`: `usage.md` (command line), `formatting.md`, `configuration.md`, `lint.md`, `output-formats.md`, `ci.md`, `editors.md`, `agents.md`, `windows.md` and `coverage.md`. The README now lists `cargo install groovyfmt` (0.9.2 is on crates.io), drops the stale private-repository note for pre-commit, updates the pipeline-library lint example to today's output, and dates the npm-groovy-lint benchmark to the build that had 14 rules on by default (today 46 are). `--help` points at `docs/output-formats.md` for the JSON schema.
 
 ## 0.9.2 (2026-11-12)
 
