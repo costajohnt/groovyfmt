@@ -13,6 +13,10 @@
 - `UnusedVariable` no longer reports Spock's `IOException e = thrown()`, where the declared type is the exception expected and removing the variable changes the test (50 reports), or a variable named `ignore` or `ignored`, which is unused on purpose (3 reports).
 - The GitHub Action, with no `version` input, failed with only `release not found` when the version in its ref's `Cargo.toml` has no release (`@v0.9.0`, whose release run failed, or `@main` after a version bump and before its release). It still fails there rather than install a release the ref didn't name, but the error now names the missing release and says to use a release tag or `version: latest`. The README no longer says `main` installs the latest release, and the CI `action` job now runs the action from a ref at the latest release and from one with no release. The Gradle plugin's message for a missing release (HTTP 404) no longer says the repository is private; it says the release may not exist and how to pick one.
 
+### Changed
+
+- The README is now a short front page: what groovyfmt is, why it is safe to run, install, quick start, and a few lines per topic. The reference material moved, unchanged in substance, to `docs/`: `usage.md` (command line), `formatting.md`, `configuration.md`, `lint.md`, `output-formats.md`, `ci.md`, `editors.md`, `agents.md`, `windows.md` and `coverage.md`. The README now lists `cargo install groovyfmt` (0.9.2 is on crates.io), drops the stale private-repository note for pre-commit, updates the pipeline-library lint example to today's output, and dates the npm-groovy-lint benchmark to the build that had 14 rules on by default (0.9.2 has 46). `--help` points at `docs/output-formats.md` for the JSON schema.
+
 ## 0.9.2 (2026-11-12)
 
 ### Fixed

@@ -50,7 +50,8 @@ Options:
                            (overrides the config file)
       --output-format <F>  text (default), github (GitHub Actions annotations), json
                            (--check, --lint, --syntax, in place: one JSON document on
-                           stdout, schema in the README) or sarif (--lint, --syntax)
+                           stdout, schema in docs/output-formats.md) or sarif (--lint,
+                           --syntax)
       --rules              List lint rules and whether each is on, then exit
       --explain <RULE>     Explain a lint rule: why it matters, an example, whether
                            --fix fixes it and how to turn it off
