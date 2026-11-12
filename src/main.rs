@@ -56,6 +56,10 @@ Options:
                            --fix fixes it and how to turn it off
       --strict             List skipped files (unparseable, not UTF-8, too large) and
                            exit 1 if there are any, so CI can't pass on unchecked files
+      --force              Read every file named here as Groovy, whatever its name
+                           (by default one that isn't *.groovy, *.gradle, *.gvy, *.gy,
+                           *.gsh, Jenkinsfile, Jenkinsfile.*, *.jenkinsfile or a
+                           groovy #! script is skipped)
       --diff               With --check, or --lint --fix: print a unified diff of the
                            changes (for git apply / patch -p1) and write nothing
       --lines <A-B>        Change only lines A to B (repeatable; one file or --stdin)
@@ -207,6 +211,7 @@ fn parse_args() -> Args {
             "-v" | "--verbose" => a.verbose = true,
             "--strict" => a.strict = true,
             "--fix" => a.fix = true,
+            "--force" => FORCE.store(true, Ordering::Relaxed),
             "--diff" => a.diff = true,
             "--lines" => {
                 let v = value("--lines");
@@ -524,6 +529,28 @@ fn par_map<T: Send>(
 
 const NOT_UTF8: &str = "not valid UTF-8";
 
+/// `--force`: a file named on the command line is read as Groovy whatever its name.
+static FORCE: AtomicBool = AtomicBool::new(false);
+
+/// Whether a file is Groovy by its name or first line: a name a directory walk takes
+/// (`is_groovy_file`), a pipeline named `Jenkinsfile.*` or `*.jenkinsfile`, or a script whose
+/// shebang runs groovy. Only files named on the command line can fail this; a Makefile or
+/// YAML file there (`groovyfmt *`) would parse as labels and lose its indentation.
+fn is_groovy(path: &Path, bytes: &[u8]) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    // Windows drops trailing dots and spaces: `A.groovy.` opens A.groovy
+    let name = if cfg!(windows) {
+        name.trim_end_matches(['.', ' '])
+    } else {
+        name
+    };
+    let first = bytes.split(|&b| b == b'\n').next().unwrap_or_default();
+    groovyfmt::is_groovy_file(Path::new(name))
+        || name.starts_with("Jenkinsfile.")
+        || name.ends_with(".jenkinsfile")
+        || (first.starts_with(b"#!") && first.windows(6).any(|w| w == b"groovy"))
+}
+
 /// File contents, or `Ok(Err(reason))` for a file that is skipped rather than failing the
 /// run: not UTF-8, not a regular file, or larger than `MAX_FILE_BYTES`. The checks run on
 /// the opened handle, so a file swapped for something else after the walk is still caught.
@@ -549,6 +576,10 @@ fn read_as(path: &Path, name: &Path) -> Result<Result<(String, FileId), &'static
         .map_err(err)?;
     if bytes.len() as u64 > MAX_FILE_BYTES {
         return Ok(Err("larger than 10 MB"));
+    }
+    // a named symlink counts by either name
+    if !FORCE.load(Ordering::Relaxed) && !is_groovy(name, &bytes) && !is_groovy(path, &bytes) {
+        return Ok(Err("not a Groovy file"));
     }
     let id = file_id(&meta, &bytes);
     Ok(String::from_utf8(bytes)

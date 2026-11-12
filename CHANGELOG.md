@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- A file named on the command line was formatted as Groovy whatever its name, so `groovyfmt *` or `groovyfmt $(git ls-files)` rewrote a Makefile (its recipe tab removed) or a YAML file (its indentation flattened) and exited 0. A named file is now formatted, checked or linted only when a directory search would find it (`*.groovy`, `*.gradle`, `*.gvy`, `*.gy`, `*.gsh`, `Jenkinsfile`), when it is a pipeline named `Jenkinsfile.*` or `*.jenkinsfile`, or when its first line is a `#!` that runs groovy. Any other named file is skipped as `not a Groovy file` (listed under `-v`, failing `--strict`, `"status":"skipped"` in JSON). The new `--force` option reads every named file as Groovy, as before. `--stdin`, `--stdin-filepath` and `--lsp` are unchanged.
+
 - On Linux and macOS, a file rewritten in place between groovyfmt's read and its write (an editor or a file watcher saving it, same inode) was overwritten with the formatted old text. The check before the write compared only the device and inode; it now also compares the size, the modification time and the contents read again, as on Windows, so the newer text stays and the file is reported as `file changed while formatting` (exit 2).
 
 ## 0.9.2 (2026-11-12)

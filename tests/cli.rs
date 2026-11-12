@@ -141,6 +141,70 @@ fn skips_build_and_hidden_dirs_but_not_explicit_files() {
 }
 
 #[test]
+fn named_files_that_are_not_groovy_are_skipped() {
+    let d = Dir::new("named");
+    // parses as nested labels: formatting would take the Makefile's tab away
+    let (make, yml) = ("build:\n\tcargo build\n", "a:\n  b: 1\n");
+    d.write("Makefile", make);
+    d.write("x.yml", yml);
+    d.write("A.groovy", UGLY);
+    d.write("Jenkinsfile.release", UGLY);
+    d.write("deploy.jenkinsfile", UGLY);
+    d.write("tool", &format!("#!/usr/bin/env groovy\n{UGLY}"));
+    let all = [
+        "Makefile",
+        "x.yml",
+        "A.groovy",
+        "Jenkinsfile.release",
+        "deploy.jenkinsfile",
+        "tool",
+    ];
+    let json: Vec<&str> = ["--check", "--output-format", "json"]
+        .into_iter()
+        .chain(all)
+        .collect();
+    let s = stdout(&run(&d.0, &json, None));
+    for f in ["Makefile", "x.yml"] {
+        let skip = format!(
+            r#"{{"path":"{f}","status":"skipped","skip_reason":"not a Groovy file","diagnostics":[]}}"#
+        );
+        assert!(s.contains(&skip), "{s}");
+    }
+    assert!(s.contains(r#""would_reformat":4,"#), "{s}");
+
+    let w = run(&d.0, &all, None);
+    assert_eq!(w.status.code(), Some(0));
+    assert!(
+        stderr(&w).contains("reformatted 4 of 6 files, 2 skipped"),
+        "{}",
+        stderr(&w)
+    );
+    assert_eq!(
+        (d.read("Makefile"), d.read("x.yml")),
+        (make.into(), yml.into())
+    );
+    for f in ["A.groovy", "Jenkinsfile.release", "deploy.jenkinsfile"] {
+        assert_eq!(d.read(f), PRETTY, "{f}");
+    }
+    assert_eq!(d.read("tool"), format!("#!/usr/bin/env groovy\n{PRETTY}"));
+    let v = run(&d.0, &["-v", "Makefile"], None);
+    assert!(
+        stderr(&v).contains("skipped Makefile: not a Groovy file"),
+        "{}",
+        stderr(&v)
+    );
+    let strict = run(&d.0, &["--check", "--strict", "x.yml"], None);
+    assert_eq!(strict.status.code(), Some(1));
+
+    // opted in, as before
+    assert_eq!(
+        run(&d.0, &["--force", "Makefile"], None).status.code(),
+        Some(0)
+    );
+    assert_eq!(d.read("Makefile"), "build:\ncargo build\n");
+}
+
+#[test]
 fn unparseable_files_are_left_alone() {
     let d = Dir::new("broken");
     d.write("Broken.groovy", "def x = {\n");
