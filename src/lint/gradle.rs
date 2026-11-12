@@ -77,6 +77,8 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
         }
         true
     });
+    // read only for a file that would get a report
+    let old_gradle = std::cell::OnceCell::new();
     for b in deps {
         for s in statements(b) {
             let Some(c) = call(s, src) else { continue };
@@ -85,6 +87,7 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
             }
             if let Some((_, new)) = REMOVED.iter().find(|(old, _)| *old == c.name)
                 && !declared.contains(c.name)
+                && !*old_gradle.get_or_init(|| wrapper_major(path).is_some_and(|m| m < 7))
             {
                 v.push(at(
                     s,
@@ -98,6 +101,33 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
             dynamic_version(src, &c, v);
         }
     }
+}
+
+/// The major Gradle version of the nearest `gradle/wrapper/gradle-wrapper.properties` in
+/// the script's directory or above it (`distributionUrl=.../gradle-6.9-bin.zip` is 6). A
+/// build pinned below 7.0 runs a Gradle that still has the removed configurations.
+fn wrapper_major(path: &Path) -> Option<u32> {
+    let dir = path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let props = dir.ancestors().find_map(|d| {
+        std::fs::read_to_string(d.join("gradle/wrapper/gradle-wrapper.properties")).ok()
+    })?;
+    major_version(&props)
+}
+
+fn major_version(props: &str) -> Option<u32> {
+    let url = props
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("distributionUrl"))?;
+    url.rsplit("gradle-")
+        .next()?
+        .split(['.', '-'])
+        .next()?
+        .parse()
+        .ok()
 }
 
 /// `jcenter()` or `jcenter { ... }` in a repositories block.
@@ -222,6 +252,30 @@ mod tests {
             rules("build.gradle", "task compile { }\ncompile 'x'\n"),
             vec![]
         );
+    }
+
+    #[test]
+    fn removed_configurations_under_an_old_wrapper() {
+        // the nearest wrapper decides: a Gradle below 7.0 still has `compile`
+        let root = std::env::temp_dir().join(format!("groovyfmt-wrapper-{}", std::process::id()));
+        let sub = root.join("sub");
+        std::fs::create_dir_all(sub.join("gradle/wrapper")).unwrap();
+        std::fs::create_dir_all(root.join("gradle/wrapper")).unwrap();
+        let wrapper = |dir: &Path, v: &str| {
+            std::fs::write(
+                dir.join("gradle/wrapper/gradle-wrapper.properties"),
+                format!("distributionUrl=https\\://services.gradle.org/distributions/gradle-{v}-bin.zip\n"),
+            )
+            .unwrap()
+        };
+        let src = "dependencies {\n    compile 'a:b:1'\n}\n";
+        let run = |p: &Path| rules(p.join("build.gradle").to_str().unwrap(), src).len();
+        wrapper(&root, "8.5");
+        wrapper(&sub, "6.9");
+        assert_eq!((run(&root), run(&sub), run(&sub.join("x"))), (1, 0, 0));
+        wrapper(&sub, "7.0-rc-1");
+        assert_eq!(run(&sub), 1);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

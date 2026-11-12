@@ -397,7 +397,7 @@ pub const RULES: &[Rule] = &[
     Rule {
         name: "UnusedVariable",
         default: true,
-        description: "a local variable whose name never appears after its declaration in its block (not a script's top-level variable, `_`, an annotated one, or a `def (a, b)` tuple)",
+        description: "a local variable whose name never appears after its declaration in its block (not a script's top-level variable, `_`, `ignored`, Spock's `E e = thrown()`, an annotated one, or a `def (a, b)` tuple)",
         why: "A variable nothing reads is dead code, or the sign of a typo: the code meant to use it and uses something else.",
         bad: "def total(items) {\n    def count = items.size()\n    items.sum()\n}",
         good: "def total(items) {\n    items.sum()\n}",
@@ -498,7 +498,7 @@ pub const RULES: &[Rule] = &[
     Rule {
         name: "GradleRemovedConfiguration",
         default: true,
-        description: "compile, runtime, testCompile or testRuntime dependencies (removed in Gradle 7.0)",
+        description: "compile, runtime, testCompile or testRuntime dependencies (removed in Gradle 7.0), unless the Gradle wrapper pins an older Gradle",
         why: "`compile`, `runtime`, `testCompile` and `testRuntime` were removed in Gradle 7.0; the build fails on a current Gradle.",
         bad: "dependencies {\n    compile 'org.slf4j:slf4j-api:2.0.9'\n}",
         good: "dependencies {\n    implementation 'org.slf4j:slf4j-api:2.0.9'\n}",
@@ -803,7 +803,11 @@ fn imports(src: &str, tree: &Tree, v: &mut Vec<Violation>) {
         let symbol = d
             .child_by_field_name("alias")
             .map_or_else(|| name.rsplit('.').next().unwrap_or(name), |a| text(a, src));
-        if !symbol.is_empty() && !used.contains(symbol) {
+        // `import static a.B.getFoo` also serves the property `foo` (Groovy's
+        // StaticImportVisitor looks up getFoo / setFoo for it)
+        let property_used = full.starts_with("import static ")
+            && unused::property(symbol).is_some_and(|p| used.contains(unused::lcfirst(p).as_str()));
+        if !symbol.is_empty() && !used.contains(symbol) && !property_used {
             v.push(Violation {
                 fix,
                 ..at(
@@ -1184,6 +1188,13 @@ mod tests {
             4,
             8,
         );
+    }
+
+    #[test]
+    fn static_accessor_import_used_as_a_property() {
+        // hoist-core ClusterTask: `traceContextService.capture()` resolves to getTraceContextService()
+        let src = "import static a.U.getSvc\nimport static a.U.setOut\nimport static a.U.getGone\nimport a.getThing\nsvc.go()\nout = 1\nthing\n";
+        assert_eq!(rules(src), vec![("UnusedImport", 3), ("UnusedImport", 4)]);
     }
 
     #[test]
