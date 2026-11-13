@@ -6,6 +6,10 @@
 
 - A VS Code extension in `editors/vscode` that starts `groovyfmt --lsp` with no setup: formatting of documents and selections (and on save, through VS Code's settings), parse errors and lint violations as you type, quick fixes and fix all (`source.fixAll.groovyfmt`) for `*.groovy`, `*.gvy`, `*.gy`, `*.gsh`, `*.gradle`, `*.jenkinsfile`, `Jenkinsfile` and `Jenkinsfile.*`. It runs `groovyfmt.path`, the workspace's npm package or `groovyfmt` on `PATH`, and otherwise offers to download the matching release, checked against the SHA-256 checksums packaged into the extension when the release was built. An untrusted workspace can't choose the binary. Each release attaches the `.vsix`; publishing to the VS Code Marketplace and Open VSX is set up but off until the repository variables `PUBLISH_VSCODE` and `PUBLISH_OPENVSX` are set.
 
+### Changed
+
+- `max_line_length` wraps long class, interface, trait, enum and record headers, before `extends`, `implements` or `permits` (as few of them as leave the first line fitting) and, when a clause is still too long on its own line, after each comma between its types. The `{` stays at the end of the last line. Groovy's grammar takes a newline at each of these places. On about 62,000 Groovy files from open source projects at `max_line_length = 120`, header lines over the limit drop from 1,339 to 107. What is left is headers inside strings, a single type too long for a line of its own, and long type parameters, which are never broken.
+
 ## 0.12.0 (2026-11-13)
 
 ### Added

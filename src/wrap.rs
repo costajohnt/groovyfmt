@@ -28,7 +28,11 @@
 //!   - after a ternary's `?` and `:` and after `?:` (`con=expression NL* (QUESTION NL*
 //!     tb=expression NL* COLON NL* | ELVIS NL* …) fb=expression`);
 //!   - after `=`, only when nothing else on the line can break (`left=expression NL*
-//!     op=ASSIGN NL* right=…` and `variableDeclaratorId (NL* ASSIGN NL* variableInitializer)`).
+//!     op=ASSIGN NL* right=…` and `variableDeclaratorId (NL* ASSIGN NL* variableInitializer)`);
+//!   - in a class, interface, trait, enum or record header, before `extends`, `implements`
+//!     and `permits` (`classDeclaration : … (NL* EXTENDS NL* typeList)? (NL* IMPLEMENTS NL*
+//!     typeList)? (NL* PERMITS NL* typeList)? NL* classBody`) and after each comma of their
+//!     types (`typeList : type (COMMA NL* type)*`).
 //!
 //!   None of these leaves a line starting with `{`, `++`, `--`, `+`, `-`, `*` or `/`.
 //!
@@ -80,12 +84,20 @@ const NO_BREAK: usize = 4;
 const OUTSIDE: usize = 5;
 
 /// Kinds of break, indexing `Report::breaks`.
-pub const KINDS: [&str; 5] = ["list", "chain", "operator", "assignment", "command"];
+pub const KINDS: [&str; 6] = [
+    "list",
+    "chain",
+    "operator",
+    "assignment",
+    "command",
+    "header",
+];
 const LIST: usize = 0;
 const CHAIN: usize = 1;
 const OPERATOR: usize = 2;
 const ASSIGN: usize = 3;
 const COMMAND: usize = 4;
+const HEADER: usize = 5;
 
 /// What wrapping did to the last file formatted on this thread, for measuring it.
 #[doc(hidden)]
@@ -95,7 +107,7 @@ pub struct Report {
     pub over_before: usize,
     pub over_after: usize,
     /// Line breaks added, by `KINDS`.
-    pub breaks: [usize; 5],
+    pub breaks: [usize; 6],
     /// Lines left over the limit, by `LEFT`.
     pub left: [usize; 6],
     /// Why the file was formatted without wrapping, if it was.
@@ -528,14 +540,12 @@ impl Ctx<'_> {
     }
 
     /// Whether the gap before atom `k` is spaces on one line, in the text and in the source,
-    /// on a line `--lines` allows, and not right after a `>`.
+    /// and on a line `--lines` allows.
     fn gap_ok(&self, k: usize) -> bool {
         let blank = |s: &str| s.bytes().all(|b| b == b' ' || b == b'\t');
         k > 0
             && k < self.at.len()
             && self.at[k - 1].end_row == self.at[k].row
-            // tree-sitter-groovy reads `f(x, List<T>` then a line break as `List < T >`
-            && self.text(&self.at[k - 1]) != ">"
             && blank(&self.cur[self.at[k - 1].end..self.at[k].start])
             && self.src_at[k - 1].end_row == self.src_at[k].row
             && blank(&self.src[self.src_at[k - 1].end..self.src_at[k].start])
@@ -737,7 +747,20 @@ impl Ctx<'_> {
             if live && !is_atom(n) {
                 let parent = stack.last().map(|f| f.0);
                 let mut found = Vec::new();
-                if sr == er {
+                if matches!(
+                    n.kind(),
+                    "class_declaration"
+                        | "interface_declaration"
+                        | "trait_declaration"
+                        | "enum_declaration"
+                        | "record_declaration"
+                ) {
+                    for (r, breaks) in self.header(n, &on_row) {
+                        if want[r] {
+                            found.push((r, Ok(Some((HEADER, breaks)))));
+                        }
+                    }
+                } else if sr == er {
                     found.push((sr, self.candidate(n, c.field_name(), parent)));
                 } else if n.kind() == "method_invocation" && chain_top(c.field_name(), parent) {
                     // a chain already over several lines breaks before its dots on this one
@@ -854,10 +877,10 @@ impl Ctx<'_> {
     ) -> Result<Option<Cand>, ()> {
         // `println a + b` may parse as `(println a) + b`: a command call at either edge of an
         // operator, chain or assignment puts the break inside it
-        if !matches!(kind, LIST | COMMAND) && edge_command(n, |m| m.child(0)) {
+        if !matches!(kind, LIST | COMMAND | HEADER) && edge_command(n, |m| m.child(0)) {
             return Err(());
         }
-        if !matches!(kind, LIST | COMMAND) && edge_command(n, last_child) {
+        if !matches!(kind, LIST | COMMAND | HEADER) && edge_command(n, last_child) {
             // `def r = sh a: 1, b: 2`: the `=` stays, the command's own arguments may break
             return if kind == ASSIGN { Ok(None) } else { Err(()) };
         }
@@ -883,7 +906,9 @@ impl Ctx<'_> {
             return Ok(None);
         }
         for &k in &breaks {
-            if !self.gap_ok(k) {
+            // tree-sitter-groovy reads `f(x, List<T>` then a line break as `List < T >`; in a
+            // class header a `>` closes a type, as in `class A<T>` then `extends B<T>`
+            if !self.gap_ok(k) || (kind != HEADER && self.text(&self.at[k - 1]) == ">") {
                 return Ok(None);
             }
             let (drop, one_line_brace) = hidden[k];
@@ -1161,6 +1186,83 @@ impl Ctx<'_> {
         v.filter(|v| !v.is_empty())
     }
 
+    /// The header of `n`, a class, interface, trait, enum or record declaration, by line:
+    /// before each `extends`, `implements` or `permits` that doesn't start its line, or on a
+    /// line starting with one that holds all of its clause, after each comma of the clause.
+    /// Nothing for a header holding a comment, followed on its line by more of the body than
+    /// `{}`, or of a record without a body.
+    fn header(&self, n: Node, on_row: &[(usize, usize)]) -> Vec<(usize, Vec<usize>)> {
+        let Some(body) = n.child_by_field_name("body") else {
+            return Vec::new();
+        };
+        // from the name: a comment after an annotation on a line above doesn't count
+        let name = n.child_by_field_name("name");
+        let (Some(first), Some(open)) = (
+            name.and_then(|m| self.idx(m.start_byte())),
+            self.idx(body.start_byte()),
+        ) else {
+            return Vec::new();
+        };
+        if self.at[first..open].iter().any(|a| a.comment) {
+            return Vec::new();
+        }
+        // `class A extends B {}` may break, `class A extends B { def x }` may not
+        if let Some(next) = self.at.get(open + 1)
+            && next.row == self.at[open].row
+            && !(self.text(next) == "}" && next.end == body.end_byte())
+        {
+            return Vec::new();
+        }
+        let mut rows: Vec<(usize, Vec<usize>, Vec<usize>)> = Vec::new();
+        let mut c = n.walk();
+        for clause in n.named_children(&mut c).filter(|k| {
+            matches!(
+                k.kind(),
+                "superclass" | "super_interfaces" | "extends_interfaces" | "permits_clause"
+            )
+        }) {
+            let Some(kw) = self.idx(clause.start_byte()) else {
+                return Vec::new();
+            };
+            let r = self.at[kw].row;
+            let i = match rows.iter().position(|e| e.0 == r) {
+                Some(i) => i,
+                None => {
+                    rows.push((r, Vec::new(), Vec::new()));
+                    rows.len() - 1
+                }
+            };
+            if on_row[r].0 != kw {
+                rows[i].1.push(kw);
+            } else if clause.end_position().row == r {
+                let mut c2 = clause.walk();
+                for comma in clause.children(&mut c2).filter(|k| k.kind() == ",") {
+                    let Some(k) = self.idx(comma.start_byte()) else {
+                        return Vec::new();
+                    };
+                    rows[i].2.push(k + 1);
+                }
+            }
+        }
+        rows.into_iter()
+            .filter_map(|(r, kw, commas)| {
+                if kw.is_empty() {
+                    return (!commas.is_empty()).then_some((r, commas));
+                }
+                // as few keywords as leave the first piece fitting: `class A extends B` then
+                // `implements C`, or before each when none does
+                let from = self.at[kw[0]].start;
+                let line = self.cur[..from].rfind('\n').map_or(0, |i| i + 1);
+                let fits = |k: usize| {
+                    width_upto(&self.cur[line..self.at[k - 1].end], self.indent, self.limit)
+                        <= self.limit
+                };
+                let j = (0..kw.len()).rev().find(|&j| fits(kw[j])).unwrap_or(0);
+                Some((r, kw[j..].to_vec()))
+            })
+            .collect()
+    }
+
     /// `x = …` and `def x = …`: after the `=`.
     fn assign(&self, n: Node) -> Option<Vec<usize>> {
         let mut c = n.walk();
@@ -1364,6 +1466,69 @@ mod tests {
             fmt("foo alpha.bar().baz().qux().quux(), x, y, z, w\n"),
             "foo alpha.bar().baz().qux().quux(),\n    x,\n    y,\n    z,\n    w\n"
         );
+    }
+
+    #[test]
+    fn class_headers_break_before_extends_and_implements_then_after_commas() {
+        let at60 = |s: &str| fmt_with(s, &at(60));
+        assert_eq!(
+            at60(
+                "class FooSpec extends Specification implements GrailsUnitTest, DataTest {\n}\n"
+            ),
+            "class FooSpec extends Specification\n    implements GrailsUnitTest, DataTest {\n}\n"
+        );
+        // before both, when the first line would still be too long; after a `>` too
+        assert_eq!(
+            at60("class FooSpec<T> extends AbstractSpecificationWithLongName<T> implements Testing {\n}\n"),
+            "class FooSpec<T>\n    extends AbstractSpecificationWithLongName<T>\n    implements Testing {\n}\n"
+        );
+        // one type per line when a clause still doesn't fit on its own line
+        assert_eq!(
+            at60("class FooSpec extends Specification implements GrailsUnitTest, DataTest, ServiceUnitTest<FooService> {\n}\n"),
+            "class FooSpec extends Specification\n    implements GrailsUnitTest,\n        DataTest,\n        ServiceUnitTest<FooService> {\n}\n"
+        );
+        // interfaces, traits, enums and records, an annotation before it, a nested class and
+        // an empty body on the line
+        assert_eq!(
+            at60("interface Something extends FirstInterface, SecondInterfaceName {\n}\n"),
+            "interface Something\n    extends FirstInterface, SecondInterfaceName {\n}\n"
+        );
+        assert_eq!(
+            at60("trait Something extends FirstInterface implements SecondInterface {\n}\n"),
+            "trait Something extends FirstInterface\n    implements SecondInterface {\n}\n"
+        );
+        assert_eq!(
+            at60("enum Something implements FirstInterface, SecondInterfaceName {\n    A, B\n}\n"),
+            "enum Something\n    implements FirstInterface, SecondInterfaceName {\n    A, B\n}\n"
+        );
+        assert_eq!(
+            at60("record Point(int x, int y) implements FirstInterface, Second {\n}\n"),
+            "record Point(int x, int y)\n    implements FirstInterface, Second {\n}\n"
+        );
+        assert_eq!(
+            at60("@CompileStatic class FooSpec extends Specification implements X {\n}\n"),
+            "@CompileStatic class FooSpec extends Specification\n    implements X {\n}\n"
+        );
+        assert_eq!(
+            at60("class A {\n    static class Inner extends SomeLongBaseClass implements Other {\n    }\n}\n"),
+            "class A {\n    static class Inner extends SomeLongBaseClass\n        implements Other {\n    }\n}\n"
+        );
+        // a comment on an annotation's line above doesn't hold it back
+        assert_eq!(
+            at60("@Ann // why\nclass FooSpec extends Specification implements GrailsUnitTest, X {\n}\n"),
+            "@Ann // why\nclass FooSpec extends Specification\n    implements GrailsUnitTest, X {\n}\n"
+        );
+        assert_eq!(
+            at60("class SomeLongException extends SomeOtherLongBaseException {}\n"),
+            "class SomeLongException\n    extends SomeOtherLongBaseException {}\n"
+        );
+        // left alone: a body on the line, a comment in the header
+        for src in [
+            "class FooSpec extends Specification implements GrailsUnit { def x }\n",
+            "class FooSpec extends Specification /* x */ implements GrailsUnit {\n}\n",
+        ] {
+            assert_eq!(at60(src), src);
+        }
     }
 
     #[test]
