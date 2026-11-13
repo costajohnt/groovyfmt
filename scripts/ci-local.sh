@@ -77,14 +77,17 @@ else
   echo "skipped: VS Code extension (needs Node.js 22 or later and npm)"
 fi
 
+# The JetBrains plugin builds with JDK 21. The Gradle plugin's oldest-Gradle tests can't run
+# on 21, so a JDK 21 can be named apart from JAVA_HOME with JDK21_HOME.
 java_major=$("${JAVA_HOME:+$JAVA_HOME/bin/}java" -XshowSettings:properties -version 2>&1 | sed -n 's/^ *java.specification.version = //p' || true)
-if [ "${java_major:-0}" -ge 21 ] 2> /dev/null; then
-  # The JetBrains plugin: unit tests, and integration tests in IntelliJ IDEA against this
-  # build (trusted, untrusted, LSP4IJ's user-defined server). The first run downloads
-  # IntelliJ IDEA Community (about 1 GB). ci.yml also runs the Plugin Verifier.
-  (cd editors/jetbrains && GROOVYFMT_BIN="$PWD/../../$bin" ./gradlew --no-daemon --no-scan test)
+if [ -n "${JDK21_HOME:-}" ] || [ "${java_major:-0}" -ge 21 ] 2> /dev/null; then
+  # Unit tests, and integration tests in IntelliJ IDEA against this build (trusted,
+  # untrusted, LSP4IJ's user-defined server). The first run downloads IntelliJ IDEA
+  # Community (about 1 GB). ci.yml also runs the Plugin Verifier.
+  (cd editors/jetbrains && GROOVYFMT_BIN="$PWD/../../$bin" ./gradlew --no-daemon --no-scan \
+    ${JDK21_HOME:+"-Porg.gradle.java.installations.paths=$JDK21_HOME"} test)
 else
-  echo "skipped: JetBrains plugin tests (need a JDK 21 or later, on PATH or in JAVA_HOME)"
+  echo "skipped: JetBrains plugin tests (need a JDK 21 or later, in JDK21_HOME, JAVA_HOME or on PATH)"
 fi
 
 # Formatting a real corpus must stay idempotent; --stats exits 1 if any file is not.
