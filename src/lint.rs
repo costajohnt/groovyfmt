@@ -98,8 +98,8 @@ pub const RULES: &[Rule] = &[
         default: true,
         description: "while loop with an empty block",
         why: "A `while` loop with an empty block spins doing nothing, or is an unfinished edit.",
-        bad: "while (queue.poll()) {\n}",
-        good: "while (queue.poll()) {\n    handled++\n}",
+        bad: "while (running) {\n}",
+        good: "while (running) {\n    poll()\n}",
         fixable: false,
     },
     Rule {
@@ -703,7 +703,7 @@ pub fn lint_file(path: &Path, src: &str) -> Result<Vec<Violation>, &'static str>
             ";" => unnecessary_semicolon(n, nodes.get(i + 1..).unwrap_or(&[]), &mut v),
             "catch_clause" => empty_catch(src, n, &mut v),
             "if_statement" => if_statement(n, &mut v),
-            "while_statement" => {
+            "while_statement" if !condition_works(n) => {
                 empty_body(
                     n,
                     "body",
@@ -712,7 +712,7 @@ pub fn lint_file(path: &Path, src: &str) -> Result<Vec<Violation>, &'static str>
                     &mut v,
                 );
             }
-            "for_statement" | "for_in_statement" => empty_body(
+            "for_statement" | "for_in_statement" if !condition_works(n) => empty_body(
                 n,
                 "body",
                 "EmptyForStatement",
@@ -1004,6 +1004,25 @@ fn empty_body(n: Node, field: &str, rule: &'static str, msg: &str, v: &mut Vec<V
     if is_empty_block(n.child_by_field_name(field)) {
         v.push(at(n, rule, msg.into()));
     }
+}
+
+/// Whether a loop's condition does the work, so an empty body is fine:
+/// `while (reader.read() != -1) {}`, `while ((line = next()) != null) {}`, `while (i++ < n) {}`.
+fn condition_works(n: Node) -> bool {
+    let mut works = false;
+    if let Some(c) = n.child_by_field_name("condition") {
+        crate::preorder(c, |x| {
+            works |= matches!(
+                x.kind(),
+                "method_invocation"
+                    | "assignment_expression"
+                    | "update_expression"
+                    | "unary_update_expression"
+            );
+            !works
+        });
+    }
+    works
 }
 
 /// Condition with any wrapping parentheses removed.
@@ -1320,6 +1339,17 @@ mod tests {
                 ("EmptyForStatement", 5),
             ]
         );
+        // a condition that calls, assigns or increments does the loop's work
+        let src = "while (reader.read() != -1) { }\nwhile ((line = next()) != null) { }\nwhile (i++ < n) { }\nfor (; it.next() != x; ) { }\nwhile (true) { }\nfor (x in xs) { }\nfor (int i = 0; i < n; i++) { }\nwhile (a.b) { }\n";
+        assert_eq!(
+            rules(src),
+            vec![
+                ("EmptyWhileStatement", 5),
+                ("EmptyForStatement", 6),
+                ("EmptyForStatement", 7),
+                ("EmptyWhileStatement", 8),
+            ]
+        );
     }
 
     #[test]
@@ -1359,7 +1389,7 @@ mod tests {
         let gradle =
             "repositories { jcenter() }\ndependencies { compile 'a:b:+' }\ntask t << { }\n";
         let spock = "class S extends Specification {\n def f() {\n  when:\n  f()\n  then: 'x'\n  where:\n  a | b\n  2 | 3 | 4\n }\n def g() {\n  then:\n  x\n }\n}\n";
-        let more = "package p\nimport p.Q\nimport java.util.Date\nclass K {\n private int pf\n private void m() { }\n static { }\n { }\n boolean equals(Object o) { true }\n boolean equals(String s) { true }\n int hashcode() { 1 }\n String toString() { null }\n}\ndef g() {\n def u = 1\n return 1\n f()\n}\ntry { f() } finally { return 1; throw new E(); assert x }\nswitch (x) { }\ndef s = [1, 1] as Set\ndef t = true ? 1 : 2\nassert true\nif (1 == 2) { f() }\nif (x != null || x.a) { f() }\nif (x % 2 == 1) { f() }\nl.removeAll(l)\nthrow RuntimeException()\nvoid h() { try { f() } catch (e) { new BadException(e) } }\nDate d = new Q()\n";
+        let more = "package p\nimport p.Q\nimport java.util.Date\nclass K {\n private int pf\n private void m() { }\n static { }\n { }\n boolean equals(Object o) { true }\n int hashcode() { 1 }\n String toString() { null }\n}\nclass L {\n boolean equals(String s) { true }\n}\ndef g() {\n def u = 1\n return 1\n f()\n}\ntry { f() } finally { return 1; throw new E(); assert x }\nswitch (x) { }\ndef s = [1, 1] as Set\ndef t = true ? 1 : 2\nassert true\nif (1 == 2) { f() }\nif (x != null || x.a) { f() }\nif (x % 2 == 1) { f() }\nl.removeAll(l)\nthrow RuntimeException()\nvoid h() { try { f() } catch (e) { new BadException(e) } }\nDate d = new Q()\n";
         for (name, src) in [
             ("A.groovy", more),
             ("B.groovy", "// groovyfmt-ignore DeadCode\nprintln 1\n"),

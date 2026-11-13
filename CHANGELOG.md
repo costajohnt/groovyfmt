@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- EqualsOverloaded no longer reports a typed `equals(T)` when the class, or a superclass declared in the same file, also declares `equals(Object)`, which can delegate to it, and no longer reports an abstract (bodyless) `equals` declaration. A superclass in another file can't be seen, so a subclass's `equals(T)` there is still reported.
+- EqualsAndHashCode no longer reports an abstract class whose `equals(Object)` calls one of its abstract methods (equality, and so `hashCode`, is left to the subclasses), or an `equals(Object)` that is never broader than identity (its body is just `false`, or `this.is(o)` and `o == null` tests joined by `||`), which the inherited `hashCode()` already satisfies.
+- EmptyWhileStatement and EmptyForStatement no longer report a loop whose condition does the work with a call, an assignment or an increment, as in `while (in.read() != -1) {}`. `while (true) {}` and `for (x in xs) {}` are still reported.
+- The DeadCode documentation no longer reads as if a `break` after a `break` were exempt: only a `break` after a `return` or `throw` (the switch-case habit) is, and a doubled `break` is still reported.
+
 ## 0.11.0 (2026-11-13)
 
 ### Changed
