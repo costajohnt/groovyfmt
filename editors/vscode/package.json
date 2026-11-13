@@ -1,0 +1,110 @@
+{
+  "name": "groovyfmt",
+  "displayName": "groovyfmt",
+  "description": "Format and lint Groovy, Gradle build scripts and Jenkinsfiles with groovyfmt",
+  "version": "0.12.0",
+  "publisher": "costajohnt",
+  "license": "MIT",
+  "icon": "icon.png",
+  "homepage": "https://github.com/costajohnt/groovyfmt/tree/main/editors/vscode#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/costajohnt/groovyfmt.git",
+    "directory": "editors/vscode"
+  },
+  "bugs": "https://github.com/costajohnt/groovyfmt/issues",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Formatters",
+    "Linters"
+  ],
+  "keywords": [
+    "groovy",
+    "gradle",
+    "jenkinsfile",
+    "jenkins",
+    "formatter"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onLanguage:groovy",
+    "onLanguage:gradle",
+    "onLanguage:jenkins",
+    "onLanguage:jenkinsfile"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "In an untrusted workspace, groovyfmt.path from workspace settings and a groovyfmt in node_modules are ignored.",
+      "restrictedConfigurations": [
+        "groovyfmt.path"
+      ]
+    },
+    "virtualWorkspaces": false
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "groovy",
+        "extensions": [
+          ".gy",
+          ".gsh"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "groovyfmt.restartServer",
+        "title": "Restart server",
+        "category": "groovyfmt"
+      },
+      {
+        "command": "groovyfmt.showOutput",
+        "title": "Show output",
+        "category": "groovyfmt"
+      }
+    ],
+    "configuration": {
+      "title": "groovyfmt",
+      "properties": {
+        "groovyfmt.enable": {
+          "type": "boolean",
+          "default": true,
+          "scope": "window",
+          "description": "Run the groovyfmt language server."
+        },
+        "groovyfmt.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "Path to the `groovyfmt` binary. Relative paths are resolved against the first workspace folder. Empty: `node_modules`, then `PATH`, then a download. Ignored in workspace settings of an untrusted workspace."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node20 --minify --sourcemap",
+    "compile": "tsc -p .",
+    "lint": "tsc -p . --noEmit && eslint .",
+    "test:unit": "npm run compile && node --test out/test/unit/*.test.js",
+    "test:integration": "npm run build && npm run compile && node out/test/integration/run.js",
+    "package": "npm run build && vsce package --no-dependencies",
+    "vscode:prepublish": "npm run build"
+  },
+  "dependencies": {
+    "vscode-languageclient": "11.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/vscode": "1.95.0",
+    "@vscode/test-electron": "3.1.0",
+    "@vscode/vsce": "4.1.1",
+    "esbuild": "0.28.2",
+    "eslint": "10.14.0",
+    "ovsx": "1.4.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.2"
+  }
+}

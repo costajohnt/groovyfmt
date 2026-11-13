@@ -42,7 +42,10 @@ jobs:
           set -- groovyfmt-*.tar.gz groovyfmt-*.zip
           printf '%s\n' "$@"
           test "$#" -eq 5
-          gh release create "$GITHUB_REF_NAME" groovyfmt-*.tar.gz* groovyfmt-*.zip* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+          # and the VS Code extension from ci.yml's vscode job
+          vsix=(groovyfmt-*.vsix)
+          test "${vsix[*]}" = "groovyfmt-${GITHUB_REF_NAME#v}.vsix"
+          gh release create "$GITHUB_REF_NAME" groovyfmt-*.tar.gz* groovyfmt-*.zip* "${vsix[@]}" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
 
   # Off until the repository variable PUBLISH_NPM is 'true'. Needs the repository
   # public and a trusted publisher on npmjs.com for each package; no token
@@ -143,3 +146,74 @@ jobs:
           GRADLE_PUBLISH_KEY: ${{ secrets.GRADLE_PUBLISH_KEY }}
           GRADLE_PUBLISH_SECRET: ${{ secrets.GRADLE_PUBLISH_SECRET }}
         run: ./gradlew --no-daemon check publishPlugins
+
+  # Off until the repository variable PUBLISH_VSCODE is 'true'. Needs the Marketplace
+  # publisher costajohnt with a trusted publishing policy for this workflow, or else
+  # the secret VSCE_PAT. See docs/releasing.md.
+  publish-vscode:
+    needs: release
+    if: vars.PUBLISH_VSCODE == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: vscode-extension
+          path: editors/vscode/vsix
+      # Only for vsce itself; the .vsix is the one attached to the release.
+      - run: npm ci --no-audit --no-fund --ignore-scripts
+      - name: Publish
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          set -euo pipefail
+          version=${GITHUB_REF_NAME#v}
+          # The Marketplace takes no semver prerelease versions.
+          if [[ $version == *-* ]]; then echo "$version is a prerelease: not published"; exit 0; fi
+          # Trusted publishing (OIDC) unless a VSCE_PAT secret exists.
+          auth=--oidc
+          if [ -n "$VSCE_PAT" ]; then auth=; fi
+          npx vsce publish --packagePath "vsix/groovyfmt-$version.vsix" --skip-duplicate $auth
+
+  # Off until the repository variable PUBLISH_OPENVSX is 'true'. Needs the secret
+  # OVSX_PAT for the Open VSX namespace costajohnt. See docs/releasing.md.
+  publish-openvsx:
+    needs: release
+    if: vars.PUBLISH_OPENVSX == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: vscode-extension
+          path: editors/vscode/vsix
+      - run: npm ci --no-audit --no-fund --ignore-scripts
+      - name: Publish
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          set -euo pipefail
+          version=${GITHUB_REF_NAME#v}
+          if [[ $version == *-* ]]; then echo "$version is a prerelease: not published"; exit 0; fi
+          npx ovsx publish "vsix/groovyfmt-$version.vsix" --skip-duplicate

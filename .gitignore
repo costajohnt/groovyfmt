@@ -4,3 +4,8 @@
 /npm/dist
 /gradle-plugin/.gradle
 /gradle-plugin/build
+/editors/vscode/node_modules
+/editors/vscode/dist
+/editors/vscode/out
+/editors/vscode/.vscode-test
+/editors/vscode/*.vsix

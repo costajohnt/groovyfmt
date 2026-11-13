@@ -66,6 +66,16 @@ else
   echo "skipped: Gradle plugin tests (need a JDK 17 or later, on PATH or in JAVA_HOME)"
 fi
 
+if command -v npm > /dev/null && node -e 'process.exit(+process.versions.node.split(".")[0] < 22)'; then
+  # The VS Code extension: lint, unit tests and the .vsix. ci.yml also runs its integration
+  # test in VS Code: GROOVYFMT_BIN=$PWD/target/release/groovyfmt npm run test:integration
+  # in editors/vscode (add VSCODE_TEST_ARGS=--ozone-platform=headless without a display).
+  (cd editors/vscode && npm ci --no-audit --no-fund && npm run lint && npm run test:unit \
+    && npm run package -- --out "$tmp/groovyfmt.vsix")
+else
+  echo "skipped: VS Code extension (needs Node.js 22 or later and npm)"
+fi
+
 # Formatting a real corpus must stay idempotent; --stats exits 1 if any file is not.
 if [ $# -gt 0 ]; then "$bin" --stats "$1" | tail -n 1; fi
 echo "ci-local: ok"

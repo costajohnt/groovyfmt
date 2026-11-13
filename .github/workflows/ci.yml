@@ -163,6 +163,55 @@ jobs:
             groovyfmt-*.tar.gz*
             groovyfmt-*.zip*
 
+  # The VS Code extension (editors/vscode/): lint, unit tests, an integration test in
+  # VS Code against this commit's groovyfmt, and the .vsix that release.yml attaches to
+  # the release and publishes. Runs for a tag too, since the release needs the .vsix.
+  vscode:
+    name: vscode extension
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Version matches Cargo.toml
+        run: |
+          set -euxo pipefail
+          test "$(node -p 'require("./package.json").version')" = "$(sed -n 's/^version = "\(.*\)"$/\1/p' ../../Cargo.toml | head -n 1)"
+      - name: Build groovyfmt for the integration test
+        working-directory: .
+        run: cargo build --release --locked
+      - run: npm ci --no-audit --no-fund
+      - run: npm run lint
+      - run: npm run test:unit
+      # No display on the runner: Electron's headless Ozone backend needs none.
+      - name: Integration test in VS Code
+        env:
+          GROOVYFMT_BIN: ${{ github.workspace }}/target/release/groovyfmt
+          VSCODE_TEST_ARGS: --ozone-platform=headless
+        run: npm run test:integration
+      - name: Package
+        run: |
+          set -euxo pipefail
+          vsix=groovyfmt-$(node -p 'require("./package.json").version').vsix
+          npm run package -- --out "$vsix"
+          unzip -l "$vsix"
+          # bundled: no node_modules in the package
+          if unzip -l "$vsix" | grep -q node_modules; then exit 1; fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: vscode-extension
+          path: editors/vscode/groovyfmt-*.vsix
+
   # The install channels (action.yml, npm/, packaging/, Dockerfile), each run
   # against the latest published release so none of them can rot. Skipped when
   # release.yml calls this workflow for a tag: they test the previous release.

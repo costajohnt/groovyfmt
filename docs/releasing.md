@@ -2,19 +2,21 @@
 
 ## A release
 
-1. Bump `version` in `Cargo.toml` (and `Cargo.lock`), add a `## <version> (<date>)` heading to `CHANGELOG.md`, and update the version pinned in the examples (`costajohnt/groovyfmt@v<version>`, `rev: v<version>`, `version: <version>`, `version = '<version>'`) in `README.md` and `docs/ci.md`; `grep -rnF '<old version>' README.md docs/ci.md` finds them. Merge to `main`.
+1. Bump `version` in `Cargo.toml` (and `Cargo.lock`) and in the VS Code extension (`npm version <version> --no-git-tag-version` in `editors/vscode`, which updates `package.json` and `package-lock.json`; CI and the tag check fail when the two differ), add a heading to `editors/vscode/CHANGELOG.md` if the extension itself changed, add a `## <version> (<date>)` heading to `CHANGELOG.md`, and update the version pinned in the examples (`costajohnt/groovyfmt@v<version>`, `rev: v<version>`, `version: <version>`, `version = '<version>'`) in `README.md` and `docs/ci.md`; `grep -rnF '<old version>' README.md docs/ci.md` finds them. Merge to `main`.
 2. Run `gh workflow run ci.yml --ref main` and wait for it to pass. Pull requests and pushes skip the two macOS release builds and the macOS action and npm jobs (hosted macOS runners are scarce); this run has them, so a macOS break shows up before the tag does.
 3. Tag the merge commit `v<version>` and push the tag.
 
-`release.yml` then checks the tag (`check`), runs all of `ci.yml` on it (`ci`), and creates the GitHub release with the five archives and their `.sha256` files (`release`): a `.tar.gz` for each Linux and macOS target and a `.zip` for Windows. The pre-commit hooks (`.pre-commit-hooks.yaml`) and the GitHub Action (`action.yml`) need nothing more: they are used straight from the tag.
+`release.yml` then checks the tag (`check`), runs all of `ci.yml` on it (`ci`), and creates the GitHub release with the five archives and their `.sha256` files (`release`): a `.tar.gz` for each Linux and macOS target and a `.zip` for Windows, plus the VS Code extension as `groovyfmt-<version>.vsix`. The pre-commit hooks (`.pre-commit-hooks.yaml`) and the GitHub Action (`action.yml`) need nothing more: they are used straight from the tag.
 
-Three more jobs publish to registries. Each is off until a repository variable switches it on, and each runs only after `release` succeeds, on the tag push itself. Rerunning a whole release workflow fails at `release` because the GitHub release already exists, so switch a channel on before pushing the tag you want it to publish.
+Five more jobs publish to registries. Each is off until a repository variable switches it on, and each runs only after `release` succeeds, on the tag push itself. Rerunning a whole release workflow fails at `release` because the GitHub release already exists, so switch a channel on before pushing the tag you want it to publish.
 
 | Variable | Job | Publishes |
 |---|---|---|
 | `PUBLISH_NPM` = `true` | `publish-npm` | `groovyfmt`, `@groovyfmt/{darwin,linux}-{arm64,x64}` and `@groovyfmt/win32-x64` to npm, with provenance |
 | `PUBLISH_IMAGE` = `true` | `publish-image` | `ghcr.io/costajohnt/groovyfmt:<version>` and `:latest` for linux/amd64 and linux/arm64 |
 | `PUBLISH_GRADLE_PLUGIN` = `true` | `publish-gradle-plugin` | the Gradle plugin `io.github.costajohnt.groovyfmt` to the Gradle Plugin Portal |
+| `PUBLISH_VSCODE` = `true` | `publish-vscode` | the VS Code extension `costajohnt.groovyfmt` to the Visual Studio Marketplace |
+| `PUBLISH_OPENVSX` = `true` | `publish-openvsx` | the same extension to Open VSX (VSCodium, Cursor and other VS Code builds) |
 
 Set one with `gh variable set PUBLISH_NPM --body true --repo costajohnt/groovyfmt`, and unset it the same way with `--body false` or `gh variable delete`. A version with a `-` (a prerelease) is published under the npm dist-tag `next` and gets no `latest` image tag.
 
@@ -66,6 +68,35 @@ CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=$PWD/scripts/wine-run.sh cargo test --
 
 The portal refuses a version it already has, so a rerun of an already published version fails at `publishPlugins`. To publish by hand instead: `cd gradle-plugin && GRADLE_PUBLISH_KEY=... GRADLE_PUBLISH_SECRET=... ./gradlew publishPlugins` from the tagged commit (`--validate-only` checks everything without uploading).
 
+## VS Code extension
+
+`editors/vscode/` is the extension (TypeScript, bundled with esbuild into one file, so the `.vsix` holds no `node_modules`). Its version must equal the `Cargo.toml` version: with no groovyfmt installed, it downloads the release of its own version. `ci.yml`'s `vscode` job lints it, runs its unit tests and an integration test in VS Code against the commit's own groovyfmt, and uploads `groovyfmt-<version>.vsix` as the `vscode-extension` artifact, which `release` attaches to the GitHub release. `scripts/ci-local.sh` runs the lint, the unit tests and the packaging when Node.js 22 or later is present.
+
+Both publish jobs publish that same `.vsix`, skip a version the registry already has (so a rerun finishes the job), and skip prerelease versions, which the Marketplace doesn't accept.
+
+### Visual Studio Marketplace
+
+`publish-vscode` publishes with Marketplace trusted publishing (OIDC, `vsce publish --oidc`): no token secret. Azure DevOps retires global personal access tokens on 2026-12-01, so a token-based setup would stop working then. That needs, once:
+
+1. A publisher with the id `costajohnt`, the `publisher` in `editors/vscode/package.json`: sign in at https://marketplace.visualstudio.com/manage with a Microsoft account, Create publisher, ID `costajohnt`. The id can't be changed later.
+2. A trusted publishing policy: on that page, open the publisher, Trusted Publishing, Create, with repository owner `costajohnt`, repository `groovyfmt`, workflow `release.yml`, and no environment.
+3. `gh variable set PUBLISH_VSCODE --body true --repo costajohnt/groovyfmt`.
+
+If a repository secret `VSCE_PAT` exists, the job uses it instead of OIDC. It would be an Azure DevOps personal access token with the Organization "All accessible organizations" and the scope Marketplace, Manage (`gh secret set VSCE_PAT --repo costajohnt/groovyfmt`). Leave it unset to use trusted publishing.
+
+To publish by hand: `npx vsce login costajohnt`, then `npx vsce publish --packagePath groovyfmt-<version>.vsix` in `editors/vscode` with the `.vsix` from the release.
+
+### Open VSX
+
+`publish-openvsx` runs `ovsx publish` with the secret `OVSX_PAT`. That needs, once:
+
+1. An account at https://open-vsx.org (sign in with GitHub as `costajohnt`), with the Eclipse Foundation account linked and the Open VSX Publisher Agreement signed in its settings.
+2. An access token: Settings, Access Tokens, Generate New Token. Store it with `gh secret set OVSX_PAT --repo costajohnt/groovyfmt`.
+3. The namespace `costajohnt`: `npx ovsx create-namespace costajohnt -p <token>` (run in `editors/vscode`, where `ovsx` is a dev dependency). `npx ovsx verify-pat costajohnt -p <token>` checks the token can publish to it.
+4. `gh variable set PUBLISH_OPENVSX --body true --repo costajohnt/groovyfmt`.
+
+A new namespace's extensions show as unverified until the namespace is claimed; see the Open VSX wiki's "Namespace access" page to claim it.
+
 ## Homebrew
 
 `packaging/homebrew/render.sh <version> <dir>` prints a formula for the release from the four `.sha256` files in `<dir>`. It installs the prebuilt binary for the machine (macOS or Linux, arm64 or x86_64); there are no bottles to build. CI renders it for the latest release and syntax-checks it with `ruby -c`. Brew itself can't install it until the release downloads are public.
@@ -97,6 +128,7 @@ Nothing publishes to crates.io yet, and no workflow job does. The crate is ready
 3. npm: claim the scope and set up trusted publishing as above, then set `PUBLISH_NPM`.
 4. Docker: set `PUBLISH_IMAGE`.
 5. Gradle plugin: create the portal account and API key secrets as above, then set `PUBLISH_GRADLE_PLUGIN`.
+   VS Code extension: create the Marketplace publisher and trusted publishing policy and the Open VSX namespace and `OVSX_PAT` as above, then set `PUBLISH_VSCODE` and `PUBLISH_OPENVSX`.
 6. Push the next release tag. Check that `publish-npm`, `publish-image` and `publish-gradle-plugin` succeeded, `npx groovyfmt --version` prints the new version, and `docker run --rm ghcr.io/costajohnt/groovyfmt --version` too (after making the package public).
 7. Homebrew: create the tap from that release as above.
 8. In `README.md` (Install) and `docs/ci.md` (Gradle), drop the "not published yet" lines for each channel that is now published.

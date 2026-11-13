@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- A VS Code extension in `editors/vscode` that starts `groovyfmt --lsp` with no setup: formatting of documents and selections (and on save, through VS Code's settings), parse errors and lint violations as you type, quick fixes and fix all (`source.fixAll.groovyfmt`) for `*.groovy`, `*.gvy`, `*.gy`, `*.gsh`, `*.gradle`, `*.jenkinsfile`, `Jenkinsfile` and `Jenkinsfile.*`. It runs `groovyfmt.path`, the workspace's npm package or `groovyfmt` on `PATH`, and otherwise offers to download the matching release, checked against its `.sha256`. An untrusted workspace can't choose the binary. Each release attaches the `.vsix`; publishing to the VS Code Marketplace and Open VSX is set up but off until the repository variables `PUBLISH_VSCODE` and `PUBLISH_OPENVSX` are set.
+
 ## 0.12.0 (2026-11-13)
 
 ### Added

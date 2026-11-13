@@ -39,15 +39,21 @@ vim.lsp.enable("groovyfmt")
 
 ### VS Code
 
-There is no groovyfmt extension, and VS Code itself only runs language servers that an extension starts. A generic client such as [Generic LSP Client](https://github.com/llllvvuu/vscode-glspc) (`llllvvuu.glspc`) can start it. In `settings.json`:
+The groovyfmt extension (`costajohnt.groovyfmt`, source in [`editors/vscode`](../editors/vscode)) starts the language server with no setup. It covers `*.groovy`, `*.gvy`, `*.gy`, `*.gsh`, `*.gradle`, `*.jenkinsfile`, `Jenkinsfile` and `Jenkinsfile.*`, alongside VS Code's built-in Groovy support or any other Groovy, Gradle or Jenkins extension.
+
+It runs `groovyfmt.path` if set, else the workspace's npm package (`node_modules`), else `groovyfmt` on `PATH`. With none of those, it offers to download the release matching its own version and checks the download against the release's `.sha256` before running it. In an untrusted workspace it ignores `groovyfmt.path` from workspace settings and `node_modules`. Its [README](../editors/vscode/README.md) has the details.
+
+Until it is on the Marketplace and Open VSX, install the `.vsix` attached to a [release](https://github.com/costajohnt/groovyfmt/releases) with **Extensions: Install from VSIX...** or `code --install-extension groovyfmt-<version>.vsix`.
+
+Format on save is `editor.formatOnSave`. To apply the lint fixes on save too:
 
 ```json
-"glspc.serverCommand": "groovyfmt",
-"glspc.serverCommandArguments": ["--lsp"],
-"glspc.languageId": "groovy"
+"[groovy]": {
+  "editor.defaultFormatter": "costajohnt.groovyfmt",
+  "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": { "source.fixAll.groovyfmt": "explicit" }
+}
 ```
-
-To fix on save, add `"editor.codeActionsOnSave": { "source.fixAll.groovyfmt": "explicit" }`.
 
 ### Helix
 
