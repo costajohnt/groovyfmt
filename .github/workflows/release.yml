@@ -24,8 +24,45 @@ jobs:
     needs: check
     uses: ./.github/workflows/ci.yml
 
-  release:
+  # The release .vsix, packaged after the binaries are built in this run and carrying the
+  # SHA-256 of these exact archives (dist/checksums.json). The extension downloads groovyfmt
+  # only against those, never against a checksum fetched from the release.
+  vscode:
     needs: [check, ci]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          merge-multiple: true
+          path: ${{ runner.temp }}/archives
+      - run: npm ci --no-audit --no-fund
+      - name: Package with the archives' checksums
+        run: |
+          set -euxo pipefail
+          version=${GITHUB_REF_NAME#v}
+          vsix=groovyfmt-$version.vsix
+          npm run build
+          npm run checksums -- "$version" "$RUNNER_TEMP/archives"
+          npx vsce package --no-dependencies --out "$vsix"
+          unzip -l "$vsix"
+          unzip -p "$vsix" extension/dist/checksums.json |
+            node -e 'const c = JSON.parse(require("fs").readFileSync(0, "utf8")); if (c.version !== process.argv[1] || Object.keys(c.sha256).length !== 5) process.exit(1)' "$version"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: vscode-extension
+          path: editors/vscode/groovyfmt-*.vsix
+
+  release:
+    needs: [check, ci, vscode]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -42,7 +79,7 @@ jobs:
           set -- groovyfmt-*.tar.gz groovyfmt-*.zip
           printf '%s\n' "$@"
           test "$#" -eq 5
-          # and the VS Code extension from ci.yml's vscode job
+          # and the VS Code extension from the vscode job above
           vsix=(groovyfmt-*.vsix)
           test "${vsix[*]}" = "groovyfmt-${GITHUB_REF_NAME#v}.vsix"
           gh release create "$GITHUB_REF_NAME" groovyfmt-*.tar.gz* groovyfmt-*.zip* "${vsix[@]}" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
@@ -171,7 +208,8 @@ jobs:
         with:
           name: vscode-extension
           path: editors/vscode/vsix
-      # Only for vsce itself; the .vsix is the one attached to the release.
+      # Only for vsce itself; the .vsix is the one attached to the release. No install
+      # scripts: vsce runs vsce-sign's binary only with a signing option, which isn't used.
       - run: npm ci --no-audit --no-fund --ignore-scripts
       - name: Publish
         env:

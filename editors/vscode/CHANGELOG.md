@@ -4,4 +4,4 @@ The extension's version follows groovyfmt's: version X.Y.Z downloads groovyfmt X
 
 ## Unreleased
 
-- First release. Starts `groovyfmt --lsp` for Groovy, Gradle and Jenkinsfiles: formatting of documents and selections, parse errors and lint violations as you type, quick fixes and fix all (`source.fixAll.groovyfmt`). Finds groovyfmt through `groovyfmt.path`, the workspace's `node_modules` and `PATH`, or downloads the matching release after asking, verified against its SHA-256 checksum.
+- First release. Starts `groovyfmt --lsp` for Groovy, Gradle and Jenkinsfiles: formatting of documents and selections, parse errors and lint violations as you type, quick fixes and fix all (`source.fixAll.groovyfmt`). Finds groovyfmt through `groovyfmt.path`, the workspace's `node_modules` and `PATH`, or downloads the matching release after asking, verified against the SHA-256 checksums the extension release carries.

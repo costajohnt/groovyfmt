@@ -41,7 +41,7 @@ vim.lsp.enable("groovyfmt")
 
 The groovyfmt extension (`costajohnt.groovyfmt`, source in [`editors/vscode`](../editors/vscode)) starts the language server with no setup. It covers `*.groovy`, `*.gvy`, `*.gy`, `*.gsh`, `*.gradle`, `*.jenkinsfile`, `Jenkinsfile` and `Jenkinsfile.*`, alongside VS Code's built-in Groovy support or any other Groovy, Gradle or Jenkins extension.
 
-It runs `groovyfmt.path` if set, else the workspace's npm package (`node_modules`), else `groovyfmt` on `PATH`. With none of those, it offers to download the release matching its own version and checks the download against the release's `.sha256` before running it. In an untrusted workspace it ignores `groovyfmt.path` from workspace settings and `node_modules`. Its [README](../editors/vscode/README.md) has the details.
+It runs `groovyfmt.path` if set, else the workspace's npm package (`node_modules`), else `groovyfmt` on `PATH`. With none of those, it offers to download the release matching its own version, checked against the SHA-256 checksums that release of the extension carries (taken from the archives when the release was built). In an untrusted workspace it ignores `groovyfmt.path` from workspace settings and `node_modules`, and a relative `groovyfmt.path` in user settings is refused. Its [README](../editors/vscode/README.md) has the details.
 
 Until it is on the Marketplace and Open VSX, install the `.vsix` attached to a [release](https://github.com/costajohnt/groovyfmt/releases) with **Extensions: Install from VSIX...** or `code --install-extension groovyfmt-<version>.vsix`.
 

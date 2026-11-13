@@ -10,7 +10,7 @@ It covers `*.groovy`, `*.gvy`, `*.gy`, `*.gsh`, `*.gradle`, `*.jenkinsfile`, `Je
 
 ## Install
 
-Install the extension, then open a Groovy file. If groovyfmt isn't installed, the extension offers once to download the release that matches its own version from GitHub, checks it against the release's SHA-256 checksum, and keeps it in the extension's storage.
+Install the extension, then open a Groovy file. If groovyfmt isn't installed, the extension offers to download the release that matches its own version from GitHub and keeps it in the extension's storage. Each release of the extension carries the SHA-256 of that release's archives, taken when they were built, and a download that doesn't match is never written or run. A build of the extension made outside a release (from a pull request, or packaged by hand) carries no checksums and doesn't download; install groovyfmt yourself to use it.
 
 To use a groovyfmt you installed yourself, see [Finding groovyfmt](#finding-groovyfmt). The groovyfmt [README](https://github.com/costajohnt/groovyfmt#install) lists the ways to install it (Homebrew, npm, release archives, cargo).
 
@@ -33,7 +33,7 @@ A Gradle or Jenkins extension may give `*.gradle` files or Jenkinsfiles a langua
 | Setting | Default | |
 |---|---|---|
 | `groovyfmt.enable` | `true` | Run the language server. |
-| `groovyfmt.path` | `""` | Path to the `groovyfmt` binary. A relative path is resolved against the first workspace folder. |
+| `groovyfmt.path` | `""` | Path to the `groovyfmt` binary. In user settings it must be absolute. In a trusted workspace's settings it may be relative to the first workspace folder (in a multi-root workspace, the first folder's own setting wins over the workspace file's). |
 
 Everything about formatting and linting (indentation, line length, which rules run, excluded files, the lint baseline) lives in groovyfmt's config file, `.groovyfmt.toml`, the same one the command line reads. The server finds the config for each file by walking up from its directory and reads it again on every request, so an edit to `.groovyfmt.toml` applies right away. To turn lint rules off, turn them off in the config; see [Configuration](https://github.com/costajohnt/groovyfmt/blob/main/docs/configuration.md) and [Lint](https://github.com/costajohnt/groovyfmt/blob/main/docs/lint.md).
 
@@ -45,13 +45,13 @@ The extension runs the first of these that exists:
 2. The workspace's npm package: `node_modules/@groovyfmt/<platform>/bin/groovyfmt`, then `node_modules/.bin/groovyfmt`, in each workspace folder.
 3. `groovyfmt` on `PATH`.
 4. The release binary it downloaded before, for this extension's version.
-5. Otherwise it asks whether to download that binary. Declining is remembered; run **groovyfmt: Restart server** to be asked again.
+5. Otherwise, in a release build, it asks whether to download that binary. "Not now" is remembered; run **groovyfmt: Restart server** to be asked again. Closing the prompt without choosing asks again next time.
 
 The language server arrived in groovyfmt 0.9.0. An older binary is reported instead of started.
 
 ### Workspace Trust
 
-In a [restricted (untrusted) workspace](https://code.visualstudio.com/docs/editor/workspace-trust), the extension never runs a binary that the workspace chose: it ignores `groovyfmt.path` from the workspace's settings and the workspace's `node_modules`. `groovyfmt.path` from your user settings, `PATH` and the downloaded binary still apply. When you trust the workspace, the server restarts with the workspace's choice.
+In a [restricted (untrusted) workspace](https://code.visualstudio.com/docs/editor/workspace-trust), the extension never runs a binary that the workspace chose: it ignores `groovyfmt.path` from the workspace's settings and the workspace's `node_modules`, and a relative `groovyfmt.path` from user settings is refused everywhere, since it would resolve inside whatever workspace is open. `groovyfmt.path` from your user settings, `PATH` and the downloaded binary still apply. When you trust the workspace, the server restarts with the workspace's choice.
 
 ## Commands
 

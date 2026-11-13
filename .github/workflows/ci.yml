@@ -164,8 +164,9 @@ jobs:
             groovyfmt-*.zip*
 
   # The VS Code extension (editors/vscode/): lint, unit tests, an integration test in
-  # VS Code against this commit's groovyfmt, and the .vsix that release.yml attaches to
-  # the release and publishes. Runs for a tag too, since the release needs the .vsix.
+  # VS Code against this commit's groovyfmt, and a .vsix to try out. That .vsix carries no
+  # release checksums, so it never downloads groovyfmt; release.yml packages the release
+  # .vsix from the archives its own run built, so this one isn't uploaded for a tag.
   vscode:
     name: vscode extension
     runs-on: ubuntu-latest
@@ -207,7 +208,8 @@ jobs:
           unzip -l "$vsix"
           # bundled: no node_modules in the package
           if unzip -l "$vsix" | grep -q node_modules; then exit 1; fi
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: vscode-extension
           path: editors/vscode/groovyfmt-*.vsix

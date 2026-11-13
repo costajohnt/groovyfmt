@@ -1,5 +1,6 @@
 **
 !dist/extension.js
+!dist/checksums.json
 !package.json
 !README.md
 !CHANGELOG.md

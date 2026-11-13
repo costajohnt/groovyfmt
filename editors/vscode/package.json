@@ -79,7 +79,7 @@
           "type": "string",
           "default": "",
           "scope": "machine-overridable",
-          "markdownDescription": "Path to the `groovyfmt` binary. Relative paths are resolved against the first workspace folder. Empty: `node_modules`, then `PATH`, then a download. Ignored in workspace settings of an untrusted workspace."
+          "markdownDescription": "Absolute path to the `groovyfmt` binary. In workspace or folder settings of a trusted workspace, a relative path is resolved against the first workspace folder; in user settings it must be absolute. Workspace and folder settings are ignored in an untrusted workspace. Empty: `node_modules`, then `PATH`, then a download."
         }
       }
     }
@@ -87,10 +87,11 @@
   "scripts": {
     "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node20 --minify --sourcemap",
     "compile": "tsc -p .",
+    "checksums": "tsc -p . && node out/src/checksums.js",
     "lint": "tsc -p . --noEmit && eslint .",
     "test:unit": "npm run compile && node --test out/test/unit/*.test.js",
     "test:integration": "npm run build && npm run compile && node out/test/integration/run.js",
-    "package": "npm run build && vsce package --no-dependencies",
+    "package": "node -e \"require('fs').rmSync('dist/checksums.json', { force: true })\" && npm run build && vsce package --no-dependencies",
     "vscode:prepublish": "npm run build"
   },
   "dependencies": {

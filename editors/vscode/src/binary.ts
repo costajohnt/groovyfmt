@@ -2,7 +2,7 @@
 // unit tests run it in plain Node.
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { accessSync, constants, mkdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { delimiter, isAbsolute, join, resolve } from 'node:path';
 import { gunzipSync, inflateRawSync } from 'node:zlib';
 
@@ -48,17 +48,49 @@ const isExecutable = (p: string, platform: string): boolean => {
   }
 };
 
+/** What `WorkspaceConfiguration.inspect` returns, as far as findBinary cares. */
+export interface Inspected {
+  globalValue?: string;
+  workspaceValue?: string;
+  workspaceFolderValue?: string;
+}
+
+/**
+ * groovyfmt.path by origin: user settings, and the workspace's (the first folder's own settings
+ * over the workspace's, so in a multi-root workspace the first folder decides).
+ */
+export const settingValues = (i: Inspected | undefined): Where['setting'] => ({
+  user: i?.globalValue,
+  workspace: i?.workspaceFolderValue || i?.workspaceValue,
+});
+
+/** No binary to run, and why; the caller reports it and offers no download. */
+export interface Problem {
+  problem: string;
+}
+
 /**
  * The binary to run, in order: groovyfmt.path, the workspace's node_modules, PATH. Workspace
  * settings and node_modules count only in a trusted workspace. `undefined` when none applies
  * (the caller may then offer a download). A groovyfmt.path that names no file is still returned,
  * so the error names the path the user set.
+ *
+ * A relative path is resolved against the first workspace folder only when it comes from the
+ * workspace's own settings in a trusted workspace. A relative path in user settings is refused:
+ * it would resolve into whatever workspace is open, trusted or not.
  */
-export function findBinary(w: Where): Found | undefined {
-  const setting = (w.trusted ? w.setting.workspace || w.setting.user : w.setting.user)?.trim();
-  if (setting) {
+export function findBinary(w: Where): Found | Problem | undefined {
+  const workspace = w.trusted ? w.setting.workspace?.trim() : undefined;
+  if (workspace) {
     const base = w.folders[0];
-    return { path: isAbsolute(setting) || !base ? setting : resolve(base, setting), source: 'setting' };
+    if (isAbsolute(workspace)) return { path: workspace, source: 'setting' };
+    if (!base) return { problem: `groovyfmt.path "${workspace}" is relative and there is no workspace folder to resolve it against.` };
+    return { path: resolve(base, workspace), source: 'setting' };
+  }
+  const user = w.setting.user?.trim();
+  if (user) {
+    if (isAbsolute(user)) return { path: user, source: 'setting' };
+    return { problem: `groovyfmt.path in user settings must be an absolute path, and "${user}" is not. Set the full path to the binary.` };
   }
   const exe = exeName(w.platform);
   if (w.trusted) {
@@ -101,12 +133,51 @@ export function runVersion(path: string): Promise<string> {
   );
 }
 
-/** Throws unless `bytes` hash to the digest at the start of the `.sha256` file's text. */
-export function verifySha256(bytes: Buffer, sha256File: string, name: string): void {
-  const expected = sha256File.trim().split(/\s/)[0].toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(expected)) throw new Error(`${name}.sha256 holds no SHA-256 digest`);
-  const actual = createHash('sha256').update(bytes).digest('hex');
+export const sha256 = (b: Buffer): string => createHash('sha256').update(b).digest('hex');
+
+/** Throws unless `bytes` hash to `expected`, a SHA-256 digest in hex. */
+export function verifySha256(bytes: Buffer, expected: string, name: string): void {
+  if (!/^[0-9a-f]{64}$/.test(expected)) throw new Error(`no SHA-256 digest for ${name}`);
+  const actual = sha256(bytes);
   if (actual !== expected) throw new Error(`checksum mismatch for ${name}: expected ${expected}, got ${actual}`);
+}
+
+/** The release archive's file name, such as groovyfmt-v0.12.0-x86_64-unknown-linux-musl.tar.gz. */
+export function archiveName(version: string, platform: string, arch: string): string | undefined {
+  const target = TARGETS[`${platform}-${arch}`];
+  return target && `groovyfmt-v${version}-${target}.${platform === 'win32' ? 'zip' : 'tar.gz'}`;
+}
+
+/**
+ * The checksums a release build of the extension carries (dist/checksums.json), written at
+ * package time from the release archives built in the same workflow run.
+ */
+export interface Checksums {
+  version: string;
+  /** SHA-256 of each platform's release archive, by `<platform>-<arch>`. */
+  sha256: Record<string, string>;
+}
+
+/**
+ * Checksums for every platform's archive in `dir`, hashed from the archives themselves. Each
+ * archive's `.sha256` must agree, as a check that `dir` holds what the build job produced.
+ */
+export function checksumsOf(version: string, dir: string): Checksums {
+  const out: Checksums = { version, sha256: {} };
+  for (const key of Object.keys(TARGETS)) {
+    const [platform, arch] = key.split('-');
+    const name = archiveName(version, platform, arch) as string;
+    const digest = sha256(readFileSync(join(dir, name)));
+    const listed = readFileSync(join(dir, `${name}.sha256`), 'utf8').trim().split(/\s/)[0];
+    if (listed !== digest) throw new Error(`${name}.sha256 says ${listed}, the archive hashes to ${digest}`);
+    out.sha256[key] = digest;
+  }
+  return out;
+}
+
+/** The embedded checksum for this version and platform, if the extension carries one. */
+export function embeddedSha256(c: Checksums | undefined, version: string, platform: string, arch: string): string | undefined {
+  return c?.version === version ? c.sha256[`${platform}-${arch}`] : undefined;
 }
 
 /** The contents of the regular file `name` in a .tar.gz. Nothing in the archive becomes a path. */
@@ -159,9 +230,37 @@ export function unzipOne(zip: Buffer, name: string): Buffer {
 export const downloadPath = (storage: string, version: string, platform: string, arch: string): string =>
   join(storage, version, `${platform}-${arch}`, exeName(platform));
 
+export interface DownloadOptions {
+  /** The archive's SHA-256, from the checksums the extension carries. Required. */
+  sha256?: string;
+  timeoutMs?: number;
+  maxBytes?: number;
+}
+
+/** The release archives are a few MB; anything this large is not one. */
+export const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
+
+/** `url`'s body, failing past `timeoutMs` or `maxBytes`. */
+async function fetchCapped(url: string, timeoutMs: number, maxBytes: number): Promise<Buffer> {
+  // ponytail: redirects are followed to any host (GitHub serves release assets from another
+  // one); the bytes are trusted only after they match the embedded checksum
+  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+  if (Number(res.headers.get('content-length')) > maxBytes) throw new Error(`${url} is larger than ${maxBytes} bytes`);
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for await (const chunk of res.body ?? []) {
+    size += chunk.length;
+    if (size > maxBytes) throw new Error(`${url} is larger than ${maxBytes} bytes`);
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
 /**
- * Downloads the release archive for `version` and its `.sha256`, checks one against the other,
- * and writes the binary to `dest`. Nothing is written unless the checksum matches.
+ * Downloads the release archive for `version`, checks it against `opts.sha256` (the checksum the
+ * extension carries, never one fetched with the archive), and writes the binary to `dest`.
+ * Nothing is written unless the checksum matches.
  */
 export async function download(
   version: string,
@@ -169,25 +268,34 @@ export async function download(
   arch: string,
   dest: string,
   base = RELEASES,
+  opts: DownloadOptions = {},
 ): Promise<void> {
-  const target = TARGETS[`${platform}-${arch}`];
-  if (!target) throw new Error(`groovyfmt has no prebuilt binary for ${platform}-${arch}`);
-  const tag = `v${version}`;
-  const stem = `groovyfmt-${tag}-${target}`;
-  const archive = `${stem}.${platform === 'win32' ? 'zip' : 'tar.gz'}`;
-  const get = async (name: string) => {
-    const url = `${base}/${tag}/${name}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
-    return Buffer.from(await res.arrayBuffer());
-  };
-  const [bytes, sum] = await Promise.all([get(archive), get(`${archive}.sha256`)]);
-  verifySha256(bytes, sum.toString('utf8'), archive);
+  const archive = archiveName(version, platform, arch);
+  if (!archive) throw new Error(`groovyfmt has no prebuilt binary for ${platform}-${arch}`);
+  if (!opts.sha256) throw new Error(`no checksum for ${archive} in this build of the extension`);
+  const bytes = await fetchCapped(`${base}/v${version}/${archive}`, opts.timeoutMs ?? 120_000, opts.maxBytes ?? MAX_ARCHIVE_BYTES);
+  verifySha256(bytes, opts.sha256, archive);
+  const stem = archive.replace(/\.(zip|tar\.gz)$/, '');
   const exe = exeName(platform);
   const bin = platform === 'win32' ? unzipOne(bytes, `${stem}/${exe}`) : untarOne(bytes, `${stem}/${exe}`);
   mkdirSync(resolve(dest, '..'), { recursive: true });
   // written whole, then renamed, so a half-written binary is never at `dest`
-  const tmp = `${dest}.${process.pid}.tmp`;
-  writeFileSync(tmp, bin, { mode: 0o755 });
-  renameSync(tmp, dest);
+  const tmp = `${dest}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeFileSync(tmp, bin, { mode: 0o755 });
+    renameSync(tmp, dest);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    // Another window may have put the same binary there first (on Windows a running .exe
+    // can't be replaced). The same bytes as the verified archive's binary are as good.
+    if (!sameFile(dest, bin)) throw e;
+  }
 }
+
+const sameFile = (path: string, bytes: Buffer): boolean => {
+  try {
+    return readFileSync(path).equals(bytes);
+  } catch {
+    return false;
+  }
+};

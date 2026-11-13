@@ -1,4 +1,5 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import * as vscode from 'vscode';
 import { LanguageClient, State, type DocumentSelector } from 'vscode-languageclient/node';
 import {
@@ -6,10 +7,13 @@ import {
   TARGETS,
   download,
   downloadPath,
+  embeddedSha256,
   findBinary,
   isOlder,
   parseVersion,
   runVersion,
+  settingValues,
+  type Checksums,
   type Found,
 } from './binary';
 
@@ -34,6 +38,8 @@ let status: vscode.StatusBarItem;
 let client: LanguageClient | undefined;
 // starts and stops run one at a time, in order
 let queue: Promise<void> = Promise.resolve();
+// the download offer runs beside the queue, one at a time
+let offering = false;
 
 function problem(message: string): void {
   output.error(message);
@@ -46,7 +52,7 @@ function restart(): Promise<void> {
   return queue;
 }
 
-export async function activate(context: vscode.ExtensionContext): Promise<void> {
+export function activate(context: vscode.ExtensionContext): void {
   ctx = context;
   output = vscode.window.createOutputChannel('groovyfmt', { log: true });
   status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right);
@@ -67,7 +73,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.workspace.onDidGrantWorkspaceTrust(() => void restart()),
     vscode.workspace.onDidChangeWorkspaceFolders(() => void restart()),
   );
-  await restart();
+  // not awaited: activation never waits on the server, the prompt or a download
+  void restart();
 }
 
 export async function deactivate(): Promise<void> {
@@ -82,25 +89,27 @@ async function stop(): Promise<void> {
 }
 
 async function start(): Promise<void> {
-  const config = vscode.workspace.getConfiguration('groovyfmt');
-  if (!config.get<boolean>('enable', true)) {
+  if (!vscode.workspace.getConfiguration('groovyfmt').get<boolean>('enable', true)) {
     output.info('groovyfmt.enable is off');
     return;
   }
-  const path = config.inspect<string>('path');
-  const folders = (vscode.workspace.workspaceFolders ?? [])
-    .filter((f) => f.uri.scheme === 'file')
-    .map((f) => f.uri.fsPath);
+  const folders = (vscode.workspace.workspaceFolders ?? []).filter((f) => f.uri.scheme === 'file');
+  // inspected for the first folder, so its own folder settings count
+  const path = vscode.workspace.getConfiguration('groovyfmt', folders[0]?.uri).inspect<string>('path');
   const found =
     findBinary({
-      setting: { user: path?.globalValue, workspace: path?.workspaceFolderValue || path?.workspaceValue },
+      setting: settingValues(path),
       trusted: vscode.workspace.isTrusted,
-      folders,
+      folders: folders.map((f) => f.uri.fsPath),
       envPath: process.env.PATH ?? '',
       platform: process.platform,
       arch: process.arch,
-    }) ?? (await downloaded());
-  if (!found) return;
+    }) ?? downloaded();
+  if (!found) {
+    void offerDownload();
+    return;
+  }
+  if ('problem' in found) return problem(found.problem);
 
   let version: number[] | undefined;
   try {
@@ -121,7 +130,7 @@ async function start(): Promise<void> {
   const c = new LanguageClient(
     'groovyfmt',
     'groovyfmt',
-    { command: found.path, args: ['--lsp'], options: { cwd: folders[0] } },
+    { command: found.path, args: ['--lsp'], options: { cwd: folders[0]?.uri.fsPath } },
     { documentSelector: SELECTOR, outputChannel: output },
   );
   client = c;
@@ -138,41 +147,62 @@ async function start(): Promise<void> {
   }
 }
 
-/** The binary downloaded for this extension's version, downloading it if the user agrees. */
-async function downloaded(): Promise<Found | undefined> {
-  const version: string = ctx.extension.packageJSON.version;
-  const { platform, arch } = process;
-  const dest = downloadPath(ctx.globalStorageUri.fsPath, version, platform, arch);
-  if (existsSync(dest)) return { path: dest, source: 'download' };
-  const missing = 'groovyfmt was not found in groovyfmt.path, node_modules or PATH.';
-  if (!TARGETS[`${platform}-${arch}`]) {
-    problem(`${missing} There is no prebuilt binary for ${platform}-${arch}; install groovyfmt and set groovyfmt.path.`);
-    return undefined;
-  }
-  if (ctx.globalState.get(DECLINED)) {
-    problem(`${missing} Install it, set groovyfmt.path, or run "groovyfmt: Restart server" to be offered the download again.`);
-    return undefined;
-  }
-  const choice = await vscode.window.showInformationMessage(
-    `${missing} Download groovyfmt ${version} for ${platform}-${arch} from its GitHub release? ` +
-      'The download is checked against the release checksum before it runs.',
-    'Download',
-    'Not now',
-  );
-  if (choice !== 'Download') {
-    await ctx.globalState.update(DECLINED, true);
-    problem(`${missing} The download was declined.`);
-    return undefined;
-  }
+const version = (): string => ctx.extension.packageJSON.version;
+const dest = (): string => downloadPath(ctx.globalStorageUri.fsPath, version(), process.platform, process.arch);
+
+/** The binary this extension downloaded earlier for its version. */
+function downloaded(): Found | undefined {
+  return existsSync(dest()) ? { path: dest(), source: 'download' } : undefined;
+}
+
+/** The checksums a release build carries in dist/checksums.json; none in other builds. */
+function checksums(): Checksums | undefined {
   try {
-    await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: `Downloading groovyfmt ${version}` },
-      () => download(version, platform, arch, dest),
-    );
-  } catch (e) {
-    problem(`Downloading groovyfmt ${version} failed: ${String(e)}`);
+    return JSON.parse(readFileSync(join(ctx.extensionPath, 'dist', 'checksums.json'), 'utf8'));
+  } catch {
     return undefined;
   }
-  output.info(`Downloaded groovyfmt ${version} to ${dest}, checksum verified`);
-  return { path: dest, source: 'download' };
+}
+
+/** Offers the download, and restarts the server once it is in place. */
+async function offerDownload(): Promise<void> {
+  if (offering) return;
+  offering = true;
+  try {
+    const v = version();
+    const { platform, arch } = process;
+    const missing = 'groovyfmt was not found in groovyfmt.path, node_modules or PATH.';
+    if (!TARGETS[`${platform}-${arch}`]) {
+      return problem(`${missing} There is no prebuilt binary for ${platform}-${arch}; install groovyfmt and set groovyfmt.path.`);
+    }
+    const sha256 = embeddedSha256(checksums(), v, platform, arch);
+    if (!sha256) {
+      return problem(
+        `${missing} This build of the extension carries no checksums for groovyfmt ${v} (only release builds do), ` +
+          'so it does not download groovyfmt. Install groovyfmt another way and set groovyfmt.path if it is not on PATH, ' +
+          'or install a release build of the extension.',
+      );
+    }
+    if (ctx.globalState.get(DECLINED)) {
+      return problem(`${missing} Install it, set groovyfmt.path, or run "groovyfmt: Restart server" to be offered the download again.`);
+    }
+    const choice = await vscode.window.showInformationMessage(
+      `${missing} Download groovyfmt ${v} for ${platform}-${arch} from its GitHub release? ` +
+        'Before it runs, the download is checked against the SHA-256 checksum that this extension release carries.',
+      'Download',
+      'Not now',
+    );
+    if (choice === 'Not now') await ctx.globalState.update(DECLINED, true);
+    if (choice !== 'Download') return problem(`${missing} The download was declined.`);
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: `Downloading groovyfmt ${v}` },
+      () => download(v, platform, arch, dest(), undefined, { sha256 }),
+    );
+    output.info(`Downloaded groovyfmt ${v} to ${dest()}, SHA-256 matches the checksum this extension carries`);
+    void restart();
+  } catch (e) {
+    problem(`Downloading groovyfmt failed: ${String(e)}`);
+  } finally {
+    offering = false;
+  }
 }
