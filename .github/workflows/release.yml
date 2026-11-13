@@ -234,7 +234,8 @@ jobs:
       - name: Publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-        run: cargo publish --locked
+        # --no-verify: ci already built and tested this tree, and the verify build would run build.rs and cc with the token set
+        run: cargo publish --locked --no-verify
 
   # Off until the repository variable PUBLISH_NPM is 'true'. Needs the repository
   # public and a trusted publisher on npmjs.com for each package; no token

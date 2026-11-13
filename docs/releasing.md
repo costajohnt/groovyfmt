@@ -70,6 +70,8 @@ CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=$PWD/scripts/wine-run.sh cargo test --
 
 The portal refuses a version it already has, so a rerun of an already published version fails at `publishPlugins`. To publish by hand instead: `cd gradle-plugin && GRADLE_PUBLISH_KEY=... GRADLE_PUBLISH_SECRET=... ./gradlew publishPlugins` from the tagged commit (`--validate-only` checks everything without uploading).
 
+The two secrets are set only for the job's one step, but that step runs the whole Gradle build, its plugins and the tests with them in the environment, so a compromised build dependency could read them. The follow-up is to build and test in a job without secrets and publish the prebuilt artifact in a separate step, as `publish-jetbrains` does.
+
 ## VS Code extension
 
 `editors/vscode/` is the extension (TypeScript, bundled with esbuild into one file, so the `.vsix` holds no `node_modules`). Its version must equal the `Cargo.toml` version: with no groovyfmt installed, it downloads the release of its own version. `ci.yml`'s `vscode` job lints it, runs its unit tests and two integration tests in VS Code (against the commit's own groovyfmt, and in Restricted Mode, where nothing the workspace plants may run), and packages a `.vsix` to try out. That `.vsix` carries no checksums, so it refuses to download groovyfmt.

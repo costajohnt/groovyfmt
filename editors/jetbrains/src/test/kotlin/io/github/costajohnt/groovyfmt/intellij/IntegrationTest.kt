@@ -250,6 +250,37 @@ class IntegrationTest : UsefulTestCase() {
         assertEquals("a stale start reached LSP4IJ", listOf<Throwable>(), errors)
     }
 
+    /**
+     * The server runs binary A; the path changes to B and a second restart follows before
+     * either UI step runs (this test holds the UI thread, as indexing would). The first step is
+     * stale and skipped; the second must still replace A with B, though its binary matches the
+     * one the first restart found.
+     */
+    fun testAPathChangeReachesTheRunningServerThroughTwoRestarts() {
+        val a = bin()
+        val b = File(Files.createTempDirectory("groovyfmt-b").toFile(), "groovyfmt")
+        Files.copy(File(a).toPath(), b.toPath())
+        b.setExecutable(true)
+        fun serving(path: String) = ProcessHandle.allProcesses().anyMatch { p ->
+            p.isAlive && p.info().command().orElse("") == path && p.info().arguments().orElse(arrayOf()).contentEquals(arrayOf("--lsp"))
+        }
+        GroovyfmtSettings.get().path = a
+        open()
+        val service = fixture.project.service<GroovyfmtService>()
+        service.restart().get(30, TimeUnit.SECONDS)
+        waitFor("the server to run A", 30_000) {
+            LanguageServerManager.getInstance(fixture.project).getServerStatus(SERVER_ID) == ServerStatus.started && serving(a)
+        }
+        GroovyfmtSettings.get().path = b.path
+        val first = service.restart()
+        val second = service.restart()
+        first.get(30, TimeUnit.SECONDS)
+        second.get(30, TimeUnit.SECONDS)
+        waitFor("the server to run B in place of A", 30_000) {
+            LanguageServerManager.getInstance(fixture.project).getServerStatus(SERVER_ID) == ServerStatus.started && serving(b.path) && !serving(a)
+        }
+    }
+
     /** A binary that never reads its input can't hang Reformat with groovyfmt: the timeout kills it. */
     fun testReformatTimesOutOnABinaryThatNeverReadsItsInput() {
         val stuck = File(Files.createTempDirectory("groovyfmt-stuck").toFile(), "groovyfmt")

@@ -108,31 +108,33 @@ class GroovyfmtService(val project: Project) : Disposable {
     /**
      * Finds the binary again and restarts the server if it changed, or always with `force`
      * (Restart groovyfmt). Restarting a server that is still starting can leave its process
-     * behind, so an unchanged binary leaves a running or starting server alone.
+     * behind, so a running or starting server already launched from this binary is left alone.
      */
     fun restart(force: Boolean = false): Future<*> = queue.submit {
         if (project.isDisposed) return@submit
         active = true
         stoppedInLsp4ij = false
         notice?.expire()
-        val before = binary
         val found = resolve()
         binary = found
-        // After indexing: LSP4IJ connects no file while the IDE indexes, as it does just after a
-        // file opens, and won't retry a file it has already tried.
-        DumbService.getInstance(project).runWhenSmart {
+        // on the UI thread, once the IDE isn't indexing
+        DumbService.getInstance(project).smartInvokeLater {
             // A later restart may have changed the binary since: then this step is stale, and
             // starting the server could find the plugin turned off.
-            if (project.isDisposed || binary !== found) return@runWhenSmart
+            if (project.isDisposed || binary !== found) return@smartInvokeLater
             val manager = LanguageServerManager.getInstance(project)
             val running = manager.getServerStatus(SERVER_ID).let { it == ServerStatus.started || it == ServerStatus.starting }
-            if (!force && found != null && found == before && running) return@runWhenSmart
+            if (!force && found != null && found == launched && running) return@smartInvokeLater
             // a plain stop: LSP4IJ's default stop also turns the server off
             manager.stop(SERVER_ID, LanguageServerManager.StopOptions().setWillDisable(false))
             // starts it for the open files groovyfmt serves, if there are any
             if (found != null && !stoppedInLsp4ij) manager.start(SERVER_ID)
         }
     }
+
+    /** The binary the server was last launched from, set when LSP4IJ starts its process. */
+    @Volatile
+    var launched: Found? = null
 
     /**
      * Reports a problem in a notification. `missing`: groovyfmt simply isn't installed, which is
@@ -276,9 +278,11 @@ class GroovyfmtStartup : ProjectActivity {
 /** The language server, for LSP4IJ: runs the service's binary with `--lsp`. */
 class GroovyfmtServerFactory : LanguageServerFactory, LanguageServerEnablementSupport {
     override fun createConnectionProvider(project: Project): StreamConnectionProvider {
-        val found = project.service<GroovyfmtService>().binary
+        val service = project.service<GroovyfmtService>()
+        val found = service.binary
             // LSP4IJ starts the server only while isEnabled, so there is a binary
             ?: throw IllegalStateException("groovyfmt: no binary to run")
+        service.launched = found
         return OSProcessStreamConnectionProvider(
             GeneralCommandLine(found.path, "--lsp").withWorkDirectory(projectDir(project)).withCharset(StandardCharsets.UTF_8),
         )
