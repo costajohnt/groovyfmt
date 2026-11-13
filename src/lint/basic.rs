@@ -140,9 +140,11 @@ fn is_comment(n: Node) -> bool {
 /// DeadCode: a statement after `return`, `throw`, `break` or `continue` in the same block.
 /// Declarations are not dead (a script's methods and classes come after its `return`), and
 /// neither is a labeled statement, which another path can reach. A `break` right after a
-/// `return` or `throw` (the switch-case habit) is redundant but harmless, so it is left
-/// alone. So is code on the jump's own line: the grammar splits some one-line returns in
-/// two (`return pipeline { ... }`, `return o instanceof T t && ...`).
+/// `return` or `throw` (the switch-case habit) is redundant but left alone: it is kept on
+/// purpose, so that removing the jump can't let the case fall through. A `break` after a
+/// `break` or `continue` serves no such purpose and is reported (on real code, a doubled
+/// line). Code on the jump's own line is left alone too: the grammar splits some one-line
+/// returns in two (`return pipeline { ... }`, `return o instanceof T t && ...`).
 ///
 /// Driven by the jumps, which are few, instead of by every block's statements.
 fn dead_code(jump: Node, v: &mut Vec<Violation>) {
@@ -634,7 +636,7 @@ fn equals_and_hash_code(src: &str, n: Node, v: &mut Vec<Violation>) {
     let Some(body) = n.child_by_field_name("body") else {
         return;
     };
-    let (mut equals, mut hash) = (false, false);
+    let (mut equals, mut hash) = (None, false);
     let mut c = body.walk();
     for m in body.named_children(&mut c).filter(|m| {
         matches!(m.kind(), "method_declaration" | "constructor_declaration")
@@ -643,12 +645,17 @@ fn equals_and_hash_code(src: &str, n: Node, v: &mut Vec<Violation>) {
     }) {
         let p = params(m);
         match method_name(src, m) {
-            "equals" if p.len() == 1 && object_param(src, p[0]) => equals = true,
+            "equals" if p.len() == 1 && object_param(src, p[0]) => equals = Some(m),
             "hashCode" if p.is_empty() => hash = true,
             _ => {}
         }
     }
-    if !equals || hash {
+    let Some(equals) = equals.filter(|_| !hash) else {
+        return;
+    };
+    if identity_only(src, equals)
+        || (has_modifier(n, "abstract") && calls_abstract(src, body, equals))
+    {
         return;
     }
     let generated = annotations(src, n).iter().any(|a| {
@@ -671,6 +678,159 @@ fn equals_and_hash_code(src: &str, n: Node, v: &mut Vec<Violation>) {
     }
 }
 
+/// Whether `equals(Object)` is never broader than identity, so the inherited identity
+/// `hashCode()` keeps the contract: its body is one statement, optionally `return`, of
+/// `false`, `this.is(o)`, `o.is(this)`, `DefaultGroovyMethods.is(this, o)` and `o == null`,
+/// joined by `||` (grails-core's `VersionComparator` and `NullSafeNavigator`).
+fn identity_only(src: &str, equals: Node) -> bool {
+    let (Some(p), Some(body)) = (
+        params(equals)
+            .first()
+            .and_then(|p| p.child_by_field_name("name")),
+        equals.child_by_field_name("body"),
+    ) else {
+        return false;
+    };
+    let p = text(p, src);
+    let mut c = body.walk();
+    let stmts: Vec<Node> = body
+        .named_children(&mut c)
+        .filter(|s| !is_comment(*s))
+        .collect();
+    let [s] = stmts[..] else { return false };
+    if !matches!(s.kind(), "return_statement" | "expression_statement") {
+        return false;
+    }
+    fn identity(src: &str, p: &str, e: Node) -> bool {
+        let e = unparen(e);
+        let side = |f| e.child_by_field_name(f);
+        match e.kind() {
+            "boolean_literal" => text(e, src) == "false",
+            "binary_expression" => match e.child_by_field_name("operator").map_or("", |o| o.kind())
+            {
+                "||" => [side("left"), side("right")]
+                    .iter()
+                    .all(|x| x.is_some_and(|x| identity(src, p, x))),
+                "==" => {
+                    let t = [side("left"), side("right")].map(|x| x.map_or("", |x| text(x, src)));
+                    t == ["null", p] || t == [p, "null"]
+                }
+                _ => false,
+            },
+            "method_invocation" => {
+                let Some(f) = side("function") else {
+                    return false;
+                };
+                let mut ops: Vec<&str> = side("arguments")
+                    .map(|a| {
+                        a.named_children(&mut a.walk())
+                            .map(|x| text(x, src))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let name = if f.kind() == "field_access" {
+                    let object = f.child_by_field_name("object").map_or("", |o| text(o, src));
+                    if object != "DefaultGroovyMethods" {
+                        ops.push(object);
+                    }
+                    f.child_by_field_name("field").map_or("", |x| text(x, src))
+                } else {
+                    text(f, src)
+                };
+                name == "is" && (ops == [p, "this"] || ops == ["this", p])
+            }
+            _ => false,
+        }
+    }
+    s.named_child(0).is_some_and(|e| identity(src, p, e))
+}
+
+/// Whether `equals` calls one of the methods its class declares abstract: equality is left
+/// to the subclasses (hoist-core's `Filter`), so `hashCode()` belongs with them too.
+fn calls_abstract(src: &str, class_body: Node, equals: Node) -> bool {
+    let mut c = class_body.walk();
+    let abstract_methods: HashSet<&str> = class_body
+        .named_children(&mut c)
+        .filter(|m| m.kind() == "method_declaration" && has_modifier(*m, "abstract"))
+        .map(|m| method_name(src, m))
+        .collect();
+    let mut calls = false;
+    if let Some(body) = equals.child_by_field_name("body") {
+        crate::preorder(body, |x| {
+            if x.kind() == "method_invocation"
+                && let Some(f) = x.child_by_field_name("function")
+            {
+                let name = match f.kind() {
+                    "identifier" => text(f, src),
+                    "field_access"
+                        if f.child_by_field_name("object")
+                            .is_some_and(|o| text(o, src) == "this") =>
+                    {
+                        f.child_by_field_name("field").map_or("", |x| text(x, src))
+                    }
+                    _ => "",
+                };
+                calls |= abstract_methods.contains(name);
+            }
+            !calls
+        });
+    }
+    calls
+}
+
+/// Whether class `c`, or a superclass declared in the same file, declares `equals(Object)`,
+/// which can delegate to a typed overload.
+fn declares_object_equals(src: &str, mut c: Node) -> bool {
+    let mut root = c;
+    while let Some(p) = root.parent() {
+        root = p;
+    }
+    // ponytail: a bounded walk up `extends`, which also stops a cycle
+    for _ in 0..8 {
+        let Some(body) = c.child_by_field_name("body") else {
+            return false;
+        };
+        let mut w = body.walk();
+        if body.named_children(&mut w).any(|m| {
+            matches!(m.kind(), "method_declaration" | "constructor_declaration")
+                && method_name(src, m) == "equals"
+                && !has_modifier(m, "static")
+                && matches!(params(m)[..], [p] if object_param(src, p))
+        }) {
+            return true;
+        }
+        let Some(sup) = c
+            .children(&mut c.walk())
+            .find(|k| k.kind() == "superclass")
+            .and_then(|s| {
+                s.children(&mut s.walk())
+                    .filter(|t| t.is_named() && t.kind() != "annotation")
+                    .last()
+            })
+            .map(|t| {
+                let t = text(t, src).split('<').next().unwrap_or("");
+                t.rsplit('.').next().unwrap_or("").trim()
+            })
+        else {
+            return false;
+        };
+        let mut next = None;
+        crate::preorder(root, |x| {
+            if next.is_none()
+                && x.kind() == "class_declaration"
+                && x.child_by_field_name("name")
+                    .is_some_and(|n| text(n, src) == sup)
+            {
+                next = Some(x);
+            }
+            next.is_none()
+        });
+        let Some(next) = next else { return false };
+        c = next;
+    }
+    false
+}
+
 /// EqualsOverloaded, ObjectOverrideMisspelledMethodName, ToStringReturnsNull.
 fn method(src: &str, m: Node, v: &mut Vec<Violation>) {
     let name = method_name(src, m);
@@ -682,7 +842,16 @@ fn method(src: &str, m: Node, v: &mut Vec<Violation>) {
     let at_name = |rule, msg: String| at(m.child_by_field_name("name").unwrap_or(m), rule, msg);
     // only the one-parameter form looks like an override; `equals(a, b)` implementing an
     // interface (Hibernate's UserType) or a Spock feature named `equals` is something else
-    if name == "equals" && p.len() == 1 && !object_param(src, p[0]) {
+    // nor an abstract declaration, nor an overload that a class's equals(Object) can call
+    if name == "equals"
+        && p.len() == 1
+        && !object_param(src, p[0])
+        && m.child_by_field_name("body").is_some()
+        && !m
+            .parent()
+            .and_then(|b| b.parent())
+            .is_some_and(|c| declares_object_equals(src, c))
+    {
         v.push(at_name(
             "EqualsOverloaded",
             "This equals() takes a typed parameter, so it overloads equals instead of overriding it, and == and collections ignore it; declare equals(Object)".into(),
@@ -887,7 +1056,8 @@ mod tests {
             vec![] as Vec<usize>
         );
         // `break` after a return in a switch is a habit; code on the jump's line is left to
-        // the grammar, which splits `return pipeline { }` (orca DependentPipelineStarterSpec)
+        // the grammar, which splits `return pipeline { }` (orca DependentPipelineStarterSpec);
+        // a doubled `break` has no such reason and is reported
         let src = "switch (x) {\n  case 1:\n    return 1\n    break\n  case 2:\n    throw new E()\n    break\n}\nx = { _, p ->\n  return pipeline {\n    name = p\n  }\n}\nwhile (a) {\n  break\n  break\n}\n";
         assert_eq!(rules(src, "DeadCode"), vec![16]);
     }
@@ -949,6 +1119,15 @@ mod tests {
         let src = "class A {\n  boolean equals(Object o) { true }\n}\nclass B {\n  int hashCode() { 1 }\n}\nclass C {\n  boolean equals(o) { true }\n  int hashCode() { 1 }\n}\n@EqualsAndHashCode\nclass D {\n  boolean equals(Object o) { true }\n}\nclass E {\n  boolean equals(String s) { true }\n  static int hashCode() { 1 }\n}\nclass F extends A {\n  boolean equals(Object o) { true }\n}\n";
         assert_eq!(rules(src, "EqualsAndHashCode"), vec![1]);
         assert_eq!(rules(src, "EqualsOverloaded"), vec![16]);
+        // hoist-core's Filter: equals(Object) delegates to a typed overload, abstract in the
+        // base; a superclass in another file can't be seen, so Lone stays reported
+        let src = "abstract class Filter {\n  abstract boolean equals(Filter o)\n  boolean equals(Object o) { o instanceof Filter && equals((Filter) o) }\n}\nclass Field extends Filter {\n  boolean equals(Filter o) { true }\n  int hashCode() { 1 }\n}\nclass Other {\n  boolean equals(Other o) { true }\n  boolean equals(Object o) { o instanceof Other && equals((Other) o) }\n  int hashCode() { 1 }\n}\nclass Lone extends Remote {\n  boolean equals(Lone o) { true }\n}\nabstract class Base {\n  int x\n  abstract int size()\n  boolean equals(Object o) { o.x == x }\n}\n";
+        assert_eq!(rules(src, "EqualsOverloaded"), vec![15]);
+        assert_eq!(rules(src, "EqualsAndHashCode"), vec![17]);
+        // an equals never broader than identity keeps the contract with Object.hashCode
+        // (grails-core's VersionComparator and NullSafeNavigator)
+        let src = "class A {\n  boolean equals(obj) { false }\n}\nclass B {\n  boolean equals(Object to) {\n    return to == null || DefaultGroovyMethods.is(this, to)\n  }\n}\nclass C {\n  boolean equals(Object o) { this.is(o) }\n}\nclass D {\n  boolean equals(Object o) { true }\n}\nclass E {\n  boolean equals(Object o) { o == null || o.x == 1 }\n}\n";
+        assert_eq!(rules(src, "EqualsAndHashCode"), vec![12, 15]);
     }
 
     #[test]
