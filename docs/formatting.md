@@ -86,6 +86,9 @@ In Groovy a line break can end a statement. So a break goes only where Groovy's 
 - **Before each `.`, `?.` or `*.` of a chain of three or more calls**, except the first call's (`Foo.builder()`, then `.name(x)` and `.build()` on lines of their own). The grammar allows this anywhere (`pathElement : NL* DOT …`). In a chain already written over several lines, the dots on a line that is still too long break the same way.
 - **After `||`, `&&`, `==`, `!=`, `+` and `-`** at the lowest-precedence level of a binary expression, after a ternary's `?` and `:`, and after `?:`. The operator always ends the line. The grammar takes a newline after `+` and `-` but not before them, and `a` then `-b` on the next line would be two statements.
 - **After `=`** in an assignment or declaration, when nothing else on the line can break.
+- **In a class, interface, trait, enum or record header**, before `extends`, `implements` or `permits`, and after each comma between their types. The grammar takes a newline before and after each of these keywords (`classDeclaration : … (NL* EXTENDS NL* typeList)? (NL* IMPLEMENTS NL* typeList)? …`) and after each comma (`typeList : type (COMMA NL* type)*`). The header breaks before as few keywords as leave its first line fitting (`class FooSpec extends Specification`, then `implements GrailsUnitTest, DataTest {`), the `{` staying at the end of the last line. A clause still too long on its own line then takes one type per line.
+
+Each of these break positions was checked against Groovy 2.4.21 (the version Jenkins bundles), 3.0.25 and 4.0.24, which all read the code with and without the break as the same syntax tree (records and `sealed` / `permits` need Groovy 4).
 
 For each line over the limit, the outermost construct that lies wholly on that line breaks one of these ways. The file is then re-indented (and respaced, with `normalize_spacing`), the lines are measured again, and pieces still too long break further. Continuation lines get `continuation_indent`.
 
@@ -100,7 +103,7 @@ These are never broken, because Groovy or the grammar might read the result diff
 - Between `return`, `throw`, `assert`, `new`, `as`, `in`, `instanceof` or `!` and what follows, between a name and its `(`, between `)` and a trailing closure, and anywhere the line before the break could end a statement by itself.
 - Outside `(…)` and `[…]`, a wrapped line never starts with `{`, `++`, `--`, `+`, `-`, `*` or `/` (a `*.` of a chain aside). It starts with `(`, `[` or a string only right after a line ending in a binary operator, `?`, `:` or `=`, which the grammar says must continue. Inside brackets Groovy's lexer drops the line break, so an argument such as `-1` or `'text'` may start a line.
 - In an annotation, anything but its brackets: its argument list and the lists in it (an operator or a chain in them stays whole), and an annotation followed on its line by more (`@A(x, y) def f()`). `import` and `package` lines, `case` labels, Spock `where:` blocks, GString interpolations, and argument lists, parameter lists or literals holding a comment.
-- `<`, `>`, `as`, `instanceof`, `in`, ranges, shifts and the other operators. Only the ones above are break points. Nothing breaks right after a `>` either, since tree-sitter-groovy reads `f(a, List<T>` followed by a line break as comparisons.
+- `<`, `>`, `as`, `instanceof`, `in`, ranges, shifts and the other operators. Only the ones above are break points. Nothing breaks right after a `>` either, since tree-sitter-groovy reads `f(a, List<T>` followed by a line break as comparisons. A class header is the exception, where a `>` closes a type (`class A<T>` then `extends B<T>`).
 - A part of a larger construct on the line that can't break itself:
   - an operator expression inside another operator's operand (`(a != null && b) ? x : y`), in parentheses (`(a ?: b).c()`) or in a subscript (`a[i + 1]`)
   - an operator expression or chain that is a call's only argument while the call is on one line (`f(a + b)`, also through a cast: the parentheses break first) or a lambda's body
@@ -110,6 +113,7 @@ These are never broken, because Groovy or the grammar might read the result diff
   - whatever is inside something that may not break
 - An argument list or literal followed on its line by more text than it holds (`f(_, _) >> { long closure parameters ->`), where breaking it gains little. A call's only argument followed by more than closing brackets (`f(x) == 1`, `if (f(x)) {`), or shorter than half of what comes before it on the line (`a.b(c).d(x)`), for the same reason.
 - A parameter list of a closure or lambda, and one with a single parameter.
+- In a class header, inside the type parameters (`class A<T extends B>`) or type arguments, before the `{`, and anywhere in a header holding a comment or followed on its line by a body other than `{}` (`class A extends B { def x }`). A record without a body.
 - A line holding two statements (`a(x, y); b(z)`), or an `if`, `else`, `while` or `for` body without braces (`if (c) x = f(a, b)`).
 - A line of a list written over several lines that holds two or more of its items (laid out by hand).
 - A line whose overflow is only a trailing comment, or that holds a string too long to fit on a continuation line anyway.
