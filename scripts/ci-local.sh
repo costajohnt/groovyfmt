@@ -68,7 +68,8 @@ fi
 
 if command -v npm > /dev/null && node -e 'process.exit(parseInt(process.versions.node) < 22 ? 1 : 0)'; then
   # The VS Code extension: lint, unit tests and the .vsix. ci.yml also runs its integration
-  # test in VS Code: GROOVYFMT_BIN=$PWD/target/release/groovyfmt npm run test:integration
+  # tests in VS Code, trusted and in Restricted Mode, which download VS Code:
+  # GROOVYFMT_BIN=$PWD/target/release/groovyfmt npm run test:integration
   # in editors/vscode (add VSCODE_TEST_ARGS=--ozone-platform=headless without a display).
   (cd editors/vscode && npm ci --no-audit --no-fund && npm run lint && npm run test:unit \
     && npm run package -- --out "$tmp/groovyfmt.vsix")

@@ -194,8 +194,10 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm run lint
       - run: npm run test:unit
-      # No display on the runner: Electron's headless Ozone backend needs none.
-      - name: Integration test in VS Code
+      # No display on the runner: Electron's headless Ozone backend needs none. Two runs:
+      # trusted (diagnostics, format, fix all) and Restricted Mode (nothing the workspace
+      # plants as groovyfmt.path or in node_modules may run).
+      - name: Integration tests in VS Code
         env:
           GROOVYFMT_BIN: ${{ github.workspace }}/target/release/groovyfmt
           VSCODE_TEST_ARGS: --ozone-platform=headless

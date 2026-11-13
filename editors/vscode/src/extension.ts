@@ -40,8 +40,11 @@ let client: LanguageClient | undefined;
 let queue: Promise<void> = Promise.resolve();
 // the download offer runs beside the queue, one at a time
 let offering = false;
+// the last problem reported, which the integration test reads through activate's return value
+let lastProblem: string | undefined;
 
 function problem(message: string): void {
+  lastProblem = message;
   output.error(message);
   status.tooltip = `${message}\nClick to show the groovyfmt output.`;
   status.show();
@@ -52,7 +55,7 @@ function restart(): Promise<void> {
   return queue;
 }
 
-export function activate(context: vscode.ExtensionContext): void {
+export function activate(context: vscode.ExtensionContext): { lastProblem(): string | undefined } {
   ctx = context;
   output = vscode.window.createOutputChannel('groovyfmt', { log: true });
   status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right);
@@ -75,6 +78,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   // not awaited: activation never waits on the server, the prompt or a download
   void restart();
+  return { lastProblem: () => lastProblem };
 }
 
 export async function deactivate(): Promise<void> {
