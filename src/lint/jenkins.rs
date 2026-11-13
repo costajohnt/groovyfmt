@@ -644,7 +644,10 @@ fn when(src: &str, body: Node, depth: usize, v: &mut Vec<Violation>) {
             // ModelValidatorImpl.validateElement(ModelASTWhenCondition)
             let n = c.body.map_or(0, |b| statements(b).len());
             let msg = if !c.args.is_empty() {
-                format!("`{}` takes no arguments, only conditions in its block", c.name)
+                format!(
+                    "`{}` takes no arguments, only conditions in its block",
+                    c.name
+                )
             } else if c.name == "not" && n != 1 {
                 format!("`not` needs exactly one condition in its block, not {n}")
             } else if n == 0 {
@@ -739,7 +742,10 @@ fn duplicate_names(src: &str, body: Node, what: &str, v: &mut Vec<Violation>) {
             v.push(at(
                 s,
                 "JenkinsDuplicateOption",
-                format!("`{}` appears twice in this {what} {{ }}; Jenkins rejects a repeat", c.name),
+                format!(
+                    "`{}` appears twice in this {what} {{ }}; Jenkins rejects a repeat",
+                    c.name
+                ),
             ));
         }
     }
@@ -890,7 +896,10 @@ fn concat_part(n: Node) -> bool {
 /// ModelASTAxisContainer, ModelASTAxis, ModelASTExcludes, ModelASTExclude).
 fn matrix(src: &str, secs: &[Call], v: &mut Vec<Violation>) {
     let mut push = |n: Node, m: String| v.push(at(n, "JenkinsMatrixAxes", m));
-    for sec in secs.iter().filter(|s| matches!(s.name, "axes" | "excludes")) {
+    for sec in secs
+        .iter()
+        .filter(|s| matches!(s.name, "axes" | "excludes"))
+    {
         let Some(body) = sec.body else { continue };
         let item = if sec.name == "axes" {
             "axis"
@@ -904,7 +913,11 @@ fn matrix(src: &str, secs: &[Call], v: &mut Vec<Violation>) {
                 if c.is_none() {
                     push(
                         s,
-                        format!("`{}` is not an {item} block; {} {{ }} holds only {item} {{ }} blocks", head(s, src), sec.name),
+                        format!(
+                            "`{}` is not an {item} block; {} {{ }} holds only {item} {{ }} blocks",
+                            head(s, src),
+                            sec.name
+                        ),
                     );
                 }
                 c
@@ -969,7 +982,11 @@ fn axis<'a>(
         let Some(c) = call(s, src).filter(|c| keys.contains(&c.name)) else {
             push(
                 s,
-                format!("`{}` is not part of an axis; an axis takes {}", head(s, src), keys.join(", ")),
+                format!(
+                    "`{}` is not part of an axis; an axis takes {}",
+                    head(s, src),
+                    keys.join(", ")
+                ),
             );
             continue;
         };
@@ -984,10 +1001,15 @@ fn axis<'a>(
                 .filter(|a| c.args.len() == 1 && a.kind() == "string_literal")
                 .and_then(|a| constant_value(*a, src));
             match lit {
-                None => push(s, "An axis name must be one plain string, as in name 'OS'".into()),
+                None => push(
+                    s,
+                    "An axis name must be one plain string, as in name 'OS'".into(),
+                ),
                 Some(n) if !exclude && !env_identifier(&n) => push(
                     s,
-                    format!("Axis name '{n}' is not a valid variable name; use letters, digits and _, not starting with a digit"),
+                    format!(
+                        "Axis name '{n}' is not a valid variable name; use letters, digits and _, not starting with a digit"
+                    ),
                 ),
                 // the validator reports a repeat only in the axes of one block
                 Some(n) if !names.insert(n.clone()) => {
@@ -1004,7 +1026,10 @@ fn axis<'a>(
                 match constant_value(x, src).filter(|_| x.kind() != "identifier") {
                     None => push(
                         x,
-                        format!("Axis value `{}` must be a plain string or number, not an expression or interpolated string", head(x, src)),
+                        format!(
+                            "Axis value `{}` must be a plain string or number, not an expression or interpolated string",
+                            head(x, src)
+                        ),
                     ),
                     Some(val) if !values.insert((x.kind() == "string_literal", val.clone())) => {
                         push(x, format!("Axis value '{val}' is listed twice"))
@@ -1015,12 +1040,18 @@ fn axis<'a>(
         }
     }
     if seen.contains("values") && seen.contains("notValues") {
-        push(a.node, "An exclude axis takes values or notValues, not both".into());
+        push(
+            a.node,
+            "An exclude axis takes values or notValues, not both".into(),
+        );
     }
     if !exclude {
         for need in ["name", "values"] {
             if !seen.contains(need) {
-                push(a.node, format!("This axis has no `{need}`, which it requires"));
+                push(
+                    a.node,
+                    format!("This axis has no `{need}`, which it requires"),
+                );
             }
         }
     }
@@ -1376,7 +1407,9 @@ mod tests {
         );
         assert_eq!(
             rules(&src),
-            (4..=12).map(|l| ("JenkinsEnvironmentEntry", l)).collect::<Vec<_>>()
+            (4..=12)
+                .map(|l| ("JenkinsEnvironmentEntry", l))
+                .collect::<Vec<_>>()
         );
         // environment/nonLiteralEnvironment, readFileInEnv and multilineEnvironment
         let src = env(
@@ -1390,7 +1423,10 @@ mod tests {
         let src = "pipeline {\n agent any\n options {\n  timeout(time: 1, unit: 'HOURS')\n  skipDefaultCheckout()\n  timeout(time: 2, unit: 'HOURS')\n }\n triggers {\n  cron('H * * * *')\n  cron('H 2 * * *')\n  pollSCM('H * * * *')\n }\n stages { stage('a') { steps { echo 1 } } }\n}\n";
         assert_eq!(
             rules(src),
-            vec![("JenkinsDuplicateOption", 6), ("JenkinsDuplicateOption", 10)]
+            vec![
+                ("JenkinsDuplicateOption", 6),
+                ("JenkinsDuplicateOption", 10)
+            ]
         );
     }
 

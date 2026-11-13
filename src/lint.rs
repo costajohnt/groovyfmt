@@ -1394,7 +1394,10 @@ mod tests {
             ("A.groovy", more),
             ("B.groovy", "// groovyfmt-ignore DeadCode\nprintln 1\n"),
             ("Jenkinsfile", jenkins),
-            ("Jenkinsfile", "pipeline {\n agent any\n environment { A = env.B }\n tools { maven }\n options { retry(1); retry(2) }\n stages {\n  stage('a') {\n   input { ok 'x' }\n   when { not { } }\n   agent any\n   matrix { stages { stage('b') { steps { echo 1 } } } }\n  }\n }\n}\n"),
+            (
+                "Jenkinsfile",
+                "pipeline {\n agent any\n environment { A = env.B }\n tools { maven }\n options { retry(1); retry(2) }\n stages {\n  stage('a') {\n   input { ok 'x' }\n   when { not { } }\n   agent any\n   matrix { stages { stage('b') { steps { echo 1 } } } }\n  }\n }\n}\n",
+            ),
             ("build.gradle", gradle),
             ("build.gradle", "apply plugin: 'maven'\n"),
             ("S.groovy", spock),

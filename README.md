@@ -96,7 +96,7 @@ exclude = ["generated/**"]
 
 ## Linting
 
-`groovyfmt --lint` has 59 rules, 46 of them on by default. The general rules are named after their [CodeNarc](https://codenarc.org/) equivalents. The Jenkinsfile, Gradle and Spock rules catch mistakes those tools otherwise report only when a build runs. `groovyfmt --rules` lists them all.
+`groovyfmt --lint` has 67 rules, 54 of them on by default. The general rules are named after their [CodeNarc](https://codenarc.org/) equivalents. The Jenkinsfile, Gradle and Spock rules catch mistakes those tools otherwise report only when a build runs. `groovyfmt --rules` lists them all.
 
 - Turn rules on or off in the `[lint]` table of `.groovyfmt.toml`.
 - Suppress a report with `// groovyfmt-ignore`. CodeNarc's `codenarc-disable` comments and `@SuppressWarnings` work too.
