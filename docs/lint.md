@@ -155,7 +155,7 @@ These apply in `*.gradle` files.
 
 The rules read the build script and the nearest wrapper version; they do not invoke Gradle or require the project to configure successfully.
 
-Questions that need the resolved dependency graph are out of scope: unused dependencies, undeclared dependencies, duplicate classes across jars, and version recommendations all require a linting tool that runs inside the Gradle build. Those tools and groovyfmt cover different ground and work alongside each other.
+Unused dependencies, undeclared dependencies, duplicate classes across jars and version recommendations all need the resolved dependency graph, so they are out of scope and require a linting tool that runs inside the Gradle build. Those tools and groovyfmt cover different ground and work alongside each other.
 
 These rules apply to Groovy DSL build scripts (`*.gradle`). Kotlin DSL scripts (`build.gradle.kts`, `settings.gradle.kts`) are not linted or formatted.
 
