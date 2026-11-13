@@ -24,6 +24,16 @@ UnusedImport = false
 
 Unknown keys and misspelled rule names are errors, so a typo can't silently do nothing. A config file can only fail the run when groovyfmt reaches a file or directory it governs. `-v` prints each config in use.
 
+## Migrating from CodeNarc
+
+`groovyfmt --import-codenarc` reads a CodeNarc configuration (ruleset XML, a Groovy ruleset, `codenarc.properties`, or npm-groovy-lint's `.groovylintrc.json`) and prints the `[lint]` table that carries it over. What it can't carry over follows as comments. It writes nothing, so redirect the output to start a config:
+
+```console
+$ groovyfmt --import-codenarc config/codenarc/codenarc.groovy > .groovyfmt.toml
+```
+
+Formatter settings that cover some of CodeNarc's formatting rules (`indent`, `normalize_spacing`) are suggested as comments above `[lint]`, since they change how files are formatted. [Lint](lint.md#migrating-from-codenarc) describes what it reads and reports.
+
 ## Which config applies
 
 Each file is governed by the nearest `.groovyfmt.toml` or `groovyfmt.toml` found by walking up from that file's own directory, wherever groovyfmt runs from. With `--stdin-filepath`, the walk starts from that path's directory.

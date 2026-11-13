@@ -1,4 +1,6 @@
 pub mod baseline;
+pub mod codenarc;
+mod codenarc_data;
 pub mod config;
 pub mod diff;
 pub mod fix;
@@ -93,6 +95,24 @@ pub fn display_path(p: &Path) -> String {
     #[cfg(windows)]
     let s = s.replace('\\', "/");
     s
+}
+
+/// Control characters escaped, so a crafted file name or file content (lint messages quote
+/// source text) can't break a report line or inject CI workflow commands such as `::set-env`.
+/// The GitHub Actions runner also takes the older `##[command]` form anywhere in a line, so
+/// `##[` becomes `##\[`; nothing printed after this (`gh_escape`, `shown`) adds or removes
+/// a `\` or `[`, so the sequence can't come back.
+pub fn printable(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_control() {
+                c.escape_debug().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect::<String>()
+        .replace("##[", "##\\[")
 }
 
 /// Groovy sources, Gradle build scripts, and Jenkinsfiles.

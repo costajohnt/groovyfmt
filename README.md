@@ -71,6 +71,7 @@ Also available: a [GitHub Action and pre-commit hooks](#ci-and-pre-commit). Not 
 | `groovyfmt --syntax` | report each place a file could not be parsed |
 | `groovyfmt --explain <Rule>` | explain a lint rule and how to turn it off |
 | `groovyfmt --suggest-style` | suggest the indent settings that fit the existing code |
+| `groovyfmt --import-codenarc <file>` | turn a CodeNarc configuration into the `[lint]` table of a `.groovyfmt.toml` |
 
 Exit status is 0 when clean, 1 when there is something to fix, and 2 on errors. Paths can be files or directories. Directories are searched for `*.groovy`, `*.gradle`, `*.gvy`, `*.gy`, `*.gsh` and `Jenkinsfile`.
 
@@ -96,9 +97,10 @@ exclude = ["generated/**"]
 
 ## Linting
 
-`groovyfmt --lint` has 67 rules, 54 of them on by default. The general rules are named after their [CodeNarc](https://codenarc.org/) equivalents. The Jenkinsfile, Gradle and Spock rules catch mistakes those tools otherwise report only when a build runs. `groovyfmt --rules` lists them all.
+`groovyfmt --lint` has 77 rules, 55 of them on by default. The general rules are named after their [CodeNarc](https://codenarc.org/) equivalents. The Jenkinsfile, Gradle and Spock rules catch mistakes those tools otherwise report only when a build runs. `groovyfmt --rules` lists them all.
 
 - Turn rules on or off in the `[lint]` table of `.groovyfmt.toml`.
+- Moving from CodeNarc or npm-groovy-lint, `groovyfmt --import-codenarc <config>` prints that table from your existing configuration, with what it can't carry over ([migrating from CodeNarc](https://github.com/costajohnt/groovyfmt/blob/main/docs/lint.md#migrating-from-codenarc)).
 - Suppress a report with `// groovyfmt-ignore`. CodeNarc's `codenarc-disable` comments and `@SuppressWarnings` work too.
 - Adopt lint in an existing repository with a baseline (`--write-baseline`), so only new violations are reported.
 
