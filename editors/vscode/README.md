@@ -20,7 +20,7 @@ Format on save is VS Code's `editor.formatOnSave`. If another extension also for
 
 ```json
 "[groovy]": {
-  "editor.defaultFormatter": "costajohnt.groovyfmt",
+  "editor.defaultFormatter": "groovyfmt.groovyfmt",
   "editor.formatOnSave": true,
   "editor.codeActionsOnSave": { "source.fixAll.groovyfmt": "explicit" }
 }

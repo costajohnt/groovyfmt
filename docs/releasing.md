@@ -15,7 +15,7 @@ Five more jobs publish to registries. Each is off until a repository variable sw
 | `PUBLISH_NPM` = `true` | `publish-npm` | `groovyfmt`, `@groovyfmt/{darwin,linux}-{arm64,x64}` and `@groovyfmt/win32-x64` to npm, with provenance |
 | `PUBLISH_IMAGE` = `true` | `publish-image` | `ghcr.io/costajohnt/groovyfmt:<version>` and `:latest` for linux/amd64 and linux/arm64 |
 | `PUBLISH_GRADLE_PLUGIN` = `true` | `publish-gradle-plugin` | the Gradle plugin `io.github.costajohnt.groovyfmt` to the Gradle Plugin Portal |
-| `PUBLISH_VSCODE` = `true` | `publish-vscode` | the VS Code extension `costajohnt.groovyfmt` to the Visual Studio Marketplace |
+| `PUBLISH_VSCODE` = `true` | `publish-vscode` | the VS Code extension `groovyfmt.groovyfmt` to the Visual Studio Marketplace |
 | `PUBLISH_OPENVSX` = `true` | `publish-openvsx` | the same extension to Open VSX (VSCodium, Cursor and other VS Code builds) |
 
 Set one with `gh variable set PUBLISH_NPM --body true --repo costajohnt/groovyfmt`, and unset it the same way with `--body false` or `gh variable delete`. A version with a `-` (a prerelease) is published under the npm dist-tag `next` and gets no `latest` image tag.
@@ -80,13 +80,13 @@ Both publish jobs publish that same `.vsix`, skip a version the registry already
 
 `publish-vscode` publishes with Marketplace trusted publishing (OIDC, `vsce publish --oidc`): no token secret. Azure DevOps retires global personal access tokens on 2026-12-01, so a token-based setup would stop working then. That needs, once:
 
-1. A publisher with the id `costajohnt`, the `publisher` in `editors/vscode/package.json`: sign in at https://marketplace.visualstudio.com/manage with a Microsoft account, Create publisher, ID `costajohnt`. The id can't be changed later.
-2. A trusted publishing policy: on that page, open the publisher, Trusted Publishing, Create, with repository owner `costajohnt`, repository `groovyfmt`, workflow `release.yml`, and no environment.
+1. A publisher with the id `groovyfmt`, the `publisher` in `editors/vscode/package.json`: sign in at https://marketplace.visualstudio.com/manage with a Microsoft account, Create publisher, ID `groovyfmt`. The id can't be changed later. Done on 2026-11-13: the publisher exists.
+2. A trusted publishing policy: on that page, open the publisher, Trusted Publishing, Create, with repository owner `costajohnt`, repository `groovyfmt`, workflow `release.yml`, and no environment. Done on 2026-11-13: the policy is active.
 3. `gh variable set PUBLISH_VSCODE --body true --repo costajohnt/groovyfmt`.
 
 If a repository secret `VSCE_PAT` exists, the job uses it instead of OIDC. It would be an Azure DevOps personal access token with the Organization "All accessible organizations" and the scope Marketplace, Manage (`gh secret set VSCE_PAT --repo costajohnt/groovyfmt`). Leave it unset to use trusted publishing.
 
-To publish by hand: `npx vsce login costajohnt`, then `npx vsce publish --packagePath groovyfmt-<version>.vsix` in `editors/vscode` with the `.vsix` from the release.
+To publish by hand: `npx vsce login groovyfmt`, then `npx vsce publish --packagePath groovyfmt-<version>.vsix` in `editors/vscode` with the `.vsix` from the release.
 
 ### Open VSX
 
@@ -94,7 +94,7 @@ To publish by hand: `npx vsce login costajohnt`, then `npx vsce publish --packag
 
 1. An account at https://open-vsx.org (sign in with GitHub as `costajohnt`), with the Eclipse Foundation account linked and the Open VSX Publisher Agreement signed in its settings.
 2. An access token: Settings, Access Tokens, Generate New Token. Store it with `gh secret set OVSX_PAT --repo costajohnt/groovyfmt`.
-3. The namespace `costajohnt`: `npx ovsx create-namespace costajohnt -p <token>` (run in `editors/vscode`, where `ovsx` is a dev dependency). `npx ovsx verify-pat costajohnt -p <token>` checks the token can publish to it.
+3. The namespace `groovyfmt`, which must equal the `publisher` in `editors/vscode/package.json`: `npx ovsx create-namespace groovyfmt -p <token>` (run in `editors/vscode`, where `ovsx` is a dev dependency). `npx ovsx verify-pat groovyfmt -p <token>` checks the token can publish to it.
 4. `gh variable set PUBLISH_OPENVSX --body true --repo costajohnt/groovyfmt`.
 
 A new namespace's extensions show as unverified until the namespace is claimed; see the Open VSX wiki's "Namespace access" page to claim it.

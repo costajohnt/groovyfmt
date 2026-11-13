@@ -3,7 +3,7 @@
   "displayName": "groovyfmt",
   "description": "Format and lint Groovy, Gradle build scripts and Jenkinsfiles with groovyfmt",
   "version": "0.13.0",
-  "publisher": "costajohnt",
+  "publisher": "groovyfmt",
   "license": "MIT",
   "icon": "icon.png",
   "homepage": "https://github.com/costajohnt/groovyfmt/tree/main/editors/vscode#readme",
