@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 (2026-11-12)
 
 ### Fixed
 
@@ -12,6 +12,10 @@
 - `UnusedPrivateMethod` and `UnusedPrivateField` reported members that another file uses, which Groovy allows because it doesn't enforce `private`: `it.generateMethods()`, `postProcessingService.getLayerSampleInfo()`, a `@Mixin` class's method called bare, `Constants.DEFAULT_PORT`, a fixture field a spec checks by name. Before reporting, the rules now search the project's other Groovy files for the name (after `.`, `?.`, `.&`, `.@` or `::`, as a whole string, or for a method called bare) in a file that names the member's class and doesn't declare a class of that name itself. The project is the nearest directory with `.git` or a config file, found the same way however groovyfmt is run (`--lint .`, named files, `--changed-since`, the LSP), walked as a directory walk is (exclude patterns honored, no symlinks), and read only when a file has a report of these rules. Past 20,000 files, 256 MiB, or a file over 10 MiB, the two rules report nothing in that project. In the trial repositories this drops 25 of 219 `UnusedPrivateMethod` and 12 of 152 `UnusedPrivateField` reports; in a sample of 19 of them, 18 were used elsewhere and 1 was a same-named class in another package. No other report changes.
 - `UnusedVariable` no longer reports Spock's `IOException e = thrown()`, where the declared type is the exception expected and removing the variable changes the test (50 reports), or a variable named `ignore` or `ignored`, which is unused on purpose (3 reports).
 - The GitHub Action, with no `version` input, failed with only `release not found` when the version in its ref's `Cargo.toml` has no release (`@v0.9.0`, whose release run failed, or `@main` after a version bump and before its release). It still fails there rather than install a release the ref didn't name, but the error now names the missing release and says to use a release tag or `version: latest`. The README no longer says `main` installs the latest release, and the CI `action` job now runs the action from a ref at the latest release and from one with no release. The Gradle plugin's message for a missing release (HTTP 404) no longer says the repository is private; it says the release may not exist and how to pick one.
+
+### Changed
+
+- The README is now a short front page: what groovyfmt is, why it is safe to run, install, quick start, and a few lines per topic. The reference material moved, unchanged in substance, to `docs/`: `usage.md` (command line), `formatting.md`, `configuration.md`, `lint.md`, `output-formats.md`, `ci.md`, `editors.md`, `agents.md`, `windows.md` and `coverage.md`. The README now lists `cargo install groovyfmt` (0.9.2 is on crates.io), drops the stale private-repository note for pre-commit, updates the pipeline-library lint example to today's output, and dates the npm-groovy-lint benchmark to the build that had 14 rules on by default (today 46 are). `--help` points at `docs/output-formats.md` for the JSON schema.
 
 ## 0.9.2 (2026-11-12)
 
