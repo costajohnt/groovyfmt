@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Fails unless the pushed tag (GITHUB_REF_NAME) is v<Cargo.toml version>, the VS Code
-# extension has the same version, the checked-out commit is on origin/main, and
+# extension has the same version, the JetBrains plugin takes its version from Cargo.toml,
+# the checked-out commit is on origin/main, and
 # CHANGELOG.md has a heading for the version. Run from the repository root with full history fetched.
 set -euo pipefail
 
@@ -15,6 +16,11 @@ fi
 vscode=$(jq -r .version editors/vscode/package.json)
 if [ "$vscode" != "$version" ]; then
   echo "::error::editors/vscode/package.json has version $vscode, expected $version"
+  exit 1
+fi
+# The JetBrains plugin has no version of its own: its build reads Cargo.toml's.
+if ! grep -qF 'file("../../Cargo.toml")' editors/jetbrains/build.gradle.kts; then
+  echo "::error::editors/jetbrains/build.gradle.kts no longer takes its version from Cargo.toml"
   exit 1
 fi
 if ! git merge-base --is-ancestor HEAD origin/main; then

@@ -2,13 +2,13 @@
 
 ## A release
 
-1. Bump `version` in `Cargo.toml` (and `Cargo.lock`) and in the VS Code extension (`npm version <version> --no-git-tag-version` in `editors/vscode`, which updates `package.json` and `package-lock.json`; CI and the tag check fail when the two differ), add a heading to `editors/vscode/CHANGELOG.md` if the extension itself changed, add a `## <version> (<date>)` heading to `CHANGELOG.md`, and update the version pinned in the examples (`costajohnt/groovyfmt@v<version>`, `rev: v<version>`, `version: <version>`, `version = '<version>'`) in `README.md` and `docs/ci.md`; `grep -rnF '<old version>' README.md docs/ci.md` finds them. Merge to `main`.
+1. Bump `version` in `Cargo.toml` (and `Cargo.lock`) and in the VS Code extension (`npm version <version> --no-git-tag-version` in `editors/vscode`, which updates `package.json` and `package-lock.json`; CI and the tag check fail when the two differ), add a heading to `editors/vscode/CHANGELOG.md` if the extension itself changed, and to `editors/jetbrains/CHANGELOG.md` if the JetBrains plugin changed (the plugin takes its version from `Cargo.toml`, and its Marketplace change notes are that file's first section), add a `## <version> (<date>)` heading to `CHANGELOG.md`, and update the version pinned in the examples (`costajohnt/groovyfmt@v<version>`, `rev: v<version>`, `version: <version>`, `version = '<version>'`) in `README.md` and `docs/ci.md`; `grep -rnF '<old version>' README.md docs/ci.md` finds them. Merge to `main`.
 2. Run `gh workflow run ci.yml --ref main` and wait for it to pass. Pull requests and pushes skip the two macOS release builds and the macOS action and npm jobs (hosted macOS runners are scarce); this run has them, so a macOS break shows up before the tag does.
 3. Tag the merge commit `v<version>` and push the tag.
 
-`release.yml` then checks the tag (`check`), runs all of `ci.yml` on it (`ci`), and creates the GitHub release with the five archives and their `.sha256` files (`release`): a `.tar.gz` for each Linux and macOS target and a `.zip` for Windows, plus the VS Code extension as `groovyfmt-<version>.vsix`. The pre-commit hooks (`.pre-commit-hooks.yaml`) and the GitHub Action (`action.yml`) need nothing more: they are used straight from the tag.
+`release.yml` then checks the tag (`check`), runs all of `ci.yml` on it (`ci`), and creates the GitHub release with the five archives and their `.sha256` files (`release`): a `.tar.gz` for each Linux and macOS target and a `.zip` for Windows, plus the VS Code extension as `groovyfmt-<version>.vsix`. After that, the `jetbrains` job tests the JetBrains plugin, packages it and attaches `groovyfmt-jetbrains-<version>.zip` to the release; `release` doesn't wait for it, so a failure there leaves the release without the zip, and rerunning that job attaches it. The pre-commit hooks (`.pre-commit-hooks.yaml`) and the GitHub Action (`action.yml`) need nothing more: they are used straight from the tag.
 
-Five more jobs publish to registries. Each is off until a repository variable switches it on, and each runs only after `release` succeeds, on the tag push itself. Rerunning a whole release workflow fails at `release` because the GitHub release already exists, so switch a channel on before pushing the tag you want it to publish.
+Six more jobs publish to registries. Each is off until a repository variable switches it on, and each runs only after `release` succeeds (`publish-jetbrains` after `jetbrains`), on the tag push itself. Rerunning a whole release workflow fails at `release` because the GitHub release already exists, so switch a channel on before pushing the tag you want it to publish.
 
 | Variable | Job | Publishes |
 |---|---|---|
@@ -17,6 +17,7 @@ Five more jobs publish to registries. Each is off until a repository variable sw
 | `PUBLISH_GRADLE_PLUGIN` = `true` | `publish-gradle-plugin` | the Gradle plugin `io.github.costajohnt.groovyfmt` to the Gradle Plugin Portal |
 | `PUBLISH_VSCODE` = `true` | `publish-vscode` | the VS Code extension `costajohnt.groovyfmt` to the Visual Studio Marketplace |
 | `PUBLISH_OPENVSX` = `true` | `publish-openvsx` | the same extension to Open VSX (VSCodium, Cursor and other VS Code builds) |
+| `PUBLISH_JETBRAINS` = `true` | `publish-jetbrains` | the JetBrains plugin `io.github.costajohnt.groovyfmt` to JetBrains Marketplace |
 
 Set one with `gh variable set PUBLISH_NPM --body true --repo costajohnt/groovyfmt`, and unset it the same way with `--body false` or `gh variable delete`. A version with a `-` (a prerelease) is published under the npm dist-tag `next` and gets no `latest` image tag.
 
@@ -99,9 +100,25 @@ To publish by hand: `npx vsce login costajohnt`, then `npx vsce publish --packag
 
 A new namespace's extensions show as unverified until the namespace is claimed; see the Open VSX wiki's "Namespace access" page to claim it.
 
+## JetBrains plugin
+
+`editors/jetbrains/` is the plugin (Kotlin, built with the IntelliJ Platform Gradle Plugin 2.x and JDK 21). It depends on Red Hat's LSP4IJ plugin for the language server client and runs in IDEs based on IntelliJ Platform 2024.2 or later. Its version is the `Cargo.toml` version, read by its build, and with no groovyfmt installed it downloads the release of that version. `ci.yml`'s `jetbrains` job runs its unit tests and its integration tests in IntelliJ IDEA Community 2024.2 (against the commit's own groovyfmt: diagnostics and formatting, an untrusted project whose planted binaries must not run, and LSP4IJ's user-defined server), the Plugin Verifier against IntelliJ IDEA Community 2024.2 and 2025.2, IntelliJ IDEA 2026.3 and Android Studio 2026.2, and builds a zip to try out. That zip carries no checksums, so it refuses to download groovyfmt. `scripts/ci-local.sh` runs the tests when JDK 21 or later is present.
+
+The release zip comes from `release.yml`'s `jetbrains` job, which runs after `release`. It builds the plugin with `-PgroovyfmtArchives=<dir>` pointing at the five archives built in the same run, which hashes them (checking each against its `.sha256`) into `groovyfmt-checksums.properties` inside the plugin, runs the tests against the release's own Linux binary, and attaches `groovyfmt-jetbrains-<version>.zip` to the GitHub release. Like the VS Code extension, the plugin never trusts a checksum fetched from the release.
+
+`publish-jetbrains` builds the same zip again from the tag and the same archives and runs `publishPlugin`. A prerelease version isn't published. That needs, once:
+
+1. A JetBrains Account, signed in at https://plugins.jetbrains.com. The upload below asks which vendor publishes the plugin: the personal account, or an organization vendor profile created there. `plugin.xml` names the vendor `costajohnt`.
+2. The first upload by hand: JetBrains Marketplace only accepts a plugin's first version through its website. Take `groovyfmt-jetbrains-<version>.zip` from a release, choose Upload plugin on https://plugins.jetbrains.com, pick the vendor, the license (MIT, https://github.com/costajohnt/groovyfmt/blob/main/LICENSE) and the tags, and upload. JetBrains reviews a new plugin before it is listed.
+3. A token: on https://plugins.jetbrains.com/author/me/tokens, Generate Token, then `gh secret set JETBRAINS_MARKETPLACE_TOKEN --repo costajohnt/groovyfmt`.
+4. Signing, optional: Marketplace accepts an unsigned plugin, and the IDE then warns when it is installed. To sign, create a key and certificate as JetBrains' plugin signing guide describes (`openssl genpkey` with `-aes-256-cbc`, `openssl rsa`, then `openssl req -new -x509`), and store them with `gh secret set JETBRAINS_PRIVATE_KEY`, `gh secret set JETBRAINS_PRIVATE_KEY_PASSWORD` and `gh secret set JETBRAINS_CERTIFICATE_CHAIN` (each with `--repo costajohnt/groovyfmt`, the PEM contents as the value). `publishPlugin` signs whenever the key and the chain are set. Signing the first upload too keeps every version signed.
+5. `gh variable set PUBLISH_JETBRAINS --body true --repo costajohnt/groovyfmt`.
+
+To publish by hand instead: in `editors/jetbrains` at the tagged commit, with the release's archives downloaded to a directory, `JETBRAINS_MARKETPLACE_TOKEN=... ./gradlew -PgroovyfmtArchives=<dir> publishPlugin`. Marketplace refuses a version it already has.
+
 ## Verifying release downloads
 
-The GitHub Action (`action.yml`) downloads the archive for the runner and its `.sha256` file from the same GitHub release and compares the two. That catches a truncated or corrupted download. It does not catch a replaced release: anyone who can rewrite the release's assets can replace the archive and its `.sha256` together. The VS Code extension is safe from this because it carries the hashes in the `.vsix` (see above). The action is used straight from a tag, and a version's hashes exist only after its tag is built, so the tagged tree can't carry them.
+The GitHub Action (`action.yml`) downloads the archive for the runner and its `.sha256` file from the same GitHub release and compares the two. That catches a truncated or corrupted download. It does not catch a replaced release: anyone who can rewrite the release's assets can replace the archive and its `.sha256` together. The VS Code extension and the JetBrains plugin are safe from this because they carry the hashes in the `.vsix` and the plugin zip (see above). The action is used straight from a tag, and a version's hashes exist only after its tag is built, so the tagged tree can't carry them.
 
 The recommended hardening is GitHub's [immutable releases](https://docs.github.com/en/code-security/supply-chain-security/understanding-your-software-supply-chain/immutable-releases), followed by a change to the action to verify each download with `gh release verify-asset`. Once a release is published with immutability on, its tag can't be moved or deleted and its assets can't be added, replaced or deleted. A deleted immutable release's tag can't be reused either. GitHub also signs a release attestation recording the tag, the commit and the asset digests, which [`gh release verify-asset <tag> <file>`](https://cli.github.com/manual/gh_release_verify-asset) checks a downloaded file against.
 
@@ -150,6 +167,7 @@ Nothing publishes to crates.io yet, and no workflow job does. The crate is ready
 4. Docker: set `PUBLISH_IMAGE`.
 5. Gradle plugin: create the portal account and API key secrets as above, then set `PUBLISH_GRADLE_PLUGIN`.
    VS Code extension: create the Marketplace publisher and trusted publishing policy and the Open VSX namespace and `OVSX_PAT` as above, then set `PUBLISH_VSCODE` and `PUBLISH_OPENVSX`.
+   JetBrains plugin: create the vendor, upload the first version by hand and store the token (and the signing secrets, if signing) as above, then set `PUBLISH_JETBRAINS`.
 6. Push the next release tag. Check that `publish-npm`, `publish-image` and `publish-gradle-plugin` succeeded, `npx groovyfmt --version` prints the new version, and `docker run --rm ghcr.io/costajohnt/groovyfmt --version` too (after making the package public).
 7. Homebrew: create the tap from that release as above.
 8. In `README.md` (Install) and `docs/ci.md` (Gradle), drop the "not published yet" lines for each channel that is now published.

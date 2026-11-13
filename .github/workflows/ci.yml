@@ -216,6 +216,63 @@ jobs:
           name: vscode-extension
           path: editors/vscode/groovyfmt-*.vsix
 
+  # The JetBrains plugin (editors/jetbrains/): unit tests, integration tests in IntelliJ IDEA
+  # against this commit's groovyfmt (diagnostics and formatting, an untrusted project that
+  # plants binaries, and LSP4IJ's user-defined server), the Plugin Verifier against the IDEs
+  # the plugin claims, and a plugin zip to try out. That zip carries no release checksums, so
+  # it never downloads groovyfmt. Skipped for a tag: release.yml's jetbrains job tests and
+  # packages the release zip itself, after the release exists, so a failure in the plugin
+  # never holds back a release. Nothing is cached: the IDEs are several GB, and the Rust
+  # caches would be evicted for them.
+  jetbrains:
+    name: jetbrains plugin
+    if: github.ref_type != 'tag'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editors/jetbrains
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: 21.0.13
+      - name: Build groovyfmt for the integration tests
+        working-directory: .
+        run: cargo build --release --locked
+      # The IDE the plugin builds against and the four the verifier checks take about 15 GB
+      # unpacked, more than the runner has free.
+      - name: Disk space for the IDEs
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Tests, the plugin zip and the Plugin Verifier
+        env:
+          GROOVYFMT_BIN: ${{ github.workspace }}/target/release/groovyfmt
+        run: ./gradlew --no-daemon --no-scan check buildPlugin verifyPlugin
+      - name: Version matches Cargo.toml, no checksums, no bundled Kotlin
+        run: |
+          set -euxo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' ../../Cargo.toml | head -n 1)
+          zip=build/distributions/groovyfmt-jetbrains-$version.zip
+          jar=groovyfmt-jetbrains/lib/groovyfmt-jetbrains-$version.jar
+          unzip -l "$zip"
+          unzip -p "$zip" "$jar" > plugin.jar
+          unzip -p plugin.jar META-INF/plugin.xml | grep -F "<version>$version</version>"
+          if unzip -l plugin.jar | grep -q groovyfmt-checksums.properties; then exit 1; fi
+          if unzip -l "$zip" | grep -q kotlin-stdlib; then exit 1; fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: jetbrains-plugin
+          path: editors/jetbrains/build/distributions/groovyfmt-jetbrains-*.zip
+
   # The install channels (action.yml, npm/, packaging/, Dockerfile), each run
   # against the latest published release so none of them can rot. Skipped when
   # release.yml calls this workflow for a tag: they test the previous release.

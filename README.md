@@ -135,7 +135,7 @@ Add `--strict` in CI to fail when a file was skipped (it doesn't parse, isn't UT
 
 `groovyfmt --lsp` is a language server for formatting (whole file and selection), parse errors and lint violations as you type, and lint fixes as code actions. It has no completion or navigation. Editors without a language server client can use `groovyfmt --stdin --stdin-filepath <path>`.
 
-For VS Code, the groovyfmt extension ([`editors/vscode`](https://github.com/costajohnt/groovyfmt/tree/main/editors/vscode)) starts the language server with no setup and downloads groovyfmt if it isn't installed. [Editors](https://github.com/costajohnt/groovyfmt/blob/main/docs/editors.md) has setup for Neovim, VS Code, Helix, Zed and IntelliJ IDEA.
+For VS Code, the groovyfmt extension ([`editors/vscode`](https://github.com/costajohnt/groovyfmt/tree/main/editors/vscode)) starts the language server with no setup and downloads groovyfmt if it isn't installed. For IntelliJ IDEA, Android Studio and the other JetBrains IDEs, the groovyfmt plugin ([`editors/jetbrains`](https://github.com/costajohnt/groovyfmt/tree/main/editors/jetbrains)) does the same through LSP4IJ. [Editors](https://github.com/costajohnt/groovyfmt/blob/main/docs/editors.md) has setup for Neovim, VS Code, Helix, Zed and the JetBrains IDEs.
 
 ## Coding agents
 

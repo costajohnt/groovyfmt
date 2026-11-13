@@ -55,6 +55,35 @@ Format on save is `editor.formatOnSave`. To apply the lint fixes on save too:
 }
 ```
 
+### IntelliJ IDEA, Android Studio and other JetBrains IDEs
+
+The groovyfmt plugin (`io.github.costajohnt.groovyfmt`, source in [`editors/jetbrains`](../editors/jetbrains)) starts the language server through [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij), Red Hat's open source language server client, which it depends on. It runs in any IDE based on IntelliJ Platform 2024.2 or later, Community Edition and Android Studio included, and covers the same files as the VS Code extension, by file name, alongside the bundled Groovy and Gradle support and any Jenkins plugin. Diagnostics and quick fixes (each fixable violation, and "Fix all auto-fixable problems") appear as you type. **Code | Reformat with groovyfmt** formats the file.
+
+By default **Reformat Code** keeps the IDE's own Groovy formatter, since replacing it without asking would change what a familiar shortcut does. The setting **Use groovyfmt for Reformat Code** (Settings | Tools | groovyfmt) hands Reformat Code to groovyfmt. Format on save is then the IDE's own **Actions on Save | Reformat code**.
+
+It looks for groovyfmt in the same order as the VS Code extension. A path set for the project in `.idea/groovyfmt.xml` comes first, then the IDE-wide path, which must be absolute, then the project's `node_modules`, then `PATH`. The project's path and `node_modules` count only in a trusted project, so in a project the IDE opened in safe mode nothing from the project decides which binary runs. With none of those, a release build of the plugin offers to download the release matching its own version, checked against the SHA-256 checksums packaged into the plugin. Its [README](../editors/jetbrains/README.md) has the details.
+
+Until it is on JetBrains Marketplace, install LSP4IJ from the Marketplace, then the `groovyfmt-jetbrains-<version>.zip` attached to a [release](https://github.com/costajohnt/groovyfmt/releases) with **Settings | Plugins | ⚙ | Install Plugin from Disk...**.
+
+#### LSP4IJ alone
+
+With LSP4IJ installed, groovyfmt also runs as an LSP4IJ user-defined language server, with no groovyfmt plugin. In **Settings | Languages & Frameworks | Language Servers**, add a server with **+**:
+
+- **Server** tab: name `groovyfmt`, command `/path/to/groovyfmt --lsp` (the full path: an IDE started from the Dock or a launcher may not see your shell's `PATH`).
+- **Mappings** tab, **File name patterns**: the patterns `*.groovy;*.gvy;*.gy;*.gsh;*.gradle;*.jenkinsfile;Jenkinsfile;Jenkinsfile.*` with the **Language ID** `groovy`.
+- **Configuration** tab, **Client**: `{"format": {"existingFormatterOverrideable": true}}` if Reformat Code should run groovyfmt in place of the IDE's Groovy formatter. Without it, Reformat Code runs groovyfmt only in files the IDE has no formatter for.
+
+Diagnostics, quick fixes and Reformat Code then come from groovyfmt. The plugin's integration tests run this setup, as LSP4IJ 0.21.0 creates it, in IntelliJ IDEA Community 2024.2. It runs whatever binary the command names, in every project, trusted or not, and nothing downloads groovyfmt for you.
+
+#### Without a language server
+
+In an IDE older than 2024.2, run groovyfmt on the file itself.
+
+- To format on save, open Settings, Tools, File Watchers, and add a watcher for Groovy files with program `groovyfmt` and arguments `$FilePath$`.
+- To format on demand, add an External Tool (Settings, Tools, External Tools) with program `groovyfmt`, arguments `$FilePath$` and working directory `$ProjectFileDir$`, then bind it to a key.
+
+Either way the file is named explicitly, so `exclude` patterns are honored.
+
 ### Helix
 
 Helix knows Groovy, `*.gradle` and Jenkinsfiles, and has no Groovy language server by default. In `languages.toml`:
@@ -116,12 +145,3 @@ require("conform").setup({
   { "command": "groovyfmt --stdin", "languages": ["groovy"] }
 ]
 ```
-
-### IntelliJ IDEA
-
-IntelliJ runs groovyfmt on the file itself.
-
-- To format on save, open Settings, Tools, File Watchers, and add a watcher for Groovy files with program `groovyfmt` and arguments `$FilePath$`.
-- To format on demand, add an External Tool (Settings, Tools, External Tools) with program `groovyfmt`, arguments `$FilePath$` and working directory `$ProjectFileDir$`, then bind it to a key.
-
-Either way the file is named explicitly, so `exclude` patterns are honored.
