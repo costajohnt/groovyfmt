@@ -129,6 +129,12 @@ class IntegrationTest : UsefulTestCase() {
         waitFor("the server to start", 30_000) {
             LanguageServerManager.getInstance(fixture.project).getServerStatus(SERVER_ID) == ServerStatus.started
         }
+        repeat(100) { PlatformTestUtil.dispatchAllEventsInIdeEventQueue(); Thread.sleep(100) }
+        val acc = com.redhat.devtools.lsp4ij.LanguageServiceAccessor.getInstance(fixture.project)
+        println("DEBUG1 servers=${acc.startedServers.map { "${it.serverStatus} connected=${it.isConnectedTo(com.redhat.devtools.lsp4ij.LSPIJUtils.toUri(fixture.file))}" }} hl=${DocumentMarkupModel.forDocument(fixture.editor.document, fixture.project, true).allHighlighters.mapNotNull { HighlightInfo.fromRangeHighlighter(it)?.description }}")
+        WriteCommandAction.runWriteCommandAction(fixture.project) { fixture.editor.document.insertString(fixture.editor.document.textLength, "\n") }
+        repeat(100) { PlatformTestUtil.dispatchAllEventsInIdeEventQueue(); Thread.sleep(100) }
+        println("DEBUG2 hl=${DocumentMarkupModel.forDocument(fixture.editor.document, fixture.project, true).allHighlighters.mapNotNull { HighlightInfo.fromRangeHighlighter(it)?.description }}")
         val semicolon = waitForSemicolonDiagnostic()
         assertEquals(HighlightSeverity.WARNING, semicolon.severity)
         assertEquals(2, fixture.editor.document.getLineNumber(semicolon.startOffset))
