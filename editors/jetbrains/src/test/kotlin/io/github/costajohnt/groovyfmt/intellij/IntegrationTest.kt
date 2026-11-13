@@ -212,14 +212,17 @@ class IntegrationTest : UsefulTestCase() {
 
     /**
      * A restart superseded by a later one before its UI step runs must not start the server:
-     * here the second turns the plugin off, and LSP4IJ throws when asked to start a server
-     * whose plugin says it is off. Both resolve before the UI step of either runs, since this
-     * test holds the UI thread.
+     * here the second turns the plugin off while the server runs. Both resolve before the UI
+     * step of either runs, since this test holds the UI thread.
      */
     fun testASupersededRestartDoesNotStartTheServer() {
         GroovyfmtSettings.get().path = bin()
         open()
         val service = fixture.project.service<GroovyfmtService>()
+        service.restart().get(30, TimeUnit.SECONDS)
+        waitFor("the server to start", 30_000) {
+            LanguageServerManager.getInstance(fixture.project).getServerStatus(SERVER_ID) == ServerStatus.started
+        }
         val first = service.restart()
         GroovyfmtSettings.get().enabled = false
         val second = service.restart()
@@ -231,6 +234,8 @@ class IntegrationTest : UsefulTestCase() {
         }
         assertNull(service.binary)
         assertTrue(LanguageServerManager.getInstance(fixture.project).getServerStatus(SERVER_ID) != ServerStatus.started)
+        val errors = com.redhat.devtools.lsp4ij.LanguageServiceAccessor.getInstance(fixture.project).startedServers.mapNotNull { it.serverError }
+        assertEquals("a stale start reached LSP4IJ", listOf<Throwable>(), errors)
     }
 
     /** A binary that never reads its input can't hang Reformat with groovyfmt: the timeout kills it. */

@@ -68,6 +68,8 @@ No telemetry. The only network request is the release download, made after you a
 
 ## Development
 
+Gradle verifies every download against `gradle/verification-metadata.xml`. The IDE distributions recorded there are the Linux x64 ones that CI uses; on another OS, add yours with `./gradlew --no-scan --write-verification-metadata sha256 <tasks>` and review the diff before committing it.
+
 `./gradlew test` runs the unit tests and the integration tests in IntelliJ IDEA Community 2024.2, which need a groovyfmt build named by `GROOVYFMT_BIN` (an absolute path). `./gradlew verifyPlugin` runs the JetBrains Plugin Verifier against the IDEs listed in `build.gradle.kts`. Both need JDK 21.
 
 ## License
