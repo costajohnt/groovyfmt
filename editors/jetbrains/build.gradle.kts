@@ -92,7 +92,8 @@ val checksums = tasks.register<JavaExec>("groovyfmtChecksums") {
     outputs.dir(out)
     inputs.property("version", project.version)
     archives.orNull?.let { inputs.dir(it) }
-    classpath = sourceSets.main.get().output + sourceSets.main.get().compileClasspath
+    // the compiled Kotlin only: the full main output includes the resources this task feeds
+    classpath = files(tasks.compileKotlin.flatMap { it.destinationDirectory }) + sourceSets.main.get().compileClasspath
     mainClass = "io.github.costajohnt.groovyfmt.intellij.BinaryKt"
     argumentProviders.add(CommandLineArgumentProvider {
         listOf(project.version.toString(), archives.get(), out.get().file("groovyfmt-checksums.properties").asFile.path)
