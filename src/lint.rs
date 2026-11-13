@@ -98,8 +98,8 @@ pub const RULES: &[Rule] = &[
         default: true,
         description: "while loop with an empty block",
         why: "A `while` loop with an empty block spins doing nothing, or is an unfinished edit.",
-        bad: "while (queue.poll()) {\n}",
-        good: "while (queue.poll()) {\n    handled++\n}",
+        bad: "while (running) {\n}",
+        good: "while (running) {\n    poll()\n}",
         fixable: false,
     },
     Rule {
@@ -375,6 +375,96 @@ pub const RULES: &[Rule] = &[
         good: "void run() {\n    try {\n        work()\n    } catch (IOException e) {\n        throw new IllegalStateException(e)\n    }\n}",
         fixable: false,
     },
+    Rule {
+        name: "BigDecimalInstantiation",
+        default: false,
+        description: "new BigDecimal(1.1): a BigDecimal made from a double literal, which is inexact (off by default: on real code it found only tests of BigDecimal itself, with values a double holds exactly)",
+        why: "A decimal literal passed to the BigDecimal constructor goes through a double first, so `new BigDecimal(0.1)` is 0.1000000000000000055511151231257827. Pass the number as a String to get exactly the digits written.",
+        bad: "def rate = new BigDecimal(0.1)",
+        good: "def rate = new BigDecimal('0.1')",
+        fixable: false,
+    },
+    Rule {
+        name: "BitwiseOperatorInConditional",
+        default: false,
+        description: "`|` or `&` in an if, while, ternary or elvis condition (off by default: on real code nearly every one tests bit flags on purpose)",
+        why: "`|` and `&` evaluate both sides and are easily typed for `||` and `&&`. If the bitwise operation is meant, a variable holding its result says so.",
+        bad: "if (ready | retry) {\n    run()\n}",
+        good: "if (ready || retry) {\n    run()\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "DoubleNegative",
+        default: false,
+        description: "`!!x` or `!(!x)` (off by default: `!!x` is a common way to turn a value into a boolean)",
+        why: "A double negative is hard to read. Where it turns a value into a boolean, `x as boolean` says so.",
+        bad: "def found = !!result",
+        good: "def found = result as boolean",
+        fixable: false,
+    },
+    Rule {
+        name: "EmptySynchronizedStatement",
+        default: false,
+        description: "a synchronized block with nothing in it (off by default: real code gave nothing to measure it on)",
+        why: "A `synchronized` block with nothing in it takes and releases a lock and does nothing else: an unfinished edit, or a misguided attempt at a memory barrier.",
+        bad: "synchronized (lock) {\n}",
+        good: "synchronized (lock) {\n    count++\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "ForLoopShouldBeWhileLoop",
+        default: false,
+        description: "for (; condition;) with only a condition (off by default: a style preference)",
+        why: "A `for` loop without an initializer or an update is a `while` loop written in a harder way.",
+        bad: "for (; it.hasNext();) {\n    process(it.next())\n}",
+        good: "while (it.hasNext()) {\n    process(it.next())\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "IntegerGetInteger",
+        default: false,
+        description: "Integer.getInteger(name), which reads a system property (off by default: on real code it found mostly deliberate reads of system properties)",
+        why: "`Integer.getInteger(s)` doesn't parse `s`: it reads the system property named `s`. That reads like parsing, and it is sometimes called by mistake for `Integer.parseInt(s)`.",
+        bad: "def port = Integer.getInteger(text)",
+        good: "def port = Integer.parseInt(text)",
+        fixable: false,
+    },
+    Rule {
+        name: "RandomDoubleCoercedToZero",
+        default: false,
+        description: "Math.random() cast to int or long, or assigned to an int or long field or returned from a method returning one (off by default: real code gave nothing to measure it on)",
+        why: "`Math.random()` is a double from 0 up to 1, so as an int or a long it is always 0.",
+        bad: "int pick = (int) Math.random()",
+        good: "int pick = (int) (Math.random() * size)",
+        fixable: false,
+    },
+    Rule {
+        name: "UnnecessaryInstanceOfCheck",
+        default: true,
+        description: "`!x instanceof T`, which tests the boolean `!x`",
+        why: "`!` binds tighter than `instanceof`, so `!x instanceof String` asks whether a boolean is a String: always false (always true for Boolean).",
+        bad: "if (!value instanceof String) {\n    convert(value)\n}",
+        good: "if (!(value instanceof String)) {\n    convert(value)\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "UnnecessaryModOne",
+        default: false,
+        description: "`x % 1`, which is always 0 for a whole number (off by default: on real code `x % 1 != 0` tested decimals for a fractional part, which works)",
+        why: "Any whole number modulo 1 is 0, so the check meant is usually `x % 2` or `x & 1`. On a decimal, `x % 1` is its fractional part, which is a correct use.",
+        bad: "if (count % 1 == 0) {\n    flush()\n}",
+        good: "if (count % 2 == 0) {\n    flush()\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "ClassNameSameAsFilename",
+        default: false,
+        description: "a file holding only one class, interface or enum named differently than the file (off by default: a naming convention)",
+        why: "With one class in a file, naming the file after it is how readers and tools find it.",
+        bad: "// MathSpec.groovy\nclass MathHelpers {\n}",
+        good: "// MathSpec.groovy\nclass MathSpec {\n}",
+        fixable: false,
+    },
     // Unused code (src/lint/unused.rs)
     Rule {
         name: "UnusedPrivateField",
@@ -494,6 +584,69 @@ pub const RULES: &[Rule] = &[
         good: "pipeline {\n    agent {\n        docker {\n            image 'gcc:13'\n        }\n    }\n    stages {\n        stage('Build') {\n            steps {\n                sh 'make'\n            }\n        }\n    }\n}",
         fixable: false,
     },
+    Rule {
+        name: "JenkinsParallelNesting",
+        default: true,
+        description: "parallel or matrix inside a stage that is already inside parallel or matrix, or agent or tools on a stage holding parallel or matrix",
+        why: "Jenkins runs one level of parallel stages: a parallel or matrix inside another one is rejected, and so are agent and tools on the stage that holds them, since that stage runs nothing itself. Source: the Declarative Pipeline validator (ModelValidatorImpl, messages NoNestedWithinNestedStages, AgentInNestedStages, ToolsInNestedStages).",
+        bad: "pipeline {\n    agent none\n    stages {\n        stage('Test') {\n            agent any\n            parallel {\n                stage('Unit') {\n                    steps {\n                        sh 'make test'\n                    }\n                }\n            }\n        }\n    }\n}",
+        good: "pipeline {\n    agent none\n    stages {\n        stage('Test') {\n            parallel {\n                stage('Unit') {\n                    agent any\n                    steps {\n                        sh 'make test'\n                    }\n                }\n            }\n        }\n    }\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "JenkinsWhenNesting",
+        default: true,
+        description: "allOf or anyOf with no condition, not without exactly one, arguments to them, or a block of conditions under another condition",
+        why: "Only allOf, anyOf and not nest conditions: allOf and anyOf need at least one, not exactly one, and none of them takes arguments. Any other condition given a block is rejected when the build starts. Source: the Declarative Pipeline validator (ModelValidatorImpl, messages NestedWhenWithoutChildren, NestedWhenWrongChildrenCount, NestedWhenNoArgs, NoNestedWhenAllowed).",
+        bad: "pipeline {\n    agent any\n    stages {\n        stage('Deploy') {\n            when {\n                not {\n                    branch 'dev'\n                    branch 'test'\n                }\n            }\n            steps {\n                sh 'make deploy'\n            }\n        }\n    }\n}",
+        good: "pipeline {\n    agent any\n    stages {\n        stage('Deploy') {\n            when {\n                not {\n                    anyOf {\n                        branch 'dev'\n                        branch 'test'\n                    }\n                }\n            }\n            steps {\n                sh 'make deploy'\n            }\n        }\n    }\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "JenkinsMatrixAxes",
+        default: true,
+        description: "a matrix without axes, an axis without a valid name or values, a repeated axis name or value, an empty excludes or exclude",
+        why: "A matrix needs `axes`, each axis a `name` that is a valid variable name and `values` that are plain strings, with no name or value given twice; `excludes` and each `exclude` must not be empty, and an exclude axis takes `values` or `notValues`, not both. Jenkins rejects anything else when the build starts. Source: the Declarative Pipeline parser and validator (ModelParser, ModelValidatorImpl, messages RequiredSection, NoAxes, DuplicateAxisName, DuplicateAxisValue, NoExcludes, MatrixExcludeAxisValuesOrNotValues).",
+        bad: "pipeline {\n    agent none\n    stages {\n        stage('Test') {\n            matrix {\n                axes {\n                    axis {\n                        name 'OS'\n                        values 'linux', 'mac', 'linux'\n                    }\n                }\n                stages {\n                    stage('Unit') {\n                        steps {\n                            sh 'make test'\n                        }\n                    }\n                }\n            }\n        }\n    }\n}",
+        good: "pipeline {\n    agent none\n    stages {\n        stage('Test') {\n            matrix {\n                axes {\n                    axis {\n                        name 'OS'\n                        values 'linux', 'mac'\n                    }\n                }\n                stages {\n                    stage('Unit') {\n                        steps {\n                            sh 'make test'\n                        }\n                    }\n                }\n            }\n        }\n    }\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "JenkinsInputSection",
+        default: true,
+        description: "a stage input without message, with a field other than message, id, ok, submitter, submitterParameter, parameters, or a field twice",
+        why: "A stage's `input` needs a `message`, takes only the fields message, id, ok, submitter, submitterParameter and parameters, each once with one value; Jenkins rejects anything else when the build starts. Source: the Declarative Pipeline parser and validator (ModelParser.parseInput, messages InvalidInputField, MultipleOfSection, MissingInputMessage).",
+        bad: "pipeline {\n    agent any\n    stages {\n        stage('Deploy') {\n            input {\n                text 'Deploy to production?'\n            }\n            steps {\n                sh 'make deploy'\n            }\n        }\n    }\n}",
+        good: "pipeline {\n    agent any\n    stages {\n        stage('Deploy') {\n            input {\n                message 'Deploy to production?'\n            }\n            steps {\n                sh 'make deploy'\n            }\n        }\n    }\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "JenkinsEnvironmentEntry",
+        default: true,
+        description: "an environment line that isn't KEY = value, a key that isn't a valid name or is set twice, or a value that isn't a string, literal or method call",
+        why: "`environment` takes only `KEY = value` lines with unique keys made of letters, digits and `_`. A value must be a quoted string, a literal, a method call such as credentials('id'), or quoted strings joined with `+`; a bare `env.X` or `params.X` is rejected when the build starts (write \"${params.X}\"). Source: the Declarative Pipeline parser and validator (ModelParser.parseEnvironment, messages InvalidEnvironmentValue, InvalidEnvironmentConcatValue, InvalidEnvironmentOperation, DuplicateEnvVar, InvalidIdentifierInEnv).",
+        bad: "pipeline {\n    agent any\n    environment {\n        TARGET = params.TARGET\n    }\n    stages {\n        stage('Deploy') {\n            steps {\n                sh 'make deploy'\n            }\n        }\n    }\n}",
+        good: "pipeline {\n    agent any\n    environment {\n        TARGET = \"${params.TARGET}\"\n    }\n    stages {\n        stage('Deploy') {\n            steps {\n                sh 'make deploy'\n            }\n        }\n    }\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "JenkinsDuplicateOption",
+        default: true,
+        description: "the same option or trigger twice in one options or triggers block",
+        why: "An option or trigger given twice in one block is rejected when the build starts, so the second one never silently wins. Source: the Declarative Pipeline validator (ModelValidatorImpl, messages DuplicateOptionName, DuplicateTriggerName).",
+        bad: "pipeline {\n    agent any\n    options {\n        timeout(time: 1, unit: 'HOURS')\n        timeout(time: 2, unit: 'HOURS')\n    }\n    stages {\n        stage('Build') {\n            steps {\n                sh 'make'\n            }\n        }\n    }\n}",
+        good: "pipeline {\n    agent any\n    options {\n        timeout(time: 2, unit: 'HOURS')\n    }\n    stages {\n        stage('Build') {\n            steps {\n                sh 'make'\n            }\n        }\n    }\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "JenkinsToolVersion",
+        default: true,
+        description: "a tools entry that isn't a tool type with exactly one installation name",
+        why: "Each line of `tools` names a tool type and one installation, as in maven 'maven-3.9'; a bare type or a second argument is rejected when the build starts. Source: the Declarative Pipeline parser (ModelParser.parseTools, messages ExpectedTool, NoArgForTool, TooManyArgsForTool).",
+        bad: "pipeline {\n    agent any\n    tools {\n        maven\n    }\n    stages {\n        stage('Build') {\n            steps {\n                sh 'mvn package'\n            }\n        }\n    }\n}",
+        good: "pipeline {\n    agent any\n    tools {\n        maven 'maven-3.9'\n    }\n    stages {\n        stage('Build') {\n            steps {\n                sh 'mvn package'\n            }\n        }\n    }\n}",
+        fixable: false,
+    },
     // Gradle build scripts (src/lint/gradle.rs)
     Rule {
         name: "GradleRemovedConfiguration",
@@ -529,6 +682,15 @@ pub const RULES: &[Rule] = &[
         why: "A `+` or `latest.*` version resolves to whatever is newest at build time, so the same commit can build differently tomorrow.",
         bad: "dependencies {\n    implementation 'org.slf4j:slf4j-api:2.+'\n}",
         good: "dependencies {\n    implementation 'org.slf4j:slf4j-api:2.0.9'\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "GradleRemovedApi",
+        default: true,
+        description: "a removed core plugin (maven, findbugs, osgi, ...), the uploadArchives task, archive task properties removed in 8.0, or configurations.compile and the like, unless the Gradle wrapper pins an older Gradle",
+        why: "These were removed from Gradle: the `maven` plugin and `uploadArchives` in 7.0 (use maven-publish), findbugs, jdepend, osgi and the announce plugins in 6.0, the `compile`, `runtime`, `testCompile` and `testRuntime` configurations in 7.0, and an archive task's `archiveName`, `baseName`, `classifier`, `destinationDir`, `appendix` and `extension` in 8.0 (use archiveFileName, archiveBaseName, archiveClassifier, destinationDirectory and so on). The build fails on a Gradle without them. Source: the Gradle upgrade guides for 5.x to 6.0, 6.x to 7.0 and 7.x to 8.0.",
+        bad: "apply plugin: 'java'\n\njar {\n    classifier = 'all'\n}",
+        good: "apply plugin: 'java'\n\njar {\n    archiveClassifier = 'all'\n}",
         fixable: false,
     },
     // Spock specifications (src/lint/spock.rs)
@@ -631,7 +793,7 @@ pub fn lint_file(path: &Path, src: &str) -> Result<Vec<Violation>, &'static str>
             ";" => unnecessary_semicolon(n, nodes.get(i + 1..).unwrap_or(&[]), &mut v),
             "catch_clause" => empty_catch(src, n, &mut v),
             "if_statement" => if_statement(n, &mut v),
-            "while_statement" => {
+            "while_statement" if !condition_works(n) => {
                 empty_body(
                     n,
                     "body",
@@ -640,7 +802,7 @@ pub fn lint_file(path: &Path, src: &str) -> Result<Vec<Violation>, &'static str>
                     &mut v,
                 );
             }
-            "for_statement" | "for_in_statement" => empty_body(
+            "for_statement" | "for_in_statement" if !condition_works(n) => empty_body(
                 n,
                 "body",
                 "EmptyForStatement",
@@ -673,6 +835,7 @@ pub fn lint_file(path: &Path, src: &str) -> Result<Vec<Violation>, &'static str>
         directives,
     ] = by_module;
     basic::check(src, &basic_nodes, &mut v);
+    basic::class_name_same_as_filename(path, src, tree.root_node(), &mut v);
     unused::check(src, &unused_nodes, &name_leaves, &dynamic, &mut v);
     imports::check(path, src, &import_nodes, &mut v);
     suppress::apply(src, &directives, &mut v);
@@ -932,6 +1095,25 @@ fn empty_body(n: Node, field: &str, rule: &'static str, msg: &str, v: &mut Vec<V
     if is_empty_block(n.child_by_field_name(field)) {
         v.push(at(n, rule, msg.into()));
     }
+}
+
+/// Whether a loop's condition does the work, so an empty body is fine:
+/// `while (reader.read() != -1) {}`, `while ((line = next()) != null) {}`, `while (i++ < n) {}`.
+fn condition_works(n: Node) -> bool {
+    let mut works = false;
+    if let Some(c) = n.child_by_field_name("condition") {
+        crate::preorder(c, |x| {
+            works |= matches!(
+                x.kind(),
+                "method_invocation"
+                    | "assignment_expression"
+                    | "update_expression"
+                    | "unary_update_expression"
+            );
+            !works
+        });
+    }
+    works
 }
 
 /// Condition with any wrapping parentheses removed.
@@ -1248,6 +1430,18 @@ mod tests {
                 ("EmptyForStatement", 5),
             ]
         );
+        // a condition that calls, assigns or increments does the loop's work
+        let src = "while (reader.read() != -1) { }\nwhile ((line = next()) != null) { }\nwhile (i++ < n) { }\nfor (; it.next() != x; ) { }\nwhile (true) { }\nfor (x in xs) { }\nfor (int i = 0; i < n; i++) { }\nwhile (a.b) { }\n";
+        assert_eq!(
+            rules(src),
+            vec![
+                ("ForLoopShouldBeWhileLoop", 4),
+                ("EmptyWhileStatement", 5),
+                ("EmptyForStatement", 6),
+                ("EmptyForStatement", 7),
+                ("EmptyWhileStatement", 8),
+            ]
+        );
     }
 
     #[test]
@@ -1287,12 +1481,18 @@ mod tests {
         let gradle =
             "repositories { jcenter() }\ndependencies { compile 'a:b:+' }\ntask t << { }\n";
         let spock = "class S extends Specification {\n def f() {\n  when:\n  f()\n  then: 'x'\n  where:\n  a | b\n  2 | 3 | 4\n }\n def g() {\n  then:\n  x\n }\n}\n";
-        let more = "package p\nimport p.Q\nimport java.util.Date\nclass K {\n private int pf\n private void m() { }\n static { }\n { }\n boolean equals(Object o) { true }\n boolean equals(String s) { true }\n int hashcode() { 1 }\n String toString() { null }\n}\ndef g() {\n def u = 1\n return 1\n f()\n}\ntry { f() } finally { return 1; throw new E(); assert x }\nswitch (x) { }\ndef s = [1, 1] as Set\ndef t = true ? 1 : 2\nassert true\nif (1 == 2) { f() }\nif (x != null || x.a) { f() }\nif (x % 2 == 1) { f() }\nl.removeAll(l)\nthrow RuntimeException()\nvoid h() { try { f() } catch (e) { new BadException(e) } }\nDate d = new Q()\n";
+        let more = "package p\nimport p.Q\nimport java.util.Date\nclass K {\n private int pf\n private void m() { }\n static { }\n { }\n boolean equals(Object o) { true }\n int hashcode() { 1 }\n String toString() { null }\n}\nclass L {\n boolean equals(String s) { true }\n}\ndef g() {\n def u = 1\n return 1\n f()\n}\ntry { f() } finally { return 1; throw new E(); assert x }\nswitch (x) { }\ndef s = [1, 1] as Set\ndef t = true ? 1 : 2\nassert true\nif (1 == 2) { f() }\nif (x != null || x.a) { f() }\nif (x % 2 == 1) { f() }\nl.removeAll(l)\nthrow RuntimeException()\nvoid h() { try { f() } catch (e) { new BadException(e) } }\nDate d = new Q()\ndef bd = new BigDecimal(1.5)\nif (a | b) { f() }\ndef nn = !!x\nsynchronized (l) { }\nfor (; c;) { f() }\nInteger.getInteger('p')\ndef r = (int) Math.random()\ndef io = !x instanceof String\ndef m1 = y % 1\n";
         for (name, src) in [
             ("A.groovy", more),
             ("B.groovy", "// groovyfmt-ignore DeadCode\nprintln 1\n"),
+            ("C.groovy", "class D {\n}\n"),
             ("Jenkinsfile", jenkins),
+            (
+                "Jenkinsfile",
+                "pipeline {\n agent any\n environment { A = env.B }\n tools { maven }\n options { retry(1); retry(2) }\n stages {\n  stage('a') {\n   input { ok 'x' }\n   when { not { } }\n   agent any\n   matrix { stages { stage('b') { steps { echo 1 } } } }\n  }\n }\n}\n",
+            ),
             ("build.gradle", gradle),
+            ("build.gradle", "apply plugin: 'maven'\n"),
             ("S.groovy", spock),
         ] {
             emitted.extend(

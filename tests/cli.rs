@@ -2353,7 +2353,7 @@ fn long_paths_work() {
 }
 
 // The Windows side of the unix-only tests above: what groovyfmt does there instead, as
-// README's Windows section describes it.
+// docs/windows.md describes it.
 
 /// The names in `dir`.
 #[cfg(windows)]
@@ -3155,4 +3155,81 @@ fn symlinks_out_of_the_project_are_not_followed() {
         want
     );
     assert_eq!(unused_private(&run(&proj, &["--lint", "."], None)), want);
+}
+
+/// `--import-codenarc` on real configurations, copied unchanged from their projects, each under
+/// the Apache License 2.0: geb (gradle/codenarc/rulesets.groovy), betamax
+/// (config/codenarc/codenarc.xml), job-dsl-plugin (config/codenarc/rules.groovy and
+/// rules-test.groovy, which reads the first through `file:`), nf-schema (.groovylintrc.json)
+/// and Apache OFBiz (config/codenarc/codenarc.groovy). The expected output is
+/// tests/codenarc/<project>.toml; after checking a change, GROOVYFMT_BLESS=1 rewrites it.
+#[test]
+fn import_codenarc_real_configs() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/codenarc");
+    for (project, file) in [
+        ("geb", "gradle/codenarc/rulesets.groovy"),
+        ("betamax", "config/codenarc/codenarc.xml"),
+        ("job-dsl-plugin", "config/codenarc/rules-test.groovy"),
+        ("nf-schema", ".groovylintrc.json"),
+        ("ofbiz-framework", "config/codenarc/codenarc.groovy"),
+    ] {
+        let o = run(&dir.join(project), &["--import-codenarc", file], None);
+        assert!(o.status.success(), "{project}: {}", stderr(&o));
+        let golden = dir.join(format!("{project}.toml"));
+        if std::env::var_os("GROOVYFMT_BLESS").is_some() {
+            std::fs::write(&golden, stdout(&o)).unwrap();
+        }
+        assert_eq!(
+            stdout(&o),
+            std::fs::read_to_string(&golden).unwrap(),
+            "{project}"
+        );
+        // the output is a config groovyfmt accepts
+        let r = run(
+            &dir,
+            &["--rules", "--config", golden.to_str().unwrap()],
+            None,
+        );
+        assert!(r.status.success(), "{project}: {}", stderr(&r));
+    }
+}
+
+#[test]
+fn import_codenarc_arguments_and_exit_status() {
+    let d = Dir::new("import-codenarc");
+    d.write(
+        "rules.groovy",
+        "ruleset {\n    ruleset('rulesets/imports.xml')\n    MyRule\n}\n",
+    );
+    d.write("bad.xml", "<!DOCTYPE r [<!ENTITY x \"y\">]><ruleset/>");
+    let o = run(&d.0, &["--import-codenarc", "rules.groovy"], None);
+    assert!(o.status.success(), "{}", stderr(&o));
+    let out = stdout(&o);
+    assert!(out.contains("\n[lint]\nUnusedImport = true\n"), "{out}");
+    assert!(
+        out.contains("rules.groovy:3: MyRule: not a CodeNarc"),
+        "{out}"
+    );
+    assert_eq!(stderr(&o), "");
+    // -v: where each setting comes from, on stderr
+    let o = run(&d.0, &["--import-codenarc", "-v", "rules.groovy"], None);
+    assert_eq!(stdout(&o), out);
+    assert!(stderr(&o).contains("rule UnusedImport on: in rulesets/imports.xml\n"));
+    for (args, want) in [
+        (
+            &["--import-codenarc"][..],
+            "needs the CodeNarc configuration files",
+        ),
+        (&["--import-codenarc", "bad.xml"], "DTDs"),
+        (&["--import-codenarc", "missing.xml"], "missing.xml"),
+        (
+            &["--import-codenarc", "--check", "rules.groovy"],
+            "can't be combined",
+        ),
+    ] {
+        let o = run(&d.0, args, None);
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+        assert!(stderr(&o).contains(want), "{args:?}: {}", stderr(&o));
+        assert_eq!(stdout(&o), "", "{args:?}");
+    }
 }

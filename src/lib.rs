@@ -1,4 +1,6 @@
 pub mod baseline;
+pub mod codenarc;
+mod codenarc_data;
 pub mod config;
 pub mod diff;
 pub mod fix;
@@ -25,7 +27,7 @@ unsafe extern "C" {
 
 // SAFETY: tree_sitter_groovy is the entry point of grammar/parser.c, compiled by build.rs. It
 // takes no arguments and returns a pointer to the grammar's static TSLanguage, which is what
-// from_raw requires. The only unsafe code in groovyfmt.
+// from_raw requires. The only unsafe code in groovyfmt outside its tests.
 const GROOVY: LanguageFn = unsafe { LanguageFn::from_raw(tree_sitter_groovy) };
 
 pub fn parse(src: &str) -> Tree {
@@ -95,6 +97,24 @@ pub fn display_path(p: &Path) -> String {
     s
 }
 
+/// Control characters escaped, so a crafted file name or file content (lint messages quote
+/// source text) can't break a report line or inject CI workflow commands such as `::set-env`.
+/// The GitHub Actions runner also takes the older `##[command]` form anywhere in a line, so
+/// `##[` becomes `##\[`; nothing printed after this (`gh_escape`, `shown`) adds or removes
+/// a `\` or `[`, so the sequence can't come back.
+pub fn printable(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_control() {
+                c.escape_debug().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect::<String>()
+        .replace("##[", "##\\[")
+}
+
 /// Groovy sources, Gradle build scripts, and Jenkinsfiles.
 pub fn is_groovy_file(path: &Path) -> bool {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -119,19 +139,44 @@ pub fn is_skipped_dir(path: &Path) -> bool {
 pub(crate) mod scaling {
     use std::time::{Duration, Instant};
 
-    /// The CPU time this thread has used, where the OS reports it without a dependency
-    /// (Linux: `/proc/thread-self/stat`), so other tests and processes don't count.
+    /// The CPU time this thread has used, so other tests and processes don't count:
+    /// `clock_gettime` on Linux and macOS, `GetThreadTimes` on Windows (which Wine answers
+    /// from the host's per-thread counters). Wall time would count a loaded machine too.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn thread_cpu() -> Option<Duration> {
-        // Linux's: Wine makes the path answer on Windows builds too, from the host's /proc
-        if !cfg!(target_os = "linux") {
-            return None;
+        use std::ffi::{c_int, c_long};
+        #[repr(C)]
+        struct Timespec(c_long, c_long);
+        unsafe extern "C" {
+            fn clock_gettime(clock: c_int, t: *mut Timespec) -> c_int;
         }
-        let s = std::fs::read_to_string("/proc/thread-self/stat").ok()?;
-        // after the parenthesized command name comes field 3; utime and stime are 14 and 15
-        let fields: Vec<&str> = s.get(s.rfind(')')? + 2..)?.split(' ').collect();
-        let ticks = fields.get(11)?.parse::<u64>().ok()? + fields.get(12)?.parse::<u64>().ok()?;
-        // USER_HZ is 100 on every Linux target
-        Some(Duration::from_millis(ticks * 10))
+        // CLOCK_THREAD_CPUTIME_ID
+        const CLOCK: c_int = if cfg!(target_os = "linux") { 3 } else { 16 };
+        let mut t = Timespec(0, 0);
+        // SAFETY: clock_gettime writes only the timespec it is given.
+        (unsafe { clock_gettime(CLOCK, &mut t) } == 0)
+            .then(|| Duration::new(t.0 as u64, t.1 as u32))
+    }
+
+    #[cfg(windows)]
+    fn thread_cpu() -> Option<Duration> {
+        unsafe extern "system" {
+            fn GetCurrentThread() -> isize;
+            fn GetThreadTimes(h: isize, c: *mut u64, e: *mut u64, k: *mut u64, u: *mut u64) -> i32;
+        }
+        // creation, exit, kernel and user time: FILETIMEs, two u32 halves read here as one
+        // little-endian u64, in 100 ns units
+        let mut t = [0u64; 4];
+        let p = t.as_mut_ptr();
+        // SAFETY: GetThreadTimes writes only the four FILETIMEs it is given, and
+        // GetCurrentThread's pseudo-handle needs no closing.
+        let ok = unsafe { GetThreadTimes(GetCurrentThread(), p, p.add(1), p.add(2), p.add(3)) };
+        (ok != 0).then(|| Duration::from_nanos((t[2] + t[3]) * 100))
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    fn thread_cpu() -> Option<Duration> {
+        None
     }
 
     /// How long `reps` calls of `f(n)` take: this thread's CPU time where available, else
@@ -153,8 +198,9 @@ pub(crate) mod scaling {
         }
     }
 
-    /// The least the smaller measurement may cost: ten ticks of the coarsest clock used
-    /// (Linux's thread CPU time counts in 10 ms), so a tick either way is noise, not a ratio.
+    /// The least the smaller measurement may cost: several ticks of the coarsest clock used
+    /// (Windows' thread CPU time counts in ticks of up to 15.6 ms), so a tick either way is
+    /// noise, not a ratio.
     const MIN_COST: Duration = Duration::from_millis(100);
 
     /// Assert that `f` on `k` times the input costs at most `bound` times what it costs on

@@ -1,6 +1,53 @@
 # Changelog
 
-## Unreleased
+## 0.13.1 (2026-11-13)
+
+### Changed
+
+- The VS Code extension's identifier is `groovyfmt.groovyfmt` (publisher `groovyfmt`). It was `costajohnt.groovyfmt` in the 0.13.0 release download, which was never on a marketplace. Update `editor.defaultFormatter` if you set it by hand.
+
+## 0.13.0 (2026-11-13)
+
+### Added
+
+- `groovyfmt --import-codenarc <FILE>...` prints the `[lint]` table of a `.groovyfmt.toml` that carries over a CodeNarc configuration: ruleset XML, a Groovy ruleset, `codenarc.properties`, or npm-groovy-lint's `.groovylintrc.json`. Each groovyfmt rule named after a CodeNarc rule comes out on or off as the configuration says, and the rules it can't carry over follow as comments: those groovyfmt has no equivalent for yet, those that need type information, the formatting rules the formatter covers (with the settings that cover them), the properties it ignores, and anything it couldn't interpret. Nothing in a configuration is run and nothing is fetched. The rulesets CodeNarc bundles and npm-groovy-lint's presets come from tables generated from CodeNarc 4.0.0 and npm-groovy-lint 19.0.1 (`scripts/codenarc-data.py`), and other referenced rulesets are read only from inside the configuration's directory. `-v` shows where each rule's setting comes from. On the 37 CodeNarc configurations in about 120 open source projects it reads all of them. ([migrating from CodeNarc](docs/lint.md#migrating-from-codenarc))
+- Ten lint rules from CodeNarc's `basic`, `unnecessary` and `naming` rulesets, the ones most often enabled in those 37 configurations that a single file's syntax decides: `UnnecessaryInstanceOfCheck` (`!x instanceof T`), on by default, since all 15 places it reports in those projects are bugs; and, off by default, `BigDecimalInstantiation`, `BitwiseOperatorInConditional`, `ClassNameSameAsFilename`, `DoubleNegative`, `EmptySynchronizedStatement`, `ForLoopShouldBeWhileLoop`, `IntegerGetInteger`, `RandomDoubleCoercedToZero` and `UnnecessaryModOne`, which on the same code report mostly what is written that way on purpose (bit-flag tests, `!!x` to make a boolean, deliberate system property reads, `x % 1` on decimals), report nothing, or check a convention.
+
+- A VS Code extension in `editors/vscode` that starts `groovyfmt --lsp` with no setup: formatting of documents and selections (and on save, through VS Code's settings), parse errors and lint violations as you type, quick fixes and fix all (`source.fixAll.groovyfmt`) for `*.groovy`, `*.gvy`, `*.gy`, `*.gsh`, `*.gradle`, `*.jenkinsfile`, `Jenkinsfile` and `Jenkinsfile.*`. It runs `groovyfmt.path`, the workspace's npm package or `groovyfmt` on `PATH`, and otherwise offers to download the matching release, checked against the SHA-256 checksums packaged into the extension when the release was built. An untrusted workspace can't choose the binary. Each release attaches the `.vsix`; publishing to the VS Code Marketplace and Open VSX is set up but off until the repository variables `PUBLISH_VSCODE` and `PUBLISH_OPENVSX` are set.
+
+### Changed
+
+- `max_line_length` wraps long class, interface, trait, enum and record headers, before `extends`, `implements` or `permits` (as few of them as leave the first line fitting) and, when a clause is still too long on its own line, after each comma between its types. The `{` stays at the end of the last line. Groovy's grammar takes a newline at each of these places. On about 62,000 Groovy files from open source projects at `max_line_length = 120`, header lines over the limit drop from 1,339 to 107. What is left is headers inside strings, a single type too long for a line of its own, and long type parameters, which are never broken.
+- `docs/releasing.md` describes what the GitHub Action verifies about a download today and how to harden it with immutable releases.
+
+## 0.12.0 (2026-11-13)
+
+### Added
+
+- Seven Jenkinsfile lint rules for what the Declarative Pipeline plugin's parser and validator reject when a build starts, on by default: `JenkinsParallelNesting` (a `parallel` or `matrix` inside another, or `agent` or `tools` on the stage holding one), `JenkinsWhenNesting` (`allOf`, `anyOf` and `not` with the wrong number of conditions or with arguments, and nested conditions under any other condition), `JenkinsMatrixAxes` (a matrix without `axes`, an axis without a valid `name` or `values`, repeated axis names or values, empty `excludes`), `JenkinsInputSection` (a stage `input` without `message`, an unknown or repeated field), `JenkinsEnvironmentEntry` (an `environment` line that isn't `KEY = value`, an invalid or repeated key, a value such as `params.X` that must be quoted), `JenkinsDuplicateOption` (an option or trigger twice) and `JenkinsToolVersion` (a `tools` line without exactly one installation). On the plugin's own test pipelines the Jenkins rules now catch 81 of the 132 invalid ones (49 before); the other 51 need the installed plugins or a running Jenkins to judge. Of its 289 other test pipelines, they report only 6, all of them pipelines its tests expect to fail or tests marked `@Ignore`. They report nothing on the other real pipelines in about 120 open source repositories.
+- `GradleRemovedApi`, on by default, for what the Gradle upgrade guides list as removed: the `maven` plugin and `uploadArchives` (7.0), the `findbugs`, `jdepend`, `osgi` and announce plugins (6.0), `configurations.compile` and the other removed configurations (7.0), and an archive task's `archiveName`, `baseName`, `classifier`, `destinationDir`, `appendix` and `extension` (8.0). The message names the version and the replacement. Like `GradleRemovedConfiguration`, it stays quiet when the nearest Gradle wrapper pins a version that still has the construct. In about 120 open source repositories it reports 9 places, all of them builds whose own wrapper no longer has what they use.
+
+### Fixed
+
+- EqualsOverloaded no longer reports a typed `equals(T)` when the class, or a superclass declared in the same file, also declares `equals(Object)`, which can delegate to it, and no longer reports an abstract (bodyless) `equals` declaration. A superclass in another file can't be seen, so a subclass's `equals(T)` there is still reported.
+- EqualsAndHashCode no longer reports an abstract class whose `equals(Object)` calls one of its abstract methods (equality, and so `hashCode`, is left to the subclasses), or an `equals(Object)` that is never broader than identity (its body is just `false`, or `this.is(o)` and `o == null` tests joined by `||`), which the inherited `hashCode()` already satisfies.
+- EmptyWhileStatement and EmptyForStatement no longer report a loop whose condition does the work with a call, an assignment or an increment, as in `while (in.read() != -1) {}`. `while (true) {}` and `for (x in xs) {}` are still reported.
+- The DeadCode documentation no longer reads as if a `break` after a `break` were exempt: only a `break` after a `return` or `throw` (the switch-case habit) is, and a doubled `break` is still reported.
+
+## 0.11.0 (2026-11-13)
+
+### Changed
+
+- `max_line_length` wraps more of the long lines it can. New break points, each where Groovy's grammar reads the code the same with or without the line break:
+  - a method's or constructor's parameter list with two or more parameters, one parameter per line (inside `(…)`, where Groovy's lexer drops newlines)
+  - an annotation's arguments, and a list in them, when nothing follows the annotation on its line (also inside `(…)` and `[…]`)
+  - a call's only argument, or a list's only item, after the opening bracket and before the closing one, when the argument is at least half as wide as what comes before it and then fits on its line (or is an operator expression or a chain that breaks further), only closing brackets, `,` or `;` follow it, and an `=` before it can't break instead; what is inside it then breaks if it must. A list, map or closure as the only argument, or a call ending in arguments that break that way (`f(g(a, b))`, `f(g(h([a, b])))`), breaks inside itself
+  - after each comma of a parenthesis-free command call's arguments (`implementation group: 'a',` then `name: 'b'`), when nothing but a comment follows the call on its line and the line up to the first comma then fits (`argumentList : firstArgumentListElement (COMMA nls argumentListElement)*`)
+
+  With `max_line_length = 120`, of the lines over the limit that a break could shorten (leaving out lines inside multi-line strings and comments, lines long only because of a trailing comment, and lines holding a string too long to fit anyway), wrapping now shortens 62% in the corpus (was 46%) and 68% in the trial repositories (was 50%). For every new kind of break, generated cases and a sample of 300 wrapped corpus files parse to the same AST with Groovy 4 before and after wrapping. Without `max_line_length`, output is unchanged.
+- Wrapping is faster: it no longer parses the formatted text again before its first pass, or the wrapped text again after its last, since both were already parsed (the same checks run on those parses). On the corpus with `max_line_length = 120`, formatting took 2.4 to 2.5 times the CPU time it takes without wrapping (two measurements, each the mean of two runs); that is now 1.9 to 2.0 times for the same output, and 2.1 to 2.2 times with the new break points above, which wrap more.
+
+## 0.10.0 (2026-11-12)
 
 ### Fixed
 
@@ -12,6 +59,10 @@
 - `UnusedPrivateMethod` and `UnusedPrivateField` reported members that another file uses, which Groovy allows because it doesn't enforce `private`: `it.generateMethods()`, `postProcessingService.getLayerSampleInfo()`, a `@Mixin` class's method called bare, `Constants.DEFAULT_PORT`, a fixture field a spec checks by name. Before reporting, the rules now search the project's other Groovy files for the name (after `.`, `?.`, `.&`, `.@` or `::`, as a whole string, or for a method called bare) in a file that names the member's class and doesn't declare a class of that name itself. The project is the nearest directory with `.git` or a config file, found the same way however groovyfmt is run (`--lint .`, named files, `--changed-since`, the LSP), walked as a directory walk is (exclude patterns honored, no symlinks), and read only when a file has a report of these rules. Past 20,000 files, 256 MiB, or a file over 10 MiB, the two rules report nothing in that project. In the trial repositories this drops 25 of 219 `UnusedPrivateMethod` and 12 of 152 `UnusedPrivateField` reports; in a sample of 19 of them, 18 were used elsewhere and 1 was a same-named class in another package. No other report changes.
 - `UnusedVariable` no longer reports Spock's `IOException e = thrown()`, where the declared type is the exception expected and removing the variable changes the test (50 reports), or a variable named `ignore` or `ignored`, which is unused on purpose (3 reports).
 - The GitHub Action, with no `version` input, failed with only `release not found` when the version in its ref's `Cargo.toml` has no release (`@v0.9.0`, whose release run failed, or `@main` after a version bump and before its release). It still fails there rather than install a release the ref didn't name, but the error now names the missing release and says to use a release tag or `version: latest`. The README no longer says `main` installs the latest release, and the CI `action` job now runs the action from a ref at the latest release and from one with no release. The Gradle plugin's message for a missing release (HTTP 404) no longer says the repository is private; it says the release may not exist and how to pick one.
+
+### Changed
+
+- The README is now a short front page: what groovyfmt is, why it is safe to run, install, quick start, and a few lines per topic. The reference material moved, unchanged in substance, to `docs/`: `usage.md` (command line), `formatting.md`, `configuration.md`, `lint.md`, `output-formats.md`, `ci.md`, `editors.md`, `agents.md`, `windows.md` and `coverage.md`. The README now lists `cargo install groovyfmt` (0.9.2 is on crates.io), drops the stale private-repository note for pre-commit, updates the pipeline-library lint example to today's output, and dates the npm-groovy-lint benchmark to the build that had 14 rules on by default (today 46 are). `--help` points at `docs/output-formats.md` for the JSON schema.
 
 ## 0.9.2 (2026-11-12)
 

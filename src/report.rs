@@ -1,5 +1,5 @@
-//! Machine-readable reports: the JSON document of `--output-format json` (schema in the
-//! README, versioned by `JSON_VERSION`) and the SARIF 2.1.0 log of `--output-format sarif`.
+//! Machine-readable reports: the JSON document of `--output-format json` (schema in
+//! docs/output-formats.md, versioned by `JSON_VERSION`) and the SARIF 2.1.0 log of `--output-format sarif`.
 //! Written by hand to stay free of dependencies; every string goes through `string`.
 
 use crate::lint::RULES;

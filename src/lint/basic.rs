@@ -1,7 +1,7 @@
-//! CodeNarc's `basic` rules that the syntax tree decides alone, plus the method checks from
-//! `naming`, `design` and `exceptions` that need no type information. Semantics follow each
-//! rule's CodeNarc implementation and tests (`org.codenarc.rule.basic.*`); where groovyfmt
-//! is narrower, the doc comment says why.
+//! CodeNarc's `basic` rules that the syntax tree decides alone, plus the checks from
+//! `naming`, `design`, `exceptions` and `unnecessary` that need no type information.
+//! Semantics follow each rule's CodeNarc implementation and tests (`org.codenarc.rule.*`);
+//! where groovyfmt differs, the doc comment says why.
 
 use super::{Violation, at, has_interpolation, is_empty_block, is_literal};
 use crate::text;
@@ -30,6 +30,15 @@ pub(super) const KINDS: &[&str] = &[
     "constructor_declaration",
     "throw_statement",
     "catch_clause",
+    "object_creation_expression",
+    "if_statement",
+    "while_statement",
+    "unary_expression",
+    "synchronized_statement",
+    "for_statement",
+    "instanceof_expression",
+    "parenthesized_type_cast",
+    "field_declaration",
 ];
 
 /// Ids of the fields read on every binary expression and call. By name, each lookup
@@ -80,8 +89,44 @@ pub(super) fn check(src: &str, nodes: &[Node], v: &mut Vec<Violation>) {
                 "EmptyInstanceInitializer",
                 "The instance initializer is empty and can be removed".into(),
             )),
-            "cast_expression" => duplicate_set_value(src, n, v),
-            "ternary_expression" | "elvis_expression" => constant_ternary(src, n, v),
+            "cast_expression" => {
+                duplicate_set_value(src, n, v);
+                random_cast(src, n, v);
+            }
+            "parenthesized_type_cast" => random_cast(src, n, v),
+            "ternary_expression" => {
+                constant_ternary(src, n, v);
+                bitwise_condition(n.child_by_field_name("condition"), v);
+            }
+            "elvis_expression" => {
+                constant_ternary(src, n, v);
+                bitwise_condition(n.child_by_field_name("value"), v);
+            }
+            "if_statement" | "while_statement" => {
+                bitwise_condition(n.child_by_field_name("condition"), v);
+            }
+            "object_creation_expression" => big_decimal(src, n, v),
+            "unary_expression" => double_negative(src, n, v),
+            "synchronized_statement" if is_empty_block(n.child_by_field_name("body")) => {
+                v.push(at(
+                    n,
+                    "EmptySynchronizedStatement",
+                    "The synchronized statement is empty".into(),
+                ));
+            }
+            "for_statement"
+                if n.child_by_field_name("init").is_none()
+                    && n.child_by_field_name("update").is_none()
+                    && n.child_by_field_name("condition").is_some() =>
+            {
+                v.push(at(
+                    n,
+                    "ForLoopShouldBeWhileLoop",
+                    "The for loop can be simplified to a while loop".into(),
+                ));
+            }
+            "instanceof_expression" => instanceof_not(src, n, v),
+            "field_declaration" => random_field(src, n, v),
             "assert_statement" => {
                 if n.named_child(0).is_some_and(|c| constant_truth(src, c)) {
                     v.push(at(
@@ -92,6 +137,7 @@ pub(super) fn check(src: &str, nodes: &[Node], v: &mut Vec<Violation>) {
                 }
             }
             "binary_expression" => match n.child_by_field_id(f.operator).map_or("", |o| o.kind()) {
+                "%" => mod_one(src, n, v),
                 "==" => {
                     two_constants(src, n, v);
                     broken_oddness(src, n, v);
@@ -109,13 +155,17 @@ pub(super) fn check(src: &str, nodes: &[Node], v: &mut Vec<Violation>) {
                     .and_then(|x| x.child_by_field_id(f.field))
                     .map_or("", |x| text(x, src));
                 match method {
+                    "getInteger" => integer_get_integer(src, n, v),
                     "removeAll" => remove_all_on_self(src, n, v),
                     "equals" | "compareTo" => constant_equals(src, n, v),
                     _ => {}
                 }
             }
             "class_declaration" => equals_and_hash_code(src, n, v),
-            "method_declaration" => method(src, n, v),
+            "method_declaration" => {
+                method(src, n, v);
+                random_returned(src, n, v);
+            }
             "constructor_declaration" if is_method(src, n) => method(src, n, v),
             "catch_clause" => exception_not_thrown(src, n, v),
             _ => {}
@@ -140,9 +190,11 @@ fn is_comment(n: Node) -> bool {
 /// DeadCode: a statement after `return`, `throw`, `break` or `continue` in the same block.
 /// Declarations are not dead (a script's methods and classes come after its `return`), and
 /// neither is a labeled statement, which another path can reach. A `break` right after a
-/// `return` or `throw` (the switch-case habit) is redundant but harmless, so it is left
-/// alone. So is code on the jump's own line: the grammar splits some one-line returns in
-/// two (`return pipeline { ... }`, `return o instanceof T t && ...`).
+/// `return` or `throw` (the switch-case habit) is redundant but left alone: it is kept on
+/// purpose, so that removing the jump can't let the case fall through. A `break` after a
+/// `break` or `continue` serves no such purpose and is reported (on real code, a doubled
+/// line). Code on the jump's own line is left alone too: the grammar splits some one-line
+/// returns in two (`return pipeline { ... }`, `return o instanceof T t && ...`).
 ///
 /// Driven by the jumps, which are few, instead of by every block's statements.
 fn dead_code(jump: Node, v: &mut Vec<Violation>) {
@@ -634,7 +686,7 @@ fn equals_and_hash_code(src: &str, n: Node, v: &mut Vec<Violation>) {
     let Some(body) = n.child_by_field_name("body") else {
         return;
     };
-    let (mut equals, mut hash) = (false, false);
+    let (mut equals, mut hash) = (None, false);
     let mut c = body.walk();
     for m in body.named_children(&mut c).filter(|m| {
         matches!(m.kind(), "method_declaration" | "constructor_declaration")
@@ -643,12 +695,17 @@ fn equals_and_hash_code(src: &str, n: Node, v: &mut Vec<Violation>) {
     }) {
         let p = params(m);
         match method_name(src, m) {
-            "equals" if p.len() == 1 && object_param(src, p[0]) => equals = true,
+            "equals" if p.len() == 1 && object_param(src, p[0]) => equals = Some(m),
             "hashCode" if p.is_empty() => hash = true,
             _ => {}
         }
     }
-    if !equals || hash {
+    let Some(equals) = equals.filter(|_| !hash) else {
+        return;
+    };
+    if identity_only(src, equals)
+        || (has_modifier(n, "abstract") && calls_abstract(src, body, equals))
+    {
         return;
     }
     let generated = annotations(src, n).iter().any(|a| {
@@ -671,6 +728,159 @@ fn equals_and_hash_code(src: &str, n: Node, v: &mut Vec<Violation>) {
     }
 }
 
+/// Whether `equals(Object)` is never broader than identity, so the inherited identity
+/// `hashCode()` keeps the contract: its body is one statement, optionally `return`, of
+/// `false`, `this.is(o)`, `o.is(this)`, `DefaultGroovyMethods.is(this, o)` and `o == null`,
+/// joined by `||` (grails-core's `VersionComparator` and `NullSafeNavigator`).
+fn identity_only(src: &str, equals: Node) -> bool {
+    let (Some(p), Some(body)) = (
+        params(equals)
+            .first()
+            .and_then(|p| p.child_by_field_name("name")),
+        equals.child_by_field_name("body"),
+    ) else {
+        return false;
+    };
+    let p = text(p, src);
+    let mut c = body.walk();
+    let stmts: Vec<Node> = body
+        .named_children(&mut c)
+        .filter(|s| !is_comment(*s))
+        .collect();
+    let [s] = stmts[..] else { return false };
+    if !matches!(s.kind(), "return_statement" | "expression_statement") {
+        return false;
+    }
+    fn identity(src: &str, p: &str, e: Node) -> bool {
+        let e = unparen(e);
+        let side = |f| e.child_by_field_name(f);
+        match e.kind() {
+            "boolean_literal" => text(e, src) == "false",
+            "binary_expression" => match e.child_by_field_name("operator").map_or("", |o| o.kind())
+            {
+                "||" => [side("left"), side("right")]
+                    .iter()
+                    .all(|x| x.is_some_and(|x| identity(src, p, x))),
+                "==" => {
+                    let t = [side("left"), side("right")].map(|x| x.map_or("", |x| text(x, src)));
+                    t == ["null", p] || t == [p, "null"]
+                }
+                _ => false,
+            },
+            "method_invocation" => {
+                let Some(f) = side("function") else {
+                    return false;
+                };
+                let mut ops: Vec<&str> = side("arguments")
+                    .map(|a| {
+                        a.named_children(&mut a.walk())
+                            .map(|x| text(x, src))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let name = if f.kind() == "field_access" {
+                    let object = f.child_by_field_name("object").map_or("", |o| text(o, src));
+                    if object != "DefaultGroovyMethods" {
+                        ops.push(object);
+                    }
+                    f.child_by_field_name("field").map_or("", |x| text(x, src))
+                } else {
+                    text(f, src)
+                };
+                name == "is" && (ops == [p, "this"] || ops == ["this", p])
+            }
+            _ => false,
+        }
+    }
+    s.named_child(0).is_some_and(|e| identity(src, p, e))
+}
+
+/// Whether `equals` calls one of the methods its class declares abstract: equality is left
+/// to the subclasses (hoist-core's `Filter`), so `hashCode()` belongs with them too.
+fn calls_abstract(src: &str, class_body: Node, equals: Node) -> bool {
+    let mut c = class_body.walk();
+    let abstract_methods: HashSet<&str> = class_body
+        .named_children(&mut c)
+        .filter(|m| m.kind() == "method_declaration" && has_modifier(*m, "abstract"))
+        .map(|m| method_name(src, m))
+        .collect();
+    let mut calls = false;
+    if let Some(body) = equals.child_by_field_name("body") {
+        crate::preorder(body, |x| {
+            if x.kind() == "method_invocation"
+                && let Some(f) = x.child_by_field_name("function")
+            {
+                let name = match f.kind() {
+                    "identifier" => text(f, src),
+                    "field_access"
+                        if f.child_by_field_name("object")
+                            .is_some_and(|o| text(o, src) == "this") =>
+                    {
+                        f.child_by_field_name("field").map_or("", |x| text(x, src))
+                    }
+                    _ => "",
+                };
+                calls |= abstract_methods.contains(name);
+            }
+            !calls
+        });
+    }
+    calls
+}
+
+/// Whether class `c`, or a superclass declared in the same file, declares `equals(Object)`,
+/// which can delegate to a typed overload.
+fn declares_object_equals(src: &str, mut c: Node) -> bool {
+    let mut root = c;
+    while let Some(p) = root.parent() {
+        root = p;
+    }
+    // ponytail: a bounded walk up `extends`, which also stops a cycle
+    for _ in 0..8 {
+        let Some(body) = c.child_by_field_name("body") else {
+            return false;
+        };
+        let mut w = body.walk();
+        if body.named_children(&mut w).any(|m| {
+            matches!(m.kind(), "method_declaration" | "constructor_declaration")
+                && method_name(src, m) == "equals"
+                && !has_modifier(m, "static")
+                && matches!(params(m)[..], [p] if object_param(src, p))
+        }) {
+            return true;
+        }
+        let Some(sup) = c
+            .children(&mut c.walk())
+            .find(|k| k.kind() == "superclass")
+            .and_then(|s| {
+                s.children(&mut s.walk())
+                    .filter(|t| t.is_named() && t.kind() != "annotation")
+                    .last()
+            })
+            .map(|t| {
+                let t = text(t, src).split('<').next().unwrap_or("");
+                t.rsplit('.').next().unwrap_or("").trim()
+            })
+        else {
+            return false;
+        };
+        let mut next = None;
+        crate::preorder(root, |x| {
+            if next.is_none()
+                && x.kind() == "class_declaration"
+                && x.child_by_field_name("name")
+                    .is_some_and(|n| text(n, src) == sup)
+            {
+                next = Some(x);
+            }
+            next.is_none()
+        });
+        let Some(next) = next else { return false };
+        c = next;
+    }
+    false
+}
+
 /// EqualsOverloaded, ObjectOverrideMisspelledMethodName, ToStringReturnsNull.
 fn method(src: &str, m: Node, v: &mut Vec<Violation>) {
     let name = method_name(src, m);
@@ -682,7 +892,16 @@ fn method(src: &str, m: Node, v: &mut Vec<Violation>) {
     let at_name = |rule, msg: String| at(m.child_by_field_name("name").unwrap_or(m), rule, msg);
     // only the one-parameter form looks like an override; `equals(a, b)` implementing an
     // interface (Hibernate's UserType) or a Spock feature named `equals` is something else
-    if name == "equals" && p.len() == 1 && !object_param(src, p[0]) {
+    // nor an abstract declaration, nor an overload that a class's equals(Object) can call
+    if name == "equals"
+        && p.len() == 1
+        && !object_param(src, p[0])
+        && m.child_by_field_name("body").is_some()
+        && !m
+            .parent()
+            .and_then(|b| b.parent())
+            .is_some_and(|c| declares_object_equals(src, c))
+    {
         v.push(at_name(
             "EqualsOverloaded",
             "This equals() takes a typed parameter, so it overloads equals instead of overriding it, and == and collections ignore it; declare equals(Object)".into(),
@@ -864,6 +1083,315 @@ fn returned(src: &str, n: Node) -> bool {
     false
 }
 
+/// BigDecimalInstantiation: `new BigDecimal(1.1)` or `new java.math.BigDecimal(1.1d)`, a
+/// BigDecimal made from a double, which is inexact. As in CodeNarc, the first argument must
+/// be a decimal literal (a BigDecimal or double in Groovy); `1.1f` and integers are fine.
+fn big_decimal(src: &str, n: Node, v: &mut Vec<Violation>) {
+    let ty = n.child_by_field_name("type").map_or("", |t| text(t, src));
+    if !matches!(ty, "BigDecimal" | "java.math.BigDecimal")
+        || n.child_by_field_name("body").is_some()
+    {
+        return;
+    }
+    let Some(arg) = n
+        .child_by_field_name("arguments")
+        .and_then(|a| a.named_children(&mut a.walk()).find(|c| !is_comment(*c)))
+    else {
+        return;
+    };
+    let t = text(arg, src);
+    let lower = t.to_ascii_lowercase();
+    let decimal = arg.kind() == "number_literal"
+        && !lower.starts_with("0x")
+        && !lower.starts_with("0b")
+        && (lower.contains('.') || lower.contains('e') || lower.ends_with('d'))
+        && !lower.ends_with('f');
+    if decimal {
+        let number = t.trim_end_matches(['d', 'D', 'g', 'G']);
+        v.push(at(
+            n,
+            "BigDecimalInstantiation",
+            format!(
+                "Call to {} uses the double constructor and should probably be replaced with new {ty}(\"{number}\")",
+                text(n, src)
+            ),
+        ));
+    }
+}
+
+/// BitwiseOperatorInConditional: `|` or `&` in the condition of an `if`, `while`, ternary
+/// or elvis, found as CodeNarc does: through the binary operators the condition is made of,
+/// not into calls or `!` (parentheses don't count, Groovy's syntax tree drops them).
+fn bitwise_condition(c: Option<Node>, v: &mut Vec<Violation>) {
+    let mut stack: Vec<Node> = c.into_iter().collect();
+    while let Some(n) = stack.pop() {
+        let n = unparen(n);
+        if n.kind() != "binary_expression" {
+            continue;
+        }
+        match n.child_by_field_name("operator").map_or("", |o| o.kind()) {
+            "|" => v.push(at(
+                n,
+                "BitwiseOperatorInConditional",
+                "Use of a bitwise or (|) operator in a conditional".into(),
+            )),
+            "&" => v.push(at(
+                n,
+                "BitwiseOperatorInConditional",
+                "Use of a bitwise and (&) operator in a conditional".into(),
+            )),
+            _ => stack.extend(
+                ["right", "left"]
+                    .iter()
+                    .filter_map(|f| n.child_by_field_name(f)),
+            ),
+        }
+    }
+}
+
+fn is_not(n: Node) -> bool {
+    n.kind() == "unary_expression"
+        && n.child_by_field_name("operator")
+            .is_some_and(|o| o.kind() == "!")
+}
+
+/// DoubleNegative: `!!x` or `!(!x)`.
+fn double_negative(src: &str, n: Node, v: &mut Vec<Violation>) {
+    if is_not(n)
+        && n.child_by_field_name("operand")
+            .is_some_and(|o| is_not(unparen(o)))
+    {
+        v.push(at(
+            n,
+            "DoubleNegative",
+            format!(
+                "The expression {} is a confusing double negative",
+                text(n, src)
+            ),
+        ));
+    }
+}
+
+/// UnnecessaryInstanceOfCheck: `!x instanceof T`, which tests the boolean `!x`.
+fn instanceof_not(src: &str, n: Node, v: &mut Vec<Violation>) {
+    let Some(x) = n
+        .child_by_field_name("value")
+        .map(unparen)
+        .filter(|x| is_not(*x))
+    else {
+        return;
+    };
+    let ty = n.child_by_field_name("type").map_or("", |t| text(t, src));
+    let what = if ty == "Boolean" {
+        "will always be a Boolean".to_string()
+    } else {
+        format!("will never be a {ty}")
+    };
+    v.push(at(
+        n,
+        "UnnecessaryInstanceOfCheck",
+        format!("The result of '{}' {what}", text(x, src)),
+    ));
+}
+
+/// UnnecessaryModOne: `x % 1`, which is always 0.
+fn mod_one(src: &str, n: Node, v: &mut Vec<Violation>) {
+    let one = n
+        .child_by_field_name("right")
+        .filter(|r| r.kind() == "number_literal")
+        .and_then(|r| {
+            text(r, src)
+                .trim_end_matches(|c: char| c.is_ascii_alphabetic())
+                .parse::<f64>()
+                .ok()
+        })
+        == Some(1.0);
+    if one && let Some(l) = n.child_by_field_name("left") {
+        let l = text(l, src);
+        v.push(at(
+            n,
+            "UnnecessaryModOne",
+            format!(
+                "{} is guaranteed to be zero. Did you mean ({l} & 1) or ({l} % 2)",
+                text(n, src)
+            ),
+        ));
+    }
+}
+
+/// IntegerGetInteger: `Integer.getInteger(name)` or `Integer.getInteger(name, default)`,
+/// which reads a system property, not a number from a String.
+fn integer_get_integer(src: &str, n: Node, v: &mut Vec<Violation>) {
+    let on_integer = n
+        .child_by_field_name("function")
+        .and_then(|f| f.child_by_field_name("object"))
+        .is_some_and(|o| text(o, src) == "Integer");
+    let args = n.child_by_field_name("arguments").map_or(0, |a| {
+        a.named_children(&mut a.walk())
+            .filter(|c| !is_comment(*c))
+            .count()
+    });
+    let sig = match args {
+        1 => "Integer.getInteger(String)",
+        2 => "Integer.getInteger(String, Integer)",
+        _ => return,
+    };
+    if on_integer && n.child_by_field_name("closure").is_none() {
+        v.push(at(
+            n,
+            "IntegerGetInteger",
+            format!("{sig} is a confusing API for reading System properties. Prefer the System.getProperty(String) API."),
+        ));
+    }
+}
+
+/// `Math.random()`, without arguments.
+fn is_math_random(src: &str, n: Node) -> bool {
+    let n = unparen(n);
+    n.kind() == "method_invocation"
+        && text(n, src).replace(char::is_whitespace, "") == "Math.random()"
+}
+
+/// `int` or `Integer` take "an", `long` or `Long` take "a"; `None` for other types.
+fn coerced_to_zero(ty: &str) -> Option<&'static str> {
+    match ty {
+        "int" | "Integer" => Some("an"),
+        "long" | "Long" => Some("a"),
+        _ => None,
+    }
+}
+
+/// RandomDoubleCoercedToZero: `(int) Math.random()` or `Math.random() as long`.
+fn random_cast(src: &str, n: Node, v: &mut Vec<Violation>) {
+    let ty = n.child_by_field_name("type").map_or("", |t| text(t, src));
+    if let Some(a) = coerced_to_zero(ty)
+        && n.child_by_field_name("value")
+            .is_some_and(|x| is_math_random(src, x))
+    {
+        v.push(at(
+            n,
+            "RandomDoubleCoercedToZero",
+            format!("Casting the result of Math.random() to {a} {ty} always results in 0"),
+        ));
+    }
+}
+
+/// RandomDoubleCoercedToZero: a field declared int, Integer, long or Long whose initial value
+/// is `Math.random()`. As in CodeNarc, only fields: a script's or method's local variable
+/// isn't checked.
+fn random_field(src: &str, n: Node, v: &mut Vec<Violation>) {
+    let ty = n.child_by_field_name("type").map_or("", |t| text(t, src));
+    let Some(a) = coerced_to_zero(ty) else { return };
+    let mut c = n.walk();
+    for d in n
+        .named_children(&mut c)
+        .filter(|d| d.kind() == "variable_declarator")
+    {
+        if d.child_by_field_name("value")
+            .is_some_and(|x| is_math_random(src, x))
+        {
+            v.push(at(
+                n,
+                "RandomDoubleCoercedToZero",
+                format!("Assigning the result of Math.random() to {a} {ty} always results in 0"),
+            ));
+        }
+    }
+}
+
+/// RandomDoubleCoercedToZero: `return Math.random()` (or a ternary or elvis branch of it) in a
+/// method declared to return int, Integer, long or Long. A `return` inside a closure in the
+/// method returns from the closure, so unlike CodeNarc those aren't counted.
+fn random_returned(src: &str, m: Node, v: &mut Vec<Violation>) {
+    let ty = m
+        .child_by_field_name("return_type")
+        .map_or("", |t| text(t, src));
+    let Some(a) = coerced_to_zero(ty) else { return };
+    let Some(body) = m.child_by_field_name("body") else {
+        return;
+    };
+    crate::preorder(body, |n| match n.kind() {
+        "closure" | "lambda_expression" | "class_body" => false,
+        "return_statement" => {
+            let mut stack: Vec<Node> = n.named_child(0).into_iter().collect();
+            while let Some(e) = stack.pop() {
+                let e = unparen(e);
+                match e.kind() {
+                    "ternary_expression" => stack.extend(
+                        ["alternative", "consequence"]
+                            .iter()
+                            .filter_map(|f| e.child_by_field_name(f)),
+                    ),
+                    "elvis_expression" => stack.extend(
+                        ["default", "value"]
+                            .iter()
+                            .filter_map(|f| e.child_by_field_name(f)),
+                    ),
+                    _ if is_math_random(src, e) => v.push(at(
+                        e,
+                        "RandomDoubleCoercedToZero",
+                        format!("Returning the result of Math.random() from {a} {ty}-returning method always returns 0"),
+                    )),
+                    _ => {}
+                }
+            }
+            false
+        }
+        _ => true,
+    });
+}
+
+/// ClassNameSameAsFilename: a file whose only top-level code is one class, interface, enum,
+/// trait or annotation type, named other than the file (`Foo.groovy` declaring `class Bar`).
+/// A file with any other top-level code is a script, and isn't checked.
+pub(super) fn class_name_same_as_filename(
+    path: &std::path::Path,
+    src: &str,
+    root: Node,
+    v: &mut Vec<Violation>,
+) {
+    let Some(file) = path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .filter(|f| !f.is_empty())
+    else {
+        return;
+    };
+    let mut c = root.walk();
+    let mut types = Vec::new();
+    for n in root.named_children(&mut c) {
+        match n.kind() {
+            "class_declaration"
+            | "interface_declaration"
+            | "enum_declaration"
+            | "trait_declaration"
+            | "annotation_type_declaration"
+            | "record_declaration" => types.push(n),
+            "package_declaration" | "import_declaration" => {}
+            k if k.contains("comment") => {}
+            _ => return,
+        }
+    }
+    let [only] = types[..] else { return };
+    let Some(name) = only.child_by_field_name("name") else {
+        return;
+    };
+    let shown = text(name, src);
+    // CodeNarc compares with the file name less its first `.groovy`
+    if shown != file.replacen(".groovy", "", 1) {
+        let kind = match only.kind() {
+            "interface_declaration" | "annotation_type_declaration" => "Interface",
+            "enum_declaration" => "Enum",
+            _ => "Class",
+        };
+        v.push(at(
+            name,
+            "ClassNameSameAsFilename",
+            format!("{kind} `{shown}` is the only class in `{file}`. In such a case the file and the class should have the same name."),
+        ));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::lint::lint;
@@ -887,7 +1415,8 @@ mod tests {
             vec![] as Vec<usize>
         );
         // `break` after a return in a switch is a habit; code on the jump's line is left to
-        // the grammar, which splits `return pipeline { }` (orca DependentPipelineStarterSpec)
+        // the grammar, which splits `return pipeline { }` (orca DependentPipelineStarterSpec);
+        // a doubled `break` has no such reason and is reported
         let src = "switch (x) {\n  case 1:\n    return 1\n    break\n  case 2:\n    throw new E()\n    break\n}\nx = { _, p ->\n  return pipeline {\n    name = p\n  }\n}\nwhile (a) {\n  break\n  break\n}\n";
         assert_eq!(rules(src, "DeadCode"), vec![16]);
     }
@@ -949,6 +1478,15 @@ mod tests {
         let src = "class A {\n  boolean equals(Object o) { true }\n}\nclass B {\n  int hashCode() { 1 }\n}\nclass C {\n  boolean equals(o) { true }\n  int hashCode() { 1 }\n}\n@EqualsAndHashCode\nclass D {\n  boolean equals(Object o) { true }\n}\nclass E {\n  boolean equals(String s) { true }\n  static int hashCode() { 1 }\n}\nclass F extends A {\n  boolean equals(Object o) { true }\n}\n";
         assert_eq!(rules(src, "EqualsAndHashCode"), vec![1]);
         assert_eq!(rules(src, "EqualsOverloaded"), vec![16]);
+        // hoist-core's Filter: equals(Object) delegates to a typed overload, abstract in the
+        // base; a superclass in another file can't be seen, so Lone stays reported
+        let src = "abstract class Filter {\n  abstract boolean equals(Filter o)\n  boolean equals(Object o) { o instanceof Filter && equals((Filter) o) }\n}\nclass Field extends Filter {\n  boolean equals(Filter o) { true }\n  int hashCode() { 1 }\n}\nclass Other {\n  boolean equals(Other o) { true }\n  boolean equals(Object o) { o instanceof Other && equals((Other) o) }\n  int hashCode() { 1 }\n}\nclass Lone extends Remote {\n  boolean equals(Lone o) { true }\n}\nabstract class Base {\n  int x\n  abstract int size()\n  boolean equals(Object o) { o.x == x }\n}\n";
+        assert_eq!(rules(src, "EqualsOverloaded"), vec![15]);
+        assert_eq!(rules(src, "EqualsAndHashCode"), vec![17]);
+        // an equals never broader than identity keeps the contract with Object.hashCode
+        // (grails-core's VersionComparator and NullSafeNavigator)
+        let src = "class A {\n  boolean equals(obj) { false }\n}\nclass B {\n  boolean equals(Object to) {\n    return to == null || DefaultGroovyMethods.is(this, to)\n  }\n}\nclass C {\n  boolean equals(Object o) { this.is(o) }\n}\nclass D {\n  boolean equals(Object o) { true }\n}\nclass E {\n  boolean equals(Object o) { o == null || o.x == 1 }\n}\n";
+        assert_eq!(rules(src, "EqualsAndHashCode"), vec![12, 15]);
     }
 
     #[test]
@@ -976,5 +1514,192 @@ mod tests {
         assert_eq!(rules(src, "MissingNewInThrowStatement"), vec![1, 4, 6]);
         let src = "void f() {\n  try { g() } catch (e) { new IllegalStateException(e) }\n}\ndef h() {\n  try { g() } catch (e) {\n    new IllegalStateException(e)\n  }\n}\nvoid k() {\n  try { g() } catch (e) {\n    throw new IllegalStateException(e)\n  }\n  try { g() } catch (e) {\n    new IllegalStateException(e)\n  }\n  done()\n}\nx = { try { g() } catch (e) { new MyException() } }\n";
         assert_eq!(rules(src, "ExceptionNotThrown"), vec![2, 14]);
+    }
+
+    // The cases below for the rules from CodeNarc's basic, unnecessary and naming rulesets are
+    // ported from CodeNarc's own tests (org.codenarc.rule.basic.*RuleTest and so on,
+    // Copyright Chris Mair and the CodeNarc contributors, Apache License 2.0).
+
+    fn msgs(src: &str, rule: &str) -> Vec<String> {
+        lint(src)
+            .expect("parses")
+            .into_iter()
+            .filter(|v| v.rule == rule)
+            .map(|v| v.message)
+            .collect()
+    }
+
+    #[test]
+    fn big_decimal_instantiation() {
+        let src = "class MyClass {\n  def b1 = new BigDecimal(123.45)\n  def b2 = new java.math.BigDecimal(0.26789d)\n  def b3 = new BigDecimal(123.45, MathContext.UNLIMITED)\n  def c = { def b4 = new BigDecimal(12.0001) }\n}\ndef b5 = new BigDecimal(12345678.987654321d)\ndef b6 = new BigDecimal(1e3)\n";
+        assert_eq!(
+            rules(src, "BigDecimalInstantiation"),
+            vec![2, 3, 4, 5, 7, 8]
+        );
+        let ok = "def a = new BigDecimal(BigInteger.ONE)\ndef b = new BigDecimal(BigInteger.TEN, 3)\ndef c = new BigDecimal('123.45' as char[])\ndef d = new BigDecimal(99)\ndef e = new BigDecimal(12345, MathContext.UNLIMITED)\ndef f = new BigDecimal(99L)\ndef g = new BigDecimal(L, MathContext.UNLIMITED)\ndef h = new BigDecimal('12345.67')\ndef i = new BigDecimal(xyz)\ndef j = new BigDecimal(1.5f)\ndef k = new BigInteger(1.5)\n";
+        assert!(rules(ok, "BigDecimalInstantiation").is_empty());
+        assert_eq!(
+            msgs("x = new BigDecimal(12.0001)\n", "BigDecimalInstantiation")[0],
+            "Call to new BigDecimal(12.0001) uses the double constructor and should probably be replaced with new BigDecimal(\"12.0001\")"
+        );
+    }
+
+    #[test]
+    fn bitwise_operator_in_conditional() {
+        let ok = "def temp = (3 | 6)\nif (temp == 7) { return true }\nif (a || b) { return true }\nwhile (temp == 7) { }\nif (!(a & b)) { }\nif (f(a | b)) { }\nfor (; a | b;) { }\n";
+        assert!(rules(ok, "BitwiseOperatorInConditional").is_empty());
+        let src = "if (a|b) { return true }\nif (a|b||a) { return true }\nif ((a|b)||(a||b)) { }\nif ((a||b)||(a|b)) { }\nif ((a||b)||a && b || b || (a|b)) { }\nwhile (a|b) { }\na|b ? true : false\na|b ?: false\nif (a&b) { }\nif ((flags & MASK) != 0) { }\nif (a | b && c & d) { }\n";
+        assert_eq!(
+            rules(src, "BitwiseOperatorInConditional"),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 11]
+        );
+    }
+
+    #[test]
+    fn double_negative() {
+        assert!(rules("!true\ndef x = !a.b\n", "DoubleNegative").is_empty());
+        let src = "def x = !!true\ndef y = !(!true)\n";
+        assert_eq!(rules(src, "DoubleNegative"), vec![1, 2]);
+    }
+
+    #[test]
+    fn empty_synchronized_statement() {
+        let src = "class MyClass {\n  def myClosure = {\n    synchronized(lock) {\n    }\n  }\n}\nsynchronized(lock) {\n  // waits for the writer\n}\nsynchronized(lock) {\n  println 'x'\n}\n";
+        // a comment counts as content, as for the other Empty* rules
+        assert_eq!(rules(src, "EmptySynchronizedStatement"), vec![3]);
+    }
+
+    #[test]
+    fn for_loop_should_be_while_loop() {
+        let ok = "while (1 > 2)\n  println 'never'\nfor (i in [1, 2])\n  println i\nfor (child in this.children) { }\nfor (int i = 0; i < 5;)\n  println i++\nfor (; i < 5; i++)\n  println i\nfor (Plan p : plans) { }\nfor (;;) { break }\n";
+        assert!(rules(ok, "ForLoopShouldBeWhileLoop").is_empty());
+        assert_eq!(
+            rules(
+                "int i = 0\nfor (; i < 5;)\n  println i++\n",
+                "ForLoopShouldBeWhileLoop"
+            ),
+            vec![2]
+        );
+    }
+
+    #[test]
+    fn integer_get_integer() {
+        let ok = "Integer.getInteger()\nInteger.getInteger(value, radix, locale)\nInteger.parseInt(value)\nfoo.getInteger(value)\n";
+        assert!(rules(ok, "IntegerGetInteger").is_empty());
+        let src = "Integer.getInteger(value)\nInteger.getInteger(value, radix)\n";
+        assert_eq!(rules(src, "IntegerGetInteger"), vec![1, 2]);
+    }
+
+    #[test]
+    fn random_double_coerced_to_zero() {
+        let ok = "class MyClass {\n  def a = (double) Math.random()\n  def b = (Double) Math.random()\n  double c = Math.random()\n  Double d = Math.random()\n  def e = (Math.random()) as double\n  def f = (Math.random()) as Double\n  def g = Math.random()\n}\nDouble intMethod() {\n  if (foo) return Math.random()\n}\ndouble integerMethod() {\n  if (foo) return Math.random()\n}\ndef defMethod() {\n  if (foo) return Math.random()\n}\nint h() {\n  [1].collect { return Math.random() }\n}\nlong local = Math.random()\n";
+        assert!(rules(ok, "RandomDoubleCoercedToZero").is_empty());
+        let src = "class MyClass {\n  def a = (long) Math.random()\n  def b = (Long) Math.random()\n  long c = Math.random()\n  Long d = Math.random()\n  def e = (Math.random()) as long\n  def f = (Math.random()) as Long\n  def g = (int) Math.random()\n  def h = (Integer) Math.random()\n  int i = Math.random()\n  Integer j = Math.random()\n  def k = (Math.random()) as int\n}\nlong longMethod() {\n  if (foo) return Math.random()\n}\nLong longMethod2() {\n  return ((foo) ?: Math.random())\n}\nint intMethod() {\n  return foo ? 1 : Math.random()\n}\n";
+        assert_eq!(
+            rules(src, "RandomDoubleCoercedToZero"),
+            vec![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 18, 21]
+        );
+        let v = msgs(
+            "class A {\n  long c = Math.random()\n  int f() { return Math.random() }\n}\n",
+            "RandomDoubleCoercedToZero",
+        );
+        assert_eq!(
+            v[0],
+            "Assigning the result of Math.random() to a long always results in 0"
+        );
+        assert_eq!(
+            v[1],
+            "Returning the result of Math.random() from an int-returning method always returns 0"
+        );
+    }
+
+    #[test]
+    fn unnecessary_instance_of_check() {
+        let ok = "if (!(variable instanceof String)) { }\ndef x = !(variable instanceof String)\ndef y = variable instanceof String\n";
+        assert!(rules(ok, "UnnecessaryInstanceOfCheck").is_empty());
+        let src = "def x = !variable instanceof String\ndef y = !variable instanceof Boolean\nif (!var instanceof Integer) { }\n";
+        assert_eq!(rules(src, "UnnecessaryInstanceOfCheck"), vec![1, 2, 3]);
+        let v = msgs(src, "UnnecessaryInstanceOfCheck");
+        assert_eq!(v[0], "The result of '!variable' will never be a String");
+        assert_eq!(v[1], "The result of '!variable' will always be a Boolean");
+    }
+
+    #[test]
+    fn unnecessary_mod_one() {
+        assert!(rules("if (exp & 1) { }\nif (exp % 2) { }\n", "UnnecessaryModOne").is_empty());
+        let src = "if (exp % 1) { }\nif (method() % 1) { }\nx = y % 1L\n";
+        assert_eq!(rules(src, "UnnecessaryModOne"), vec![1, 2, 3]);
+        assert_eq!(
+            msgs("x = exp % 1\n", "UnnecessaryModOne")[0],
+            "exp % 1 is guaranteed to be zero. Did you mean (exp & 1) or (exp % 2)"
+        );
+    }
+
+    #[test]
+    fn class_name_same_as_filename() {
+        use std::path::Path;
+        let at = |name: &str, src: &str| -> Vec<usize> {
+            crate::lint::lint_file(Path::new(name), src)
+                .unwrap()
+                .into_iter()
+                .filter(|v| v.rule == "ClassNameSameAsFilename")
+                .map(|v| v.line)
+                .collect()
+        };
+        let none: Vec<usize> = vec![];
+        assert_eq!(
+            at(
+                "SameAsFilename.groovy",
+                "class SameAsFilename {\n  static class Foo {}\n}\n"
+            ),
+            none
+        );
+        assert_eq!(at("", "class Ignore { }\n"), none);
+        assert_eq!(
+            at(
+                "SameAsFilename.groovy",
+                "class SameAsFilename {}\nenum NotSameAsFilename {}\n"
+            ),
+            none
+        );
+        assert_eq!(
+            at("SameAsFilename.groovy", "println 'Hello world!'\n"),
+            none
+        );
+        assert_eq!(
+            at(
+                "SameAsFilename.groovy",
+                "package a\nimport b.C\n\nclass NotSameAsFilename {}\n"
+            ),
+            vec![4]
+        );
+        assert_eq!(
+            at("SameAsFilename.groovy", "\nenum NotSameAsFilename {}\n"),
+            vec![2]
+        );
+        assert_eq!(
+            at(
+                "SameAsFilename.groovy",
+                "\ninterface NotSameAsFilename {}\n"
+            ),
+            vec![2]
+        );
+        assert_eq!(
+            at(
+                "SameAsFilename.groovy",
+                "class NotSameAsFilename {\n  enum Foo {}\n  class Baz {}\n}\n"
+            ),
+            vec![1]
+        );
+        // a script with a class in it is a script
+        assert_eq!(
+            at("SameAsFilename.groovy", "class A {}\nprintln new A()\n"),
+            none
+        );
+        let v = crate::lint::lint_file(Path::new("src/X.groovy"), "class Y {}\n").unwrap();
+        assert_eq!(
+            v[0].message,
+            "Class `Y` is the only class in `X.groovy`. In such a case the file and the class should have the same name."
+        );
     }
 }

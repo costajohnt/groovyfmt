@@ -11,9 +11,13 @@
 //! - Inside `(` … `)` and `[` … `]` (but not `try (`), the lexer drops newlines before the
 //!   parser sees them: `NL : LineTerminator { ignoreTokenInsideParens(); }`, where
 //!   `isInsideParens` is true when the innermost open bracket is `(` (not after `try`), `[` or
-//!   `?[`. A break there leaves the token stream Groovy parses unchanged. Argument lists and
-//!   list and map literals break only there: after the opening bracket, after each comma and
-//!   before the closing bracket.
+//!   `?[`. A break there leaves the token stream Groovy parses unchanged. Argument lists, list
+//!   and map literals, a method's or constructor's parameters (`formalParameters : LPAREN
+//!   formalParameterList? rparen`) and an annotation's arguments (`annotation : AT
+//!   annotationName (nls LPAREN elementValues? rparen)?`) break only there: after the opening
+//!   bracket, after each comma and before the closing bracket.
+//! - After each comma between a parenthesis-free command call's arguments: `argumentList :
+//!   firstArgumentListElement (COMMA nls argumentListElement)*`.
 //! - Anywhere else (in a block or closure body, or at the top level) a newline is a token, so
 //!   a break goes only where a rule accepts `NL*` at that point:
 //!   - before the `.`, `?.` or `*.` of a method chain: `pathElement : NL* (DOT NL* … |
@@ -24,13 +28,17 @@
 //!   - after a ternary's `?` and `:` and after `?:` (`con=expression NL* (QUESTION NL*
 //!     tb=expression NL* COLON NL* | ELVIS NL* …) fb=expression`);
 //!   - after `=`, only when nothing else on the line can break (`left=expression NL*
-//!     op=ASSIGN NL* right=…` and `variableDeclaratorId (NL* ASSIGN NL* variableInitializer)`).
+//!     op=ASSIGN NL* right=…` and `variableDeclaratorId (NL* ASSIGN NL* variableInitializer)`);
+//!   - in a class, interface, trait, enum or record header, before `extends`, `implements`
+//!     and `permits` (`classDeclaration : … (NL* EXTENDS NL* typeList)? (NL* IMPLEMENTS NL*
+//!     typeList)? (NL* PERMITS NL* typeList)? NL* classBody`) and after each comma of their
+//!     types (`typeList : type (COMMA NL* type)*`).
 //!
 //!   None of these leaves a line starting with `{`, `++`, `--`, `+`, `-`, `*` or `/`.
 //!
-//! Nothing breaks inside a parenthesis-free command call (`foo a, b`), where
-//! tree-sitter-groovy finds the arguments by looking at newlines, or inside a closure or block
-//! written on one line, whose statements end at newlines.
+//! Nothing else breaks inside a parenthesis-free command call (`foo a, b`), where
+//! tree-sitter-groovy finds the first argument by looking at newlines, or anything inside a
+//! closure or block written on one line, whose statements end at newlines.
 //!
 //! Layout: for each line over the limit, the outermost construct that lies wholly on that line
 //! is broken one way (an argument list or literal one item per line, its closing bracket on a
@@ -42,9 +50,9 @@
 //! so are constructs whose breaking would scatter a part of the line that can't break itself
 //! (see `scattered` and `select`).
 //!
-//! Each pass re-parses the result and requires the same tree shape as the input; `format`
-//! checks the final text again (tokens and tree shape). If anything fails, the file is
-//! formatted without wrapping instead.
+//! Each pass parses the result again and requires the same tree shape as the input; `format`
+//! checks the final text again (tokens and tree shape, on the last pass's parse of it). If
+//! anything fails, the file is formatted without wrapping instead.
 
 use crate::format::{Style, shape};
 use crate::spacing::{is_atom, lopsided};
@@ -76,11 +84,20 @@ const NO_BREAK: usize = 4;
 const OUTSIDE: usize = 5;
 
 /// Kinds of break, indexing `Report::breaks`.
-pub const KINDS: [&str; 4] = ["list", "chain", "operator", "assignment"];
+pub const KINDS: [&str; 6] = [
+    "list",
+    "chain",
+    "operator",
+    "assignment",
+    "command",
+    "header",
+];
 const LIST: usize = 0;
 const CHAIN: usize = 1;
 const OPERATOR: usize = 2;
 const ASSIGN: usize = 3;
+const COMMAND: usize = 4;
+const HEADER: usize = 5;
 
 /// What wrapping did to the last file formatted on this thread, for measuring it.
 #[doc(hidden)]
@@ -90,7 +107,7 @@ pub struct Report {
     pub over_before: usize,
     pub over_after: usize,
     /// Line breaks added, by `KINDS`.
-    pub breaks: [usize; 4],
+    pub breaks: [usize; 6],
     /// Lines left over the limit, by `LEFT`.
     pub left: [usize; 6],
     /// Why the file was formatted without wrapping, if it was.
@@ -207,18 +224,19 @@ fn insert(src: &str, at: &[Atom], breaks: &[bool], eols: &[&str]) -> String {
     s
 }
 
-/// `base` (the formatted `src`) with long lines wrapped, or why it couldn't be. `fmt` formats
-/// a text with the line breaks added (re-indenting it, and respacing it if that is on).
-/// `rows`: with `--lines`, the source lines (1-based, inclusive) that may be wrapped.
+/// `base` (the formatted `src`, and its tree) with long lines wrapped, and the tree of the
+/// result, or why it couldn't be. `fmt` formats a text with the line breaks added (re-indenting
+/// it, and respacing it if that is on). `rows`: with `--lines`, the source lines (1-based,
+/// inclusive) that may be wrapped.
 pub(crate) fn wrap(
     src: &str,
     tree: &Tree,
-    base: &str,
+    (base, base_tree): (&str, &Tree),
     style: &Style,
     limit: usize,
     rows: Option<&[(usize, usize)]>,
     fmt: &dyn Fn(&str, &Tree) -> Result<String, &'static str>,
-) -> Result<String, &'static str> {
+) -> Result<(String, Tree), &'static str> {
     let mut report = Report {
         over_before: base
             .split('\n')
@@ -228,9 +246,18 @@ pub(crate) fn wrap(
     };
     if report.over_before == 0 {
         set_report(report);
-        return Ok(base.to_string());
+        return Ok((base.to_string(), base_tree.clone()));
     }
-    let r = passes(src, tree, base, style, limit, rows, fmt, &mut report);
+    let r = passes(
+        src,
+        tree,
+        (base, base_tree),
+        style,
+        limit,
+        rows,
+        fmt,
+        &mut report,
+    );
     report.fallback = r.as_ref().err().copied();
     if r.is_err() {
         report.over_after = report.over_before;
@@ -243,13 +270,13 @@ pub(crate) fn wrap(
 fn passes(
     src: &str,
     tree: &Tree,
-    base: &str,
+    (base, base_tree): (&str, &Tree),
     style: &Style,
     limit: usize,
     rows: Option<&[(usize, usize)]>,
     fmt: &dyn Fn(&str, &Tree) -> Result<String, &'static str>,
     report: &mut Report,
-) -> Result<String, &'static str> {
+) -> Result<(String, Tree), &'static str> {
     if too_deep(tree) {
         return Err("nesting too deep to wrap");
     }
@@ -257,10 +284,11 @@ fn passes(
     let want = shape(tree);
     let eols = eols(src);
     let mut breaks = vec![false; src_at.len()];
+    // `base` was parsed already, to check the formatting; each pass parses its text again
     let mut cur = base.to_string();
+    let mut ct = base_tree.clone();
     for pass in 0..=MAX_PASSES {
-        let ct = crate::parse(&cur);
-        if ct.root_node().has_error() || shape(&ct) != want {
+        if !same_shape(&ct, &want) {
             return Err(if pass == 0 {
                 "formatting changed the parse"
             } else {
@@ -285,7 +313,7 @@ fn passes(
         report.over_after = pick.over;
         report.left = pick.left;
         if pick.breaks.is_empty() {
-            return Ok(cur);
+            return Ok((cur, ct));
         }
         if pass == MAX_PASSES {
             break;
@@ -298,12 +326,25 @@ fn passes(
         }
         let text = insert(src, &src_at, &breaks, &eols);
         let tt = crate::parse(&text);
-        if tt.root_node().has_error() || shape(&tt) != want {
+        if !same_shape(&tt, &want) {
             return Err("a line break changed the parse");
         }
         cur = fmt(&text, &tt)?;
+        ct = crate::parse(&cur);
     }
     Err("wrapping did not settle")
+}
+
+/// Whether `t` parsed cleanly to `want`, a `shape`, without building its own.
+fn same_shape(t: &Tree, want: &[(u16, usize)]) -> bool {
+    let mut i = 0;
+    let mut same = !t.root_node().has_error();
+    crate::preorder(t.root_node(), |n| {
+        same &= want.get(i) == Some(&(n.kind_id(), n.child_count()));
+        i += 1;
+        same
+    });
+    same && i == want.len()
 }
 
 /// Trees nested deeper than this aren't wrapped. Each pass parses the file again, and
@@ -357,6 +398,7 @@ const SKIP: u8 = 1; // never break here
 const CMD: u8 = 2; // in a parenthesis-free command call, outside any brackets
 const IN_LIST: u8 = 4; // in an argument list or literal of two or more items on one line
 const MID: u8 = 8; // in an operand of a one-line ternary or `?:` other than the last
+const ANN: u8 = 16; // in an annotation: only its brackets break
 
 /// Whether following `next` down from `n` (its first or last child, and so on) reaches a
 /// parenthesis-free command call before a bracket. Gives up, saying yes, after `MAX_EDGE`
@@ -408,11 +450,11 @@ fn scattered(n: Node, parent: Option<Node>) -> bool {
         // a lambda's body (`.filter(m -> m.x() == y)`), like a closure on one line, and a
         // subscript (`a[b + 1] = c`)
         "parenthesized_expression" | "lambda_expression" | "subscript_expression" => true,
-        "argument_list" => p.named_child_count() == 1,
+        "argument_list" => only_on_one_line(p),
         // `f(key: a + b)`, the only argument too
         "named_argument" => p
             .parent()
-            .is_some_and(|l| l.kind() == "argument_list" && l.named_child_count() == 1),
+            .is_some_and(|l| l.kind() == "argument_list" && only_on_one_line(l)),
         // `assert a == b : 'message'`: the message would trail the last piece
         "assert_statement" => p.child_by_field_name("message").is_some(),
         "if_statement" | "while_statement" => ["consequence", "body"]
@@ -424,6 +466,34 @@ fn scattered(n: Node, parent: Option<Node>) -> bool {
             }),
         _ => false,
     }
+}
+
+/// Whether `n`, the only argument of a call, ends in brackets that break instead of the call's:
+/// a list, map or closure, or a call whose own arguments are two or more or one that hugs.
+fn hugs(n: Node) -> bool {
+    let mut m = n;
+    for _ in 0..MAX_EDGE {
+        if matches!(
+            m.kind(),
+            "list_literal" | "map_literal" | "closure" | "lambda_expression"
+        ) {
+            return true;
+        }
+        let Some(l) = last_child(m).filter(|l| l.kind() == "argument_list") else {
+            return false;
+        };
+        match (l.named_child_count(), l.named_child(0)) {
+            (1, Some(only)) => m = only,
+            (c, _) => return c >= 2,
+        }
+    }
+    false
+}
+
+/// Whether `l`, an argument list, holds one argument and lies on one line: then that argument
+/// breaking would leave the `)` trailing its last piece, and the list breaks first instead.
+fn only_on_one_line(l: Node) -> bool {
+    l.named_child_count() == 1 && l.start_position().row == l.end_position().row
 }
 
 /// Whether a method call is the last of its chain: not the object of a `.`, nor called.
@@ -447,7 +517,8 @@ const TINY: usize = 8;
 
 /// A construct that can break, on one line.
 struct Cand {
-    /// assignments come last, then operators leaving a short piece; then the widest
+    /// assignments and only arguments come last, then operators leaving a short piece; then
+    /// the widest
     rank: (bool, bool, usize),
     kind: usize,
     breaks: Vec<usize>,
@@ -469,14 +540,12 @@ impl Ctx<'_> {
     }
 
     /// Whether the gap before atom `k` is spaces on one line, in the text and in the source,
-    /// on a line `--lines` allows, and not right after a `>`.
+    /// and on a line `--lines` allows.
     fn gap_ok(&self, k: usize) -> bool {
         let blank = |s: &str| s.bytes().all(|b| b == b' ' || b == b'\t');
         k > 0
             && k < self.at.len()
             && self.at[k - 1].end_row == self.at[k].row
-            // tree-sitter-groovy reads `f(x, List<T>` then a line break as `List < T >`
-            && self.text(&self.at[k - 1]) != ">"
             && blank(&self.cur[self.at[k - 1].end..self.at[k].start])
             && self.src_at[k - 1].end_row == self.src_at[k].row
             && blank(&self.src[self.src_at[k - 1].end..self.src_at[k].start])
@@ -627,10 +696,13 @@ impl Ctx<'_> {
                     p.1 = true;
                 }
             }
+            // a command call's own arguments may break, but not those of one inside another's
+            let outer_cmd = flags & CMD;
             match n.kind() {
                 "closure" | "block" | "class_body" | "enum_body" | "switch_block" => flags &= !CMD,
                 "command_chain" => flags |= CMD,
-                "annotation" | "import_declaration" | "package_declaration" => flags |= SKIP,
+                "annotation" => flags |= ANN,
+                "import_declaration" | "package_declaration" => flags |= SKIP,
                 _ => {}
             }
             // `if (c) x = f(a, b)`: a body without braces on its statement's line is left
@@ -675,7 +747,20 @@ impl Ctx<'_> {
             if live && !is_atom(n) {
                 let parent = stack.last().map(|f| f.0);
                 let mut found = Vec::new();
-                if sr == er {
+                if matches!(
+                    n.kind(),
+                    "class_declaration"
+                        | "interface_declaration"
+                        | "trait_declaration"
+                        | "enum_declaration"
+                        | "record_declaration"
+                ) {
+                    for (r, breaks) in self.header(n, &on_row) {
+                        if want[r] {
+                            found.push((r, Ok(Some((HEADER, breaks)))));
+                        }
+                    }
+                } else if sr == er {
                     found.push((sr, self.candidate(n, c.field_name(), parent)));
                 } else if n.kind() == "method_invocation" && chain_top(c.field_name(), parent) {
                     // a chain already over several lines breaks before its dots on this one
@@ -688,7 +773,12 @@ impl Ctx<'_> {
                 for (r, cand) in found {
                     let checked = cand.and_then(|c| match c {
                         Some((kind, breaks)) => {
-                            self.check(n, kind, breaks, flags, &hidden, (starts[r], line(r).len()))
+                            let fl = if kind == COMMAND {
+                                (flags & !CMD) | outer_cmd
+                            } else {
+                                flags
+                            };
+                            self.check(n, kind, breaks, fl, &hidden, (starts[r], line(r).len()))
                         }
                         None => Ok(None),
                     });
@@ -748,6 +838,14 @@ impl Ctx<'_> {
     ) -> Result<Option<(usize, Vec<usize>)>, ()> {
         let (kind, breaks) = match n.kind() {
             "argument_list" | "list_literal" | "map_literal" => (LIST, self.items(n)),
+            // a method's or constructor's parameters, two or more
+            "formal_parameters"
+                if parent.is_some_and(|p| {
+                    matches!(p.kind(), "method_declaration" | "constructor_declaration")
+                }) =>
+            {
+                (LIST, self.items(n).filter(|b| b.len() > 2))
+            }
             "method_invocation" if chain_top(field, parent) => (
                 CHAIN,
                 self.chain(n)
@@ -757,6 +855,7 @@ impl Ctx<'_> {
                 (OPERATOR, self.operators(n, parent))
             }
             "assignment_expression" | "variable_declarator" => (ASSIGN, self.assign(n)),
+            "command_chain" => (COMMAND, self.command_args(n)),
             _ => return Ok(None),
         };
         match breaks {
@@ -778,16 +877,38 @@ impl Ctx<'_> {
     ) -> Result<Option<Cand>, ()> {
         // `println a + b` may parse as `(println a) + b`: a command call at either edge of an
         // operator, chain or assignment puts the break inside it
-        if kind != LIST && (edge_command(n, |m| m.child(0)) || edge_command(n, last_child)) {
+        if !matches!(kind, LIST | COMMAND | HEADER) && edge_command(n, |m| m.child(0)) {
             return Err(());
+        }
+        if !matches!(kind, LIST | COMMAND | HEADER) && edge_command(n, last_child) {
+            // `def r = sh a: 1, b: 2`: the `=` stays, the command's own arguments may break
+            return if kind == ASSIGN { Ok(None) } else { Err(()) };
+        }
+        // A command call's arguments break only where nothing follows the call on its line
+        // but a comment, and when the line up to the first break then fits: `foo "a long
+        // string",` then `x` keeps the long line and only moves the short part.
+        if kind == COMMAND {
+            let rest = self.cur[n.end_byte()..line + len].trim_start();
+            let first = &self.cur[line..self.at[breaks[0] - 1].end];
+            if !(rest.is_empty() || rest.starts_with("//") || rest.starts_with("/*"))
+                || width_upto(first, self.indent, self.limit) > self.limit
+            {
+                return Ok(None);
+            }
         }
         // a list holding this on one line couldn't break (it holds a comment): breaking
         // inside one of its items instead would scatter it
         if flags & (SKIP | MID) != 0 || (kind != LIST && flags & IN_LIST != 0) {
             return Err(());
         }
+        // in an annotation only brackets break, but an `x = [a, b]` around one doesn't stop it
+        if kind != LIST && flags & ANN != 0 {
+            return Ok(None);
+        }
         for &k in &breaks {
-            if !self.gap_ok(k) {
+            // tree-sitter-groovy reads `f(x, List<T>` then a line break as `List < T >`; in a
+            // class header a `>` closes a type, as in `class A<T>` then `extends B<T>`
+            if !self.gap_ok(k) || (kind != HEADER && self.text(&self.at[k - 1]) == ">") {
                 return Ok(None);
             }
             let (drop, one_line_brace) = hidden[k];
@@ -823,6 +944,41 @@ impl Ctx<'_> {
             if after > inside {
                 return Ok(None);
             }
+            // An annotation's arguments break only with nothing after them on the line
+            // (`@A(x, y) def f()` stays). One item breaks only if it is long enough to be worth
+            // a line of its own and at least half as wide as what comes before it on the line
+            // (a long `a.b(c).d(` then a short `x` then `)` reads worse than the long line),
+            // when it then fits on its own line or is an operator expression or a chain that
+            // breaks further, and when only closing brackets, `,` or `;` follow it on the line
+            // (not `) == 1`, nor `)) {` of an `if`, which would line up with the body).
+            let single = breaks.len() == 2;
+            let before = width_upto(&self.cur[line..self.at[o].end], self.indent, self.limit);
+            let text = &self.cur[line..line + len];
+            let lead = width(&text[..text.len() - text.trim_start().len()], self.indent);
+            let item = n.named_child(0).map(|i| match i.kind() {
+                "named_argument" => i.child_by_field_name("value").unwrap_or(i),
+                _ => i,
+            });
+            let further = item.is_some_and(|i| match i.kind() {
+                "binary_expression" => i
+                    .child_by_field_name("operator")
+                    .is_some_and(|o| matches!(o.kind(), "||" | "&&" | "==" | "!=" | "+" | "-")),
+                "ternary_expression" | "elvis_expression" => true,
+                "method_invocation" => self.chain(i).is_some(),
+                _ => false,
+            });
+            if (after > 0 && n.parent().is_some_and(|p| p.kind() == "annotation"))
+                || (single
+                    && (inside < SHORT
+                        || !self.cur[self.at[z].end..line + len]
+                            .chars()
+                            .all(|c| matches!(c, ')' | ']' | ',' | ';' | ' '))
+                        || before > self.limit
+                        || before.saturating_sub(lead) > 2 * inside
+                        || (lead + self.cont + inside > self.limit && !further)))
+            {
+                return Ok(None);
+            }
         }
         // One whose later pieces include a short one (`x.a().b().c() !=` then `"MyTx") {`)
         // comes after the other constructs.
@@ -850,15 +1006,18 @@ impl Ctx<'_> {
         if !fits || tiny {
             return Ok(None);
         }
+        // A call's only argument breaking ranks with `=`, so the wider `=` wins when both can:
+        // `def x =` then the whole call, not `def x = a.b().c(` then a short argument.
+        let last = kind == ASSIGN || (kind == LIST && breaks.len() == 2);
         Ok(Some(Cand {
-            rank: (kind != ASSIGN, !stub, n.end_byte() - n.start_byte()),
+            rank: (!last, !stub, n.end_byte() - n.start_byte()),
             kind,
             breaks,
         }))
     }
 
-    /// An argument list or list or map literal with two or more items and no comments:
-    /// after the opening bracket, after each comma, before the closing bracket.
+    /// An argument list, list or map literal or parameter list with no comments: after the
+    /// opening bracket, after each comma, before the closing bracket.
     fn items(&self, n: Node) -> Option<Vec<usize>> {
         let count = n.child_count();
         let last = u32::try_from(count.checked_sub(1)?).ok()?;
@@ -871,8 +1030,15 @@ impl Ctx<'_> {
         if kids.iter().any(|k| k.kind().contains("comment")) {
             return None;
         }
-        if kids.iter().filter(|k| k.is_named()).count() < 2 {
-            return None;
+        let mut items = kids.iter().filter(|k| k.is_named());
+        match (items.next(), items.next()) {
+            (None, _) => return None,
+            // one item: a list, map or closure breaks inside itself instead (`f([` then its
+            // items, `])`)
+            // and so does a call ending in its own arguments that break that way (`f(g(` then
+            // them, `))`, `f(g(h([` then its items, `])))`)
+            (Some(i), None) if hugs(*i) => return None,
+            _ => {}
         }
         let (o, z) = (self.idx(open.start_byte())?, self.idx(close.start_byte())?);
         let mut v = vec![o + 1];
@@ -1006,6 +1172,95 @@ impl Ctx<'_> {
         }
         ops.sort_unstable();
         Some(ops)
+    }
+
+    /// A parenthesis-free command call with two or more arguments (`foo a, b`): after each
+    /// comma between its arguments.
+    fn command_args(&self, n: Node) -> Option<Vec<usize>> {
+        let mut c = n.walk();
+        let v: Option<Vec<usize>> = n
+            .children(&mut c)
+            .filter(|k| k.kind() == ",")
+            .map(|k| self.idx(k.start_byte()).map(|i| i + 1))
+            .collect();
+        v.filter(|v| !v.is_empty())
+    }
+
+    /// The header of `n`, a class, interface, trait, enum or record declaration, by line:
+    /// before each `extends`, `implements` or `permits` that doesn't start its line, or on a
+    /// line starting with one that holds all of its clause, after each comma of the clause.
+    /// Nothing for a header holding a comment, followed on its line by more of the body than
+    /// `{}`, or of a record without a body.
+    fn header(&self, n: Node, on_row: &[(usize, usize)]) -> Vec<(usize, Vec<usize>)> {
+        let Some(body) = n.child_by_field_name("body") else {
+            return Vec::new();
+        };
+        // from the name: a comment after an annotation on a line above doesn't count
+        let name = n.child_by_field_name("name");
+        let (Some(first), Some(open)) = (
+            name.and_then(|m| self.idx(m.start_byte())),
+            self.idx(body.start_byte()),
+        ) else {
+            return Vec::new();
+        };
+        if self.at[first..open].iter().any(|a| a.comment) {
+            return Vec::new();
+        }
+        // `class A extends B {}` may break, `class A extends B { def x }` may not
+        if let Some(next) = self.at.get(open + 1)
+            && next.row == self.at[open].row
+            && !(self.text(next) == "}" && next.end == body.end_byte())
+        {
+            return Vec::new();
+        }
+        let mut rows: Vec<(usize, Vec<usize>, Vec<usize>)> = Vec::new();
+        let mut c = n.walk();
+        for clause in n.named_children(&mut c).filter(|k| {
+            matches!(
+                k.kind(),
+                "superclass" | "super_interfaces" | "extends_interfaces" | "permits_clause"
+            )
+        }) {
+            let Some(kw) = self.idx(clause.start_byte()) else {
+                return Vec::new();
+            };
+            let r = self.at[kw].row;
+            let i = match rows.iter().position(|e| e.0 == r) {
+                Some(i) => i,
+                None => {
+                    rows.push((r, Vec::new(), Vec::new()));
+                    rows.len() - 1
+                }
+            };
+            if on_row[r].0 != kw {
+                rows[i].1.push(kw);
+            } else if clause.end_position().row == r {
+                let mut c2 = clause.walk();
+                for comma in clause.children(&mut c2).filter(|k| k.kind() == ",") {
+                    let Some(k) = self.idx(comma.start_byte()) else {
+                        return Vec::new();
+                    };
+                    rows[i].2.push(k + 1);
+                }
+            }
+        }
+        rows.into_iter()
+            .filter_map(|(r, kw, commas)| {
+                if kw.is_empty() {
+                    return (!commas.is_empty()).then_some((r, commas));
+                }
+                // as few keywords as leave the first piece fitting: `class A extends B` then
+                // `implements C`, or before each when none does
+                let from = self.at[kw[0]].start;
+                let line = self.cur[..from].rfind('\n').map_or(0, |i| i + 1);
+                let fits = |k: usize| {
+                    width_upto(&self.cur[line..self.at[k - 1].end], self.indent, self.limit)
+                        <= self.limit
+                };
+                let j = (0..kw.len()).rev().find(|&j| fits(kw[j])).unwrap_or(0);
+                Some((r, kw[j..].to_vec()))
+            })
+            .collect()
     }
 
     /// `x = …` and `def x = …`: after the `=`.
@@ -1171,18 +1426,172 @@ mod tests {
     }
 
     #[test]
+    fn parameters_annotations_and_command_arguments_break_one_per_line() {
+        // a method's or constructor's parameters
+        assert_eq!(
+            fmt("class A {\n    String f(String alpha, int beta, long gamma) {\n    }\n}\n"),
+            "class A {\n    String f(\n        String alpha,\n        int beta,\n        long gamma\n    ) {\n    }\n}\n"
+        );
+        assert_eq!(
+            fmt("class A {\n    A(String alpha, int beta, long gammaGamma) {\n    }\n}\n"),
+            "class A {\n    A(\n        String alpha,\n        int beta,\n        long gammaGamma\n    ) {\n    }\n}\n"
+        );
+        // an annotation's arguments, and a list in them
+        assert_eq!(
+            fmt("@Ann(alpha = 1, beta = 2, gamma = 3, delta = 4)\nclass A {\n}\n"),
+            "@Ann(\n    alpha = 1,\n    beta = 2,\n    gamma = 3,\n    delta = 4\n)\nclass A {\n}\n"
+        );
+        assert_eq!(
+            fmt("@SuppressWarnings(['alpha', 'beta', 'gamma', 'delta'])\ndef x\n"),
+            "@SuppressWarnings([\n    'alpha',\n    'beta',\n    'gamma',\n    'delta'\n])\ndef x\n"
+        );
+        assert_eq!(
+            fmt("@Ann(value = [alphaAlpha, betaBeta, gammaGamma], x = 1)\ndef x\n"),
+            "@Ann(\n    value = [\n        alphaAlpha,\n        betaBeta,\n        gammaGamma\n    ],\n    x = 1\n)\ndef x\n"
+        );
+        // a parenthesis-free command call's arguments, after each comma
+        assert_eq!(
+            fmt("implementation group: 'org.example', name: 'artifact', version: '1.0'\n"),
+            "implementation group: 'org.example',\n    name: 'artifact',\n    version: '1.0'\n"
+        );
+        assert_eq!(
+            fmt("def r = sh returnStdout: true, script: 'make all'\n"),
+            "def r = sh returnStdout: true,\n    script: 'make all'\n"
+        );
+        assert_eq!(
+            fmt("input 'a', 'b', options: [alpha, beta, gamma, delta]\n"),
+            "input 'a',\n    'b',\n    options: [alpha, beta, gamma, delta]\n"
+        );
+        assert_eq!(
+            fmt("foo alpha.bar().baz().qux().quux(), x, y, z, w\n"),
+            "foo alpha.bar().baz().qux().quux(),\n    x,\n    y,\n    z,\n    w\n"
+        );
+    }
+
+    #[test]
+    fn class_headers_break_before_extends_and_implements_then_after_commas() {
+        let at60 = |s: &str| fmt_with(s, &at(60));
+        assert_eq!(
+            at60("class FooSpec extends Specification implements GrailsUnitTest, DataTest {\n}\n"),
+            "class FooSpec extends Specification\n    implements GrailsUnitTest, DataTest {\n}\n"
+        );
+        // before both, when the first line would still be too long; after a `>` too
+        assert_eq!(
+            at60(
+                "class FooSpec<T> extends AbstractSpecificationWithLongName<T> implements Testing {\n}\n"
+            ),
+            "class FooSpec<T>\n    extends AbstractSpecificationWithLongName<T>\n    implements Testing {\n}\n"
+        );
+        // one type per line when a clause still doesn't fit on its own line
+        assert_eq!(
+            at60(
+                "class FooSpec extends Specification implements GrailsUnitTest, DataTest, ServiceUnitTest<FooService> {\n}\n"
+            ),
+            "class FooSpec extends Specification\n    implements GrailsUnitTest,\n        DataTest,\n        ServiceUnitTest<FooService> {\n}\n"
+        );
+        // interfaces, traits, enums and records, an annotation before it, a nested class and
+        // an empty body on the line
+        assert_eq!(
+            at60("interface Something extends FirstInterface, SecondInterfaceName {\n}\n"),
+            "interface Something\n    extends FirstInterface, SecondInterfaceName {\n}\n"
+        );
+        assert_eq!(
+            at60("trait Something extends FirstInterface implements SecondInterface {\n}\n"),
+            "trait Something extends FirstInterface\n    implements SecondInterface {\n}\n"
+        );
+        assert_eq!(
+            at60("enum Something implements FirstInterface, SecondInterfaceName {\n    A, B\n}\n"),
+            "enum Something\n    implements FirstInterface, SecondInterfaceName {\n    A, B\n}\n"
+        );
+        assert_eq!(
+            at60("record Point(int x, int y) implements FirstInterface, Second {\n}\n"),
+            "record Point(int x, int y)\n    implements FirstInterface, Second {\n}\n"
+        );
+        assert_eq!(
+            at60("@CompileStatic class FooSpec extends Specification implements X {\n}\n"),
+            "@CompileStatic class FooSpec extends Specification\n    implements X {\n}\n"
+        );
+        assert_eq!(
+            at60(
+                "class A {\n    static class Inner extends SomeLongBaseClass implements Other {\n    }\n}\n"
+            ),
+            "class A {\n    static class Inner extends SomeLongBaseClass\n        implements Other {\n    }\n}\n"
+        );
+        // a comment on an annotation's line above doesn't hold it back
+        assert_eq!(
+            at60(
+                "@Ann // why\nclass FooSpec extends Specification implements GrailsUnitTest, X {\n}\n"
+            ),
+            "@Ann // why\nclass FooSpec extends Specification\n    implements GrailsUnitTest, X {\n}\n"
+        );
+        assert_eq!(
+            at60("class SomeLongException extends SomeOtherLongBaseException {}\n"),
+            "class SomeLongException\n    extends SomeOtherLongBaseException {}\n"
+        );
+        // left alone: a body on the line, a comment in the header
+        for src in [
+            "class FooSpec extends Specification implements GrailsUnit { def x }\n",
+            "class FooSpec extends Specification /* x */ implements GrailsUnit {\n}\n",
+        ] {
+            assert_eq!(at60(src), src);
+        }
+    }
+
+    #[test]
+    fn a_long_only_argument_breaks_inside_its_parentheses() {
+        assert_eq!(
+            fmt("throw new IllegalStateException('it went wrong: ' + x)\n"),
+            "throw new IllegalStateException(\n    'it went wrong: ' + x\n)\n"
+        );
+        // then what is inside breaks too, if it must
+        assert_eq!(
+            fmt("render(alphaAlphaAlphaAlpha ? betaBetaBeta : gamma)\n"),
+            "render(\n    alphaAlphaAlphaAlpha ?\n        betaBetaBeta :\n        gamma\n)\n"
+        );
+        assert_eq!(
+            fmt("write(key: alphaAlphaAlpha + betaBetaBetaBeta)\n"),
+            "write(\n    key: alphaAlphaAlpha +\n        betaBetaBetaBeta\n)\n"
+        );
+        assert_eq!(
+            fmt("foo(alpha.beta().gamma().delta().epsilon(zeta))\n"),
+            "foo(\n    alpha.beta()\n        .gamma()\n        .delta()\n        .epsilon(zeta)\n)\n"
+        );
+        // `=` first, where it makes everything fit
+        assert_eq!(
+            fmt("def resultValue = f.resolve('alpha.beta.gamma.d')\n"),
+            "def resultValue =\n    f.resolve('alpha.beta.gamma.d')\n"
+        );
+        // a call or a literal as the only argument breaks inside itself instead, also through
+        // calls with one argument
+        assert_eq!(
+            fmt("foo(bar(alpha, beta, gamma, delta, epsilon))\n"),
+            "foo(bar(\n    alpha,\n    beta,\n    gamma,\n    delta,\n    epsilon\n))\n"
+        );
+        assert_eq!(
+            fmt("json(send(toJson([alpha, beta, gamma, delta])))\n"),
+            "json(send(toJson([\n    alpha,\n    beta,\n    gamma,\n    delta\n])))\n"
+        );
+    }
+
+    #[test]
     fn never_breaks_where_groovy_or_the_grammar_might_read_it_differently() {
         let same = [
-            // parenthesis-free command calls, and operators and chains in their arguments
-            "implementation group: 'org.example', name: 'artifact', version: '1.0'\n",
+            // operators and chains in a parenthesis-free command call's arguments, a command
+            // call inside another's arguments, and one followed on its line by more
             "println alphaAlpha + betaBeta + gammaGamma + deltaDelta\n",
-            "foo alpha.bar().baz().qux().quux(), x, y, z, w\n",
+            "foo alpha.bar().baz().qux().quux().quuz().corge()\n",
+            "list.each { put alphaAlpha, betaBeta, gammaGamma }\n",
+            "foo alphaAlpha, betaBeta, gammaGamma; bar(d)\n",
+            // a command call whose first piece would still be too long
+            "foo 'a string long enough to overflow it', x\n",
             // after `return`, `throw`, `assert`
             "def f() {\n    return alphaAlphaAlpha.betaBetaBeta.gammaGamma\n}\n",
             "throw alphaAlphaAlpha.betaBetaBeta.gammaGammaGam\n",
             "assert alphaAlphaAlpha.betaBetaBeta.gammaGammaGam\n",
-            // annotations, imports, packages, case labels
-            "@SuppressWarnings(['alpha', 'beta', 'gamma', 'delta'])\ndef x\n",
+            // an annotation followed on its line, and what is in an annotation but its
+            // brackets; imports, packages, case labels
+            "@Ann(alpha = 1, beta = 2, gamma = 3) def x = 1\n",
+            "@Ann(value = alphaAlphaAlpha + betaBetaBetaBeta)\ndef x\n",
             "import org.example.something.very.longer.pkg.Name\n",
             "package org.example.something.very.longer.pkg.names\n",
             "switch (x) {\n    case [alpha, beta, gamma, delta, epsilon]:\n        break\n}\n",
@@ -1198,14 +1607,17 @@ mod tests {
             "if (x) { foo(alpha, beta, gamma, delta, epsilon, zz) }\n",
             // Spock data tables
             "def 'f'() {\n    expect:\n    a == b\n    where:\n    a | b\n    [alpha, beta, gamma, delta, epsilon] | 1\n}\n",
-            // one argument with nothing inside it to break
+            // one argument with nothing inside it to break that wouldn't fit on its own
+            // line either, or that is short
             "foo(alphaAlphaAlpha.betaBetaBeta.gammaGammaGamma)\n",
+            "alphaAlphaAlpha.betaBetaBeta.gammaGamma.foo(x)\n",
+            // or that is less than half as wide as what comes before it, or followed by `{`
+            "alphaAlphaAlpha.betaBeta(gamma).deltaEpsilon('twenty chars here!!')\n",
+            "if (line.contains('a string of twenty-five chars')) {\n}\n",
             // `a -b`: to a reader, a command call with a negative argument
             "def x = alphaAlphaAlpha -betaBetaBeta -gammaGamma\n",
-            // an operator inside parentheses that are part of a larger expression, or as a
-            // call's only argument
+            // an operator inside parentheses that are part of a larger expression
             "def s = (alphaAlphaAlpha ?: betaBetaBetaBe).toString()\n",
-            "render(alphaAlphaAlphaAlpha ? betaBetaBeta : gamma)\n",
             // a list followed on its line by more than it holds
             "1 * source.visit(_, _) >> { Visitor alpha, Tree beta ->\n}\n",
             // inside a one-line ternary's condition or first branch, a subscript, or a cast
@@ -1216,10 +1628,9 @@ mod tests {
             // a body without braces on its statement's line
             "if (alphaAlpha) gammaGamma = foo(alpha, beta, gamma)\n",
             "if (x) {\n} else gammaGamma = foo(alpha, beta, gamma, d)\n",
-            // a binary operator leaving a tiny piece, the only (named) argument of a call, and
-            // the condition of an `if` whose one-line block follows
+            // a binary operator leaving a tiny piece, and the condition of an `if` whose
+            // one-line block follows
             "output.count('alphaAlphaAlphaBetaBeta') == 1\n",
-            "write(key: alphaAlphaAlpha + betaBetaBetaBeta)\n",
             "if (alphaAlpha != null) { betaBeta = gamma() }\n",
             // `=` or an operator followed by a closure or a prefix operator
             "alphaAlphaAlpha.betaBeta = { gamma -> gamma }\n",
@@ -1228,13 +1639,9 @@ mod tests {
             "foo(alpha, beta, gamma, delta); bar(epsilon)\n",
             // a list laid out by hand with several items on a line
             "foo(alpha,\n    beta, gamma, delta, epsilon, zeta, eta, theta)\n",
-            // inside a command call's arguments, brackets or not
-            "input 'a', 'b', options: [alpha, beta, gamma, delta]\n",
             // what would scatter a part that can't break: an operator inside another
-            // operator's operand, a chain as a call's only argument, the condition of an
-            // `if` whose body follows on the line
+            // operator's operand, the condition of an `if` whose body follows on the line
             "def q = (alphaAlpha != null && betaBeta) ? gamma : d\n",
-            "foo(alpha.beta().gamma().delta().epsilon(zeta))\n",
             "if (alphaAlpha == betaBetaBeta) gammaGamma = delta\n",
             "assert alphaAlphaAlpha == betaBetaBeta : 'message'\n",
             // `=`, when what follows it still wouldn't fit
@@ -1371,6 +1778,17 @@ mod tests {
             assert_eq!(fmt_with(&flat, &at(100)).lines().count(), n + 3);
         };
         assert_scales("flat list", flat, 1_000, 4, 8);
+        // a command call's arguments and a parameter list: one pass each
+        let command = |n: usize| {
+            let src = format!("foo {}x\n", "alpha, ".repeat(n));
+            assert_eq!(fmt_with(&src, &at(100)).lines().count(), n + 1);
+        };
+        assert_scales("command arguments", command, 1_000, 4, 8);
+        let params = |n: usize| {
+            let src = format!("def f({}int x) {{\n}}\n", "int alpha, ".repeat(n));
+            assert_eq!(fmt_with(&src, &at(100)).lines().count(), n + 4);
+        };
+        assert_scales("parameters", params, 1_000, 4, 8);
         // long chains
         let chains = |n: usize| {
             let chains =
