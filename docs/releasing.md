@@ -8,10 +8,11 @@
 
 `release.yml` then checks the tag (`check`), runs all of `ci.yml` on it (`ci`), and creates the GitHub release with the five archives and their `.sha256` files (`release`): a `.tar.gz` for each Linux and macOS target and a `.zip` for Windows, plus the VS Code extension as `groovyfmt-<version>.vsix`. The pre-commit hooks (`.pre-commit-hooks.yaml`) and the GitHub Action (`action.yml`) need nothing more: they are used straight from the tag.
 
-Five more jobs publish to registries. Each is off until a repository variable switches it on, and each runs only after `release` succeeds, on the tag push itself. Rerunning a whole release workflow fails at `release` because the GitHub release already exists, so switch a channel on before pushing the tag you want it to publish.
+Six more jobs publish to registries. Each is off until a repository variable switches it on, and each runs only after `release` succeeds, on the tag push itself. Rerunning a whole release workflow fails at `release` because the GitHub release already exists, so switch a channel on before pushing the tag you want it to publish.
 
 | Variable | Job | Publishes |
 |---|---|---|
+| `PUBLISH_CRATE` = `true` | `publish-crate` | `groovyfmt` to crates.io, through trusted publishing |
 | `PUBLISH_NPM` = `true` | `publish-npm` | `groovyfmt`, `@groovyfmt/{darwin,linux}-{arm64,x64}` and `@groovyfmt/win32-x64` to npm, with provenance |
 | `PUBLISH_IMAGE` = `true` | `publish-image` | `ghcr.io/costajohnt/groovyfmt:<version>` and `:latest` for linux/amd64 and linux/arm64 |
 | `PUBLISH_GRADLE_PLUGIN` = `true` | `publish-gradle-plugin` | the Gradle plugin `io.github.costajohnt.groovyfmt` to the Gradle Plugin Portal |
@@ -137,10 +138,13 @@ For each later release, render the formula again and commit it to the tap.
 
 ## crates.io
 
-Nothing publishes to crates.io yet, and no workflow job does. The crate is ready to package: the grammar is vendored in `grammar/` (no git dependencies), `include` in `Cargo.toml` limits the package to the sources, the grammar, `build.rs`, the tests, `README.md`, `LICENSE` and `CHANGELOG.md`, and `cargo publish --dry-run --locked` succeeds. The package is MIT: the vendored grammar is `Apache-2.0 OR MIT` and groovyfmt uses it under MIT, with both of its license files kept in `grammar/`. What remains is a decision to publish and, once:
+`groovyfmt` 0.9.2 was published to crates.io by hand on 2026-11-12, from the `v0.9.2` tag, with a short-lived API token (crates.io allows trusted publishing only for a crate that already exists). Later versions publish from `release.yml`'s `publish-crate` job:
 
-1. A crates.io account (sign in with GitHub as `costajohnt`) and an API token with the `publish-new` and `publish-update` scopes, or trusted publishing from `release.yml` once the crate exists.
-2. `cargo publish --locked` from the tagged commit. A version can't be replaced once published, only yanked.
+- crates.io trusts this repository's `release.yml` (crate settings, Trusted Publishing: owner `costajohnt`, repository `groovyfmt`, workflow `release.yml`, no environment).
+- `rust-lang/crates-io-auth-action` trades the job's OIDC token for a publish token, and revokes it when the job ends. No token secret is stored.
+- The job runs `cargo publish --locked` from the tag, after `release` succeeds, when `PUBLISH_CRATE` is `true`.
+
+A version can't be replaced once published, only yanked. Once a CI publish has worked, the crate's "Require trusted publishing for all new versions" setting can be switched on so an API token can no longer publish it.
 
 ## Going public, in order
 
