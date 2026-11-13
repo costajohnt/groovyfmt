@@ -37,7 +37,7 @@ async function untrusted(): Promise<void> {
   assert.equal(vscode.workspace.isTrusted, false, 'the workspace is trusted: Restricted Mode did not take effect');
   const markers = process.env.GROOVYFMT_IT_MARKERS;
   assert.ok(markers, 'GROOVYFMT_IT_MARKERS is not set');
-  const ext = vscode.extensions.getExtension<{ lastProblem(): string | undefined }>('costajohnt.groovyfmt');
+  const ext = vscode.extensions.getExtension<{ lastProblem(): string | undefined }>('groovyfmt.groovyfmt');
   assert.ok(ext, 'extension not found');
   const api = await ext.activate();
   const folder = vscode.workspace.workspaceFolders?.[0];

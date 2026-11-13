@@ -225,7 +225,7 @@ jobs:
           npx vsce publish --packagePath "vsix/groovyfmt-$version.vsix" --skip-duplicate $auth
 
   # Off until the repository variable PUBLISH_OPENVSX is 'true'. Needs the secret
-  # OVSX_PAT for the Open VSX namespace costajohnt. See docs/releasing.md.
+  # OVSX_PAT for the Open VSX namespace groovyfmt. See docs/releasing.md.
   publish-openvsx:
     needs: release
     if: vars.PUBLISH_OPENVSX == 'true'

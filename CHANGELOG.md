@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- The VS Code extension's identifier is `groovyfmt.groovyfmt` (publisher `groovyfmt`). It was `costajohnt.groovyfmt` in the 0.13.0 release download, which was never on a marketplace. Update `editor.defaultFormatter` if you set it by hand.
+
 ## 0.13.0 (2026-11-13)
 
 ### Added
