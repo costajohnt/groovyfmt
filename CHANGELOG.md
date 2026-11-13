@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `max_line_length` wraps more of the long lines it can. New break points, each where Groovy's grammar reads the code the same with or without the line break:
+  - a method's or constructor's parameter list with two or more parameters, one parameter per line (inside `(…)`, where Groovy's lexer drops newlines)
+  - an annotation's arguments, and a list in them, when nothing follows the annotation on its line (also inside `(…)` and `[…]`)
+  - a call's only argument, or a list's only item, after the opening bracket and before the closing one, when the argument is at least half as wide as what comes before it and then fits on its line (or is an operator expression or a chain that breaks further), only closing brackets, `,` or `;` follow it, and an `=` before it can't break instead; what is inside it then breaks if it must. A list, map or closure as the only argument, or a call ending in arguments that break that way (`f(g(a, b))`, `f(g(h([a, b])))`), breaks inside itself
+  - after each comma of a parenthesis-free command call's arguments (`implementation group: 'a',` then `name: 'b'`), when nothing but a comment follows the call on its line and the line up to the first comma then fits (`argumentList : firstArgumentListElement (COMMA nls argumentListElement)*`)
+
+  With `max_line_length = 120`, of the lines over the limit that a break could shorten (leaving out lines inside multi-line strings and comments, lines long only because of a trailing comment, and lines holding a string too long to fit anyway), wrapping now shortens 62% in the corpus (was 46%) and 68% in the trial repositories (was 50%). For every new kind of break, generated cases and a sample of 300 wrapped corpus files parse to the same AST with Groovy 4 before and after wrapping. Without `max_line_length`, output is unchanged.
+- Wrapping is faster: it no longer parses the formatted text again before its first pass, or the wrapped text again after its last, since both were already parsed (the same checks run on those parses). On the corpus with `max_line_length = 120`, formatting took 2.4 to 2.5 times the CPU time it takes without wrapping (two measurements, each the mean of two runs); that is now 1.9 to 2.0 times for the same output, and 2.1 to 2.2 times with the new break points above, which wrap more.
+
 ## 0.10.0 (2026-11-12)
 
 ### Fixed

@@ -78,7 +78,11 @@ A tab counts as `indent` columns, and width is counted in characters (not bytes)
 
 In Groovy a line break can end a statement. So a break goes only where Groovy's own grammar (the Parrot parser's `GroovyLexer.g4` and `GroovyParser.g4`) reads the code the same with or without it:
 
-- **Inside `(…)` and `[…]`**, where Groovy's lexer drops newlines before the parser sees them. An argument list, list literal or map literal with two or more items breaks one item per line, after the opening bracket and each comma, with the closing bracket on a line of its own. A trailing closure stays on the line of the `)` (`) {`).
+- **Inside `(…)` and `[…]`**, where Groovy's lexer drops newlines before the parser sees them. An argument list, list literal or map literal with two or more items breaks one item per line, after the opening bracket and each comma, with the closing bracket on a line of its own. A trailing closure stays on the line of the `)` (`) {`). The same goes for:
+  - a method's or constructor's parameter list with two or more parameters (`def f(` then one parameter per line, then `) {`)
+  - an annotation's arguments, and a list in them (`@Ann(` then `name = value` per line, then `)`), when nothing follows the annotation on its line
+  - a call's only argument, or a list's only item, after the opening bracket and before the closing one (`throw new IllegalStateException(` then the message, then `)`). Only when the argument is at least 20 columns and at least half as wide as what comes before it on the line, when it then fits on its line (or is an operator expression or a chain that breaks further), when only closing brackets, `,` or `;` follow it on its line, and when an `=` before it can't break instead (`def x =` then the whole call reads better than `def x = a.b(` then a short argument). A list, map or closure as the only argument, or a call ending in arguments that break that way (`f(g(a, b))`, `f(g(h([a, b])))`), breaks inside itself instead (`f(g(` then `a` and `b`, then `))`).
+- **After each comma of a parenthesis-free command call's arguments** (`implementation group: 'a',` then `name: 'b'` on the next line), when nothing but a comment follows the call on its line and the line up to the first comma then fits. Groovy's grammar takes a newline after each of them (`argumentList : firstArgumentListElement (COMMA nls argumentListElement)*`).
 - **Before each `.`, `?.` or `*.` of a chain of three or more calls**, except the first call's (`Foo.builder()`, then `.name(x)` and `.build()` on lines of their own). The grammar allows this anywhere (`pathElement : NL* DOT …`). In a chain already written over several lines, the dots on a line that is still too long break the same way.
 - **After `||`, `&&`, `==`, `!=`, `+` and `-`** at the lowest-precedence level of a binary expression, after a ternary's `?` and `:`, and after `?:`. The operator always ends the line. The grammar takes a newline after `+` and `-` but not before them, and `a` then `-b` on the next line would be two statements.
 - **After `=`** in an assignment or declaration, when nothing else on the line can break.
@@ -91,20 +95,21 @@ An operator or `=` breaks only when every resulting piece fits. So `a.b().c().d(
 
 These are never broken, because Groovy or the grammar might read the result differently, or because the result would read worse than the long line:
 
-- Anything in a parenthesis-free command call (`implementation group: 'a', name: 'b'`, `input 'x', options: [a, b]`), whose arguments tree-sitter-groovy finds by looking at line ends. Also a statement that starts on the line where the one before it ends without a `;`, which is how the grammar reads some command calls (`println a + b` as `println` and `a + b`).
+- In a parenthesis-free command call, anything but the commas between its arguments: between the name and the first argument, inside an argument (`input 'x', options: [a, b]` keeps `[a, b]` whole, `println a + b` its `+`), and in a command call inside another's arguments or followed on its line by more than a comment. tree-sitter-groovy finds a command call's first argument by looking at line ends. Also a statement that starts on the line where the one before it ends without a `;`, which is how the grammar reads some command calls (`println a + b` as `println` and `a + b`).
 - Anything inside a closure or block written on one line (`list.each { foo(a, b) }`), whose statements end at line breaks.
 - Between `return`, `throw`, `assert`, `new`, `as`, `in`, `instanceof` or `!` and what follows, between a name and its `(`, between `)` and a trailing closure, and anywhere the line before the break could end a statement by itself.
 - Outside `(…)` and `[…]`, a wrapped line never starts with `{`, `++`, `--`, `+`, `-`, `*` or `/` (a `*.` of a chain aside). It starts with `(`, `[` or a string only right after a line ending in a binary operator, `?`, `:` or `=`, which the grammar says must continue. Inside brackets Groovy's lexer drops the line break, so an argument such as `-1` or `'text'` may start a line.
-- Annotations, `import` and `package` lines, `case` labels, Spock `where:` blocks, GString interpolations, and argument lists or literals holding a comment.
+- In an annotation, anything but its brackets: its argument list and the lists in it (an operator or a chain in them stays whole), and an annotation followed on its line by more (`@A(x, y) def f()`). `import` and `package` lines, `case` labels, Spock `where:` blocks, GString interpolations, and argument lists, parameter lists or literals holding a comment.
 - `<`, `>`, `as`, `instanceof`, `in`, ranges, shifts and the other operators. Only the ones above are break points. Nothing breaks right after a `>` either, since tree-sitter-groovy reads `f(a, List<T>` followed by a line break as comparisons.
 - A part of a larger construct on the line that can't break itself:
   - an operator expression inside another operator's operand (`(a != null && b) ? x : y`), in parentheses (`(a ?: b).c()`) or in a subscript (`a[i + 1]`)
-  - an operator expression or chain that is a call's only argument (`f(a + b)`, also through a cast) or a lambda's body
+  - an operator expression or chain that is a call's only argument while the call is on one line (`f(a + b)`, also through a cast: the parentheses break first) or a lambda's body
   - anything in a one-line ternary's condition or first branch (`c ? f(a, b) : d`)
-  - the only argument written `key: value`
+  - the only argument written `key: value`, while the call is on one line
   - the condition of an `assert` with a message, or of an `if` or `while` whose body follows on the same line (braces or not)
   - whatever is inside something that may not break
-- An argument list or literal followed on its line by more text than it holds (`f(_, _) >> { long closure parameters ->`), where breaking it gains little.
+- An argument list or literal followed on its line by more text than it holds (`f(_, _) >> { long closure parameters ->`), where breaking it gains little. A call's only argument followed by more than closing brackets (`f(x) == 1`, `if (f(x)) {`), or shorter than half of what comes before it on the line (`a.b(c).d(x)`), for the same reason.
+- A parameter list of a closure or lambda, and one with a single parameter.
 - A line holding two statements (`a(x, y); b(z)`), or an `if`, `else`, `while` or `for` body without braces (`if (c) x = f(a, b)`).
 - A line of a list written over several lines that holds two or more of its items (laid out by hand).
 - A line whose overflow is only a trailing comment, or that holds a string too long to fit on a continuation line anyway.
