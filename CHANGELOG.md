@@ -7,6 +7,12 @@
 - A JetBrains IDE plugin in `editors/jetbrains` for IntelliJ IDEA, Android Studio and the other IDEs based on IntelliJ Platform 2024.2 or later, Community Edition included. It starts `groovyfmt --lsp` through Red Hat's LSP4IJ client for `*.groovy`, `*.gvy`, `*.gy`, `*.gsh`, `*.gradle`, `*.jenkinsfile`, `Jenkinsfile` and `Jenkinsfile.*`: parse errors and lint violations as you type, quick fixes and fix all, and **Code | Reformat with groovyfmt**. Reformat Code keeps the IDE's own Groovy formatter unless the setting "Use groovyfmt for Reformat Code" is on. It finds groovyfmt as the VS Code extension does (a project path setting and `node_modules` only in a trusted project, an IDE-wide absolute path, `PATH`) and otherwise offers to download the matching release, checked against SHA-256 checksums packaged into the plugin when the release is built. Each release attaches `groovyfmt-jetbrains-<version>.zip`; publishing to JetBrains Marketplace is set up but off until the repository variable `PUBLISH_JETBRAINS` is set.
 - [Editors](docs/editors.md) describes running groovyfmt as an LSP4IJ user-defined language server, with no groovyfmt plugin.
 
+## 0.13.1 (2026-11-13)
+
+### Changed
+
+- The VS Code extension's identifier is `groovyfmt.groovyfmt` (publisher `groovyfmt`). It was `costajohnt.groovyfmt` in the 0.13.0 release download, which was never on a marketplace. Update `editor.defaultFormatter` if you set it by hand.
+
 ## 0.13.0 (2026-11-13)
 
 ### Added

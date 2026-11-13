@@ -39,7 +39,7 @@ vim.lsp.enable("groovyfmt")
 
 ### VS Code
 
-The groovyfmt extension (`costajohnt.groovyfmt`, source in [`editors/vscode`](../editors/vscode)) starts the language server with no setup. It covers `*.groovy`, `*.gvy`, `*.gy`, `*.gsh`, `*.gradle`, `*.jenkinsfile`, `Jenkinsfile` and `Jenkinsfile.*`, alongside VS Code's built-in Groovy support or any other Groovy, Gradle or Jenkins extension.
+The groovyfmt extension (`groovyfmt.groovyfmt`, source in [`editors/vscode`](../editors/vscode)) starts the language server with no setup. It covers `*.groovy`, `*.gvy`, `*.gy`, `*.gsh`, `*.gradle`, `*.jenkinsfile`, `Jenkinsfile` and `Jenkinsfile.*`, alongside VS Code's built-in Groovy support or any other Groovy, Gradle or Jenkins extension.
 
 It runs `groovyfmt.path` if set, else the workspace's npm package (`node_modules`), else `groovyfmt` on `PATH`. With none of those, it offers to download the release matching its own version, checked against the SHA-256 checksums that release of the extension carries (taken from the archives when the release was built). In an untrusted workspace it ignores `groovyfmt.path` from workspace settings and `node_modules`, and a relative `groovyfmt.path` in user settings is refused. Its [README](../editors/vscode/README.md) has the details.
 
@@ -49,7 +49,7 @@ Format on save is `editor.formatOnSave`. To apply the lint fixes on save too:
 
 ```json
 "[groovy]": {
-  "editor.defaultFormatter": "costajohnt.groovyfmt",
+  "editor.defaultFormatter": "groovyfmt.groovyfmt",
   "editor.formatOnSave": true,
   "editor.codeActionsOnSave": { "source.fixAll.groovyfmt": "explicit" }
 }
