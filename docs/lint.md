@@ -22,8 +22,8 @@ Turn a rule on or off in the `[lint]` table of [`.groovyfmt.toml`](configuration
 | EmptyElseBlock | on | an `else` with an empty block |
 | EmptyTryBlock | on | a `try` with an empty block |
 | EmptyFinallyBlock | on | a `finally` with an empty block |
-| EmptyWhileStatement | on | a `while` loop with an empty block |
-| EmptyForStatement | on | a `for` loop with an empty block |
+| EmptyWhileStatement | on | a `while` loop with an empty block; not one whose condition does the work with a call, an assignment or an increment, `while (in.read() != -1) {}` |
+| EmptyForStatement | on | a `for` loop with an empty block; not a `for (;;)` loop whose condition calls, assigns or increments, as for `while` |
 | DuplicateMapKey | on | a map literal with the same constant key twice (`a:` and `'a':` count as the same); the later entry wins |
 | DuplicateCaseStatement | on | two `case` labels for the same constant (`'a'` and `"a"` count as the same) |
 | AssignmentInConditional | on | `if (x = 1)`, where `==` was probably meant; `while (x = next())` is a common idiom and is exempt, and so is an assignment in extra parentheses, `if ((m = re.matcher(s)))` |
@@ -47,9 +47,9 @@ Rules marked off found, on real code, almost only things written that way on pur
 
 | Rule | Default | Flags |
 |---|---|---|
-| DeadCode | on | a statement after `return`, `throw`, `break` or `continue` in the same block, on a later line; not a method or class declaration (a script's come after its `return`), a labeled statement, or a `break` right after a `return` or `throw` (redundant and harmless) |
-| EqualsAndHashCode | on | a class defining `equals(Object)` without `hashCode()`; not one with a superclass (which may define it) or an annotation that generates it (`@EqualsAndHashCode`, `@Canonical`, `@Immutable`) |
-| EqualsOverloaded | on | an `equals` method with one parameter typed other than `Object`, which overloads `equals` instead of overriding it |
+| DeadCode | on | a statement after `return`, `throw`, `break` or `continue` in the same block, on a later line; not a method or class declaration (a script's come after its `return`), a labeled statement, or a `break` right after a `return` or `throw` (the switch-case habit, kept on purpose so that removing the `return` can't let the case fall through); a second `break` right after a `break` serves no such purpose and is reported |
+| EqualsAndHashCode | on | a class defining `equals(Object)` without `hashCode()`; not one with a superclass (which may define it), an annotation that generates it (`@EqualsAndHashCode`, `@Canonical`, `@Immutable`), an abstract class whose `equals(Object)` calls one of its abstract methods (the subclasses define equality, so `hashCode` belongs with them), or an `equals` that is never broader than identity (its body is just `false`, or `this.is(o)` and `o == null` tests joined by `\|\|`), which the inherited `hashCode()` already satisfies |
+| EqualsOverloaded | on | an `equals` method with one parameter typed other than `Object`, which overloads `equals` instead of overriding it; not when the class, or a superclass declared in the same file, also declares `equals(Object)` (which can delegate to the overload), and not an abstract declaration |
 | ObjectOverrideMisspelledMethodName | on | `equal(Object)`, `hashcode()`, `toSTring()` and other case misspellings of `equals`, `hashCode` and `toString` |
 | ReturnFromFinallyBlock | on | a `return` in a `finally` block (not in a closure inside it) |
 | EmptySwitchStatement | on | a `switch` with no cases |
