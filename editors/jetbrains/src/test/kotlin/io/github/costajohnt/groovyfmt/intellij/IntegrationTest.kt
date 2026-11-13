@@ -23,10 +23,11 @@ import java.nio.file.Files
 import java.util.concurrent.TimeUnit
 
 // A lint violation and indentation groovyfmt fixes. groovyfmt keeps at most one blank line in a
-// row and the IDE's Groovy formatter two, so the result shows which formatter ran.
+// row and the IDE's Groovy formatter keeps these three, so the result shows which formatter ran.
 private const val SAMPLE = "class A {\ndef f() {\nprintln 1;\n\n\n\nprintln 2\n}\n}\n"
 private const val FORMATTED = "class A {\n    def f() {\n        println 1;\n\n        println 2\n    }\n}\n"
-private const val IDE_FORMATTED = "class A {\n    def f() {\n        println 1;\n\n\n        println 2\n    }\n}\n"
+// the IDE's Groovy formatter indents and keeps all three blank lines
+private const val IDE_FORMATTED = "class A {\n    def f() {\n        println 1;\n\n\n\n        println 2\n    }\n}\n"
 
 /**
  * The plugin in the IDE with LSP4IJ, on files on disk (groovyfmt serves only file: documents).
