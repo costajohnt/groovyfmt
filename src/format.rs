@@ -116,12 +116,12 @@ fn format_with(
     if tree.root_node().has_error() {
         return Outcome::Skipped("parse error");
     }
-    let (out, used) = match unwrapped(src, &tree, style, &reindent) {
+    let (out, out_tree, used) = match unwrapped(src, &tree, style, &reindent) {
         Ok(v) => v,
         Err(skip) => return skip,
     };
     let out = match style.max_line_length {
-        Some(limit) => wrapped(src, &tree, out, &used, limit, rows, &reindent),
+        Some(limit) => wrapped(src, &tree, (out, &out_tree), &used, limit, rows, &reindent),
         None => out,
     };
     if out == src {
@@ -131,17 +131,17 @@ fn format_with(
     }
 }
 
-/// The re-indented (and respaced) text, checked, and the style it was made with: spacing
-/// that changes how the code parses is dropped.
+/// The re-indented (and respaced) text, checked, its tree, and the style it was made with:
+/// spacing that changes how the code parses is dropped.
 fn unwrapped(
     src: &str,
     tree: &Tree,
     style: &Style,
     reindent: Reindent,
-) -> Result<(String, Style), Outcome> {
+) -> Result<(String, Tree, Style), Outcome> {
     let out = reindent(src, tree, style).map_err(Outcome::Skipped)?;
     if out == src {
-        return Ok((out, *style));
+        return Ok((out, tree.clone(), *style));
     }
     let out_tree = crate::parse(&out);
     if out_tree.root_node().has_error()
@@ -158,29 +158,29 @@ fn unwrapped(
         }
         return Err(Outcome::Skipped("token mismatch after formatting"));
     }
-    Ok((out, *style))
+    Ok((out, out_tree, *style))
 }
 
-/// `out` with its long lines wrapped, if the result keeps every token and the shape of the
-/// parse tree; otherwise `out` as it is (`wrap::last_report` says why).
+/// `out` (with its tree) with its long lines wrapped, if the result keeps every token and the
+/// shape of the parse tree; otherwise `out` as it is (`wrap::last_report` says why).
 fn wrapped(
     src: &str,
     tree: &Tree,
-    out: String,
+    (out, out_tree): (String, &Tree),
     style: &Style,
     limit: usize,
     rows: Option<&[(usize, usize)]>,
     reindent: Reindent,
 ) -> String {
     let fmt = |text: &str, t: &Tree| reindent(text, t, style);
-    let w = match crate::wrap::wrap(src, tree, &out, style, limit, rows, &fmt) {
+    // `wt` is the wrapping's last parse of `w`, the same as parsing it here again
+    let (w, wt) = match crate::wrap::wrap(src, tree, (&out, out_tree), style, limit, rows, &fmt) {
         Ok(w) => w,
         Err(_) => return out,
     };
     if w == out {
         return out;
     }
-    let wt = crate::parse(&w);
     if wt.root_node().has_error()
         || tokens(src, tree) != tokens(&w, &wt)
         || shape(tree) != shape(&wt)
@@ -702,7 +702,7 @@ mod tests {
         let out = wrapped(
             src,
             &tree,
-            src.to_string(),
+            (src.to_string(), &tree),
             &style,
             40,
             None,

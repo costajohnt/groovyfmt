@@ -42,9 +42,9 @@
 //! so are constructs whose breaking would scatter a part of the line that can't break itself
 //! (see `scattered` and `select`).
 //!
-//! Each pass re-parses the result and requires the same tree shape as the input; `format`
-//! checks the final text again (tokens and tree shape). If anything fails, the file is
-//! formatted without wrapping instead.
+//! Each pass parses the result again and requires the same tree shape as the input; `format`
+//! checks the final text again (tokens and tree shape, on the last pass's parse of it). If
+//! anything fails, the file is formatted without wrapping instead.
 
 use crate::format::{Style, shape};
 use crate::spacing::{is_atom, lopsided};
@@ -207,18 +207,19 @@ fn insert(src: &str, at: &[Atom], breaks: &[bool], eols: &[&str]) -> String {
     s
 }
 
-/// `base` (the formatted `src`) with long lines wrapped, or why it couldn't be. `fmt` formats
-/// a text with the line breaks added (re-indenting it, and respacing it if that is on).
-/// `rows`: with `--lines`, the source lines (1-based, inclusive) that may be wrapped.
+/// `base` (the formatted `src`, and its tree) with long lines wrapped, and the tree of the
+/// result, or why it couldn't be. `fmt` formats a text with the line breaks added (re-indenting
+/// it, and respacing it if that is on). `rows`: with `--lines`, the source lines (1-based,
+/// inclusive) that may be wrapped.
 pub(crate) fn wrap(
     src: &str,
     tree: &Tree,
-    base: &str,
+    (base, base_tree): (&str, &Tree),
     style: &Style,
     limit: usize,
     rows: Option<&[(usize, usize)]>,
     fmt: &dyn Fn(&str, &Tree) -> Result<String, &'static str>,
-) -> Result<String, &'static str> {
+) -> Result<(String, Tree), &'static str> {
     let mut report = Report {
         over_before: base
             .split('\n')
@@ -228,9 +229,18 @@ pub(crate) fn wrap(
     };
     if report.over_before == 0 {
         set_report(report);
-        return Ok(base.to_string());
+        return Ok((base.to_string(), base_tree.clone()));
     }
-    let r = passes(src, tree, base, style, limit, rows, fmt, &mut report);
+    let r = passes(
+        src,
+        tree,
+        (base, base_tree),
+        style,
+        limit,
+        rows,
+        fmt,
+        &mut report,
+    );
     report.fallback = r.as_ref().err().copied();
     if r.is_err() {
         report.over_after = report.over_before;
@@ -243,13 +253,13 @@ pub(crate) fn wrap(
 fn passes(
     src: &str,
     tree: &Tree,
-    base: &str,
+    (base, base_tree): (&str, &Tree),
     style: &Style,
     limit: usize,
     rows: Option<&[(usize, usize)]>,
     fmt: &dyn Fn(&str, &Tree) -> Result<String, &'static str>,
     report: &mut Report,
-) -> Result<String, &'static str> {
+) -> Result<(String, Tree), &'static str> {
     if too_deep(tree) {
         return Err("nesting too deep to wrap");
     }
@@ -257,10 +267,11 @@ fn passes(
     let want = shape(tree);
     let eols = eols(src);
     let mut breaks = vec![false; src_at.len()];
+    // `base` was parsed already, to check the formatting; each pass parses its text again
     let mut cur = base.to_string();
+    let mut ct = base_tree.clone();
     for pass in 0..=MAX_PASSES {
-        let ct = crate::parse(&cur);
-        if ct.root_node().has_error() || shape(&ct) != want {
+        if !same_shape(&ct, &want) {
             return Err(if pass == 0 {
                 "formatting changed the parse"
             } else {
@@ -285,7 +296,7 @@ fn passes(
         report.over_after = pick.over;
         report.left = pick.left;
         if pick.breaks.is_empty() {
-            return Ok(cur);
+            return Ok((cur, ct));
         }
         if pass == MAX_PASSES {
             break;
@@ -298,12 +309,25 @@ fn passes(
         }
         let text = insert(src, &src_at, &breaks, &eols);
         let tt = crate::parse(&text);
-        if tt.root_node().has_error() || shape(&tt) != want {
+        if !same_shape(&tt, &want) {
             return Err("a line break changed the parse");
         }
         cur = fmt(&text, &tt)?;
+        ct = crate::parse(&cur);
     }
     Err("wrapping did not settle")
+}
+
+/// Whether `t` parsed cleanly to `want`, a `shape`, without building its own.
+fn same_shape(t: &Tree, want: &[(u16, usize)]) -> bool {
+    let mut i = 0;
+    let mut same = !t.root_node().has_error();
+    crate::preorder(t.root_node(), |n| {
+        same &= want.get(i) == Some(&(n.kind_id(), n.child_count()));
+        i += 1;
+        same
+    });
+    same && i == want.len()
 }
 
 /// Trees nested deeper than this aren't wrapped. Each pass parses the file again, and
