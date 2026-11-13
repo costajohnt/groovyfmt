@@ -9,6 +9,7 @@
 ### Changed
 
 - `max_line_length` wraps long class, interface, trait, enum and record headers, before `extends`, `implements` or `permits` (as few of them as leave the first line fitting) and, when a clause is still too long on its own line, after each comma between its types. The `{` stays at the end of the last line. Groovy's grammar takes a newline at each of these places. On about 62,000 Groovy files from open source projects at `max_line_length = 120`, header lines over the limit drop from 1,339 to 107. What is left is headers inside strings, a single type too long for a line of its own, and long type parameters, which are never broken.
+- `docs/releasing.md` describes what the GitHub Action verifies about a download today and how to harden it with immutable releases.
 
 ## 0.12.0 (2026-11-13)
 

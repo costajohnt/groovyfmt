@@ -72,7 +72,7 @@ The portal refuses a version it already has, so a rerun of an already published 
 
 `editors/vscode/` is the extension (TypeScript, bundled with esbuild into one file, so the `.vsix` holds no `node_modules`). Its version must equal the `Cargo.toml` version: with no groovyfmt installed, it downloads the release of its own version. `ci.yml`'s `vscode` job lints it, runs its unit tests and two integration tests in VS Code (against the commit's own groovyfmt, and in Restricted Mode, where nothing the workspace plants may run), and packages a `.vsix` to try out. That `.vsix` carries no checksums, so it refuses to download groovyfmt.
 
-The release `.vsix` comes from `release.yml`'s `vscode` job, which runs after `ci` has built the five archives in the same run. It hashes those archives (`npm run checksums -- <version> <archives-dir>`, which also checks each against its `.sha256`) into `dist/checksums.json`, packages the `.vsix` with it, and uploads it as the `vscode-extension` artifact that `release` attaches to the GitHub release. The extension downloads groovyfmt only when the archive matches the checksum it carries, and never trusts a checksum fetched from the release, so rewriting a release's assets can't change what it runs. The GitHub Action still checks a download against the release's own `.sha256` file, which detects corruption but not a replaced release. `scripts/ci-local.sh` runs the lint, the unit tests and the packaging when Node.js 22 or later is present.
+The release `.vsix` comes from `release.yml`'s `vscode` job, which runs after `ci` has built the five archives in the same run. It hashes those archives (`npm run checksums -- <version> <archives-dir>`, which also checks each against its `.sha256`) into `dist/checksums.json`, packages the `.vsix` with it, and uploads it as the `vscode-extension` artifact that `release` attaches to the GitHub release. The extension downloads groovyfmt only when the archive matches the checksum it carries, and never trusts a checksum fetched from the release, so rewriting a release's assets can't change what it runs. The GitHub Action still checks a download against the release's own `.sha256` file ([verifying release downloads](#verifying-release-downloads)). `scripts/ci-local.sh` runs the lint, the unit tests and the packaging when Node.js 22 or later is present.
 
 Both publish jobs publish that same `.vsix`, skip a version the registry already has (so a rerun finishes the job), and skip prerelease versions, which the Marketplace doesn't accept.
 
@@ -98,6 +98,25 @@ To publish by hand: `npx vsce login costajohnt`, then `npx vsce publish --packag
 4. `gh variable set PUBLISH_OPENVSX --body true --repo costajohnt/groovyfmt`.
 
 A new namespace's extensions show as unverified until the namespace is claimed; see the Open VSX wiki's "Namespace access" page to claim it.
+
+## Verifying release downloads
+
+The GitHub Action (`action.yml`) downloads the archive for the runner and its `.sha256` file from the same GitHub release and compares the two. That catches a truncated or corrupted download. It does not catch a replaced release: anyone who can rewrite the release's assets can replace the archive and its `.sha256` together. The VS Code extension is safe from this because it carries the hashes in the `.vsix` (see above). The action is used straight from a tag, and a version's hashes exist only after its tag is built, so the tagged tree can't carry them.
+
+The recommended hardening is GitHub's [immutable releases](https://docs.github.com/en/code-security/supply-chain-security/understanding-your-software-supply-chain/immutable-releases), followed by a change to the action to verify each download with `gh release verify-asset`. Once a release is published with immutability on, its tag can't be moved or deleted and its assets can't be added, replaced or deleted. A deleted immutable release's tag can't be reused either. GitHub also signs a release attestation recording the tag, the commit and the asset digests, which [`gh release verify-asset <tag> <file>`](https://cli.github.com/manual/gh_release_verify-asset) checks a downloaded file against.
+
+`release.yml` needs no change for this. It creates the release with `gh release create <tag> <assets>`, and when assets are attached [`gh release create`](https://cli.github.com/manual/gh_release_create) creates a draft, uploads each asset and then publishes, which is the order GitHub recommends for immutable releases. What changes once the setting is on:
+
+- Assets can't be added to or replaced on a published release, so a broken asset means a new version. A rerun of the release workflow already fails at `release` for an existing release.
+- Immutability applies only to releases published after the setting is turned on. Existing releases stay mutable unless republished, and turning the setting off later leaves the releases made while it was on immutable.
+
+The steps, for the owner:
+
+1. In the repository's Settings, General, Releases, select "Enable release immutability" ([GitHub's guide](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/establish-provenance-and-integrity/prevent-release-changes)).
+2. Push the next release tag as usual, then check that `gh release view v<version> --repo costajohnt/groovyfmt --json isImmutable` shows `true` and that `gh release verify v<version> --repo costajohnt/groovyfmt` passes.
+3. Change `action.yml` to run `gh release verify-asset "$tag" "$dir/$archive" --repo "$repo"` after the download when `gh release view "$tag" --repo "$repo" --json isImmutable --jq .isImmutable` is `true`, and to keep the `.sha256` comparison for older releases, which have no release attestation. A tag's release that is immutable stays so, so this check can't be skipped by rewriting it.
+
+Artifact attestations ([`actions/attest`](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations)) would go further and tie each archive to the workflow run that built it, with `gh attestation verify <file> --repo costajohnt/groovyfmt --signer-workflow costajohnt/groovyfmt/.github/workflows/release.yml` in the action. That is a change to how releases are produced. `release.yml`'s `release` job would get the permissions `id-token: write` and `attestations: write` and, before `gh release create`, an `actions/attest` step (pinned by commit like the other actions) with `subject-path` naming the five archives. The risks are a new action running with an OIDC token in the job that holds `contents: write`, a release that fails if the attestation service does, and an action that has to tell a release made before the change, which has no attestation, from a replaced asset, which has none either (by version, for example). Immutable releases give the action the protection it needs without changing the workflow, so attestations are left for later.
 
 ## Homebrew
 
