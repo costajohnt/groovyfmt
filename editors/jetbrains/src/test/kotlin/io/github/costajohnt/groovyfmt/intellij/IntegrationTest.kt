@@ -261,8 +261,10 @@ class IntegrationTest : UsefulTestCase() {
         val b = File(Files.createTempDirectory("groovyfmt-b").toFile(), "groovyfmt")
         Files.copy(File(a).toPath(), b.toPath())
         b.setExecutable(true)
+        // the OS reports the resolved executable, so compare canonical paths
         fun serving(path: String) = ProcessHandle.allProcesses().anyMatch { p ->
-            p.isAlive && p.info().command().orElse("") == path && p.info().arguments().orElse(arrayOf()).contentEquals(arrayOf("--lsp"))
+            p.isAlive && p.info().command().map { File(it).canonicalPath }.orElse("") == File(path).canonicalPath &&
+                p.info().arguments().orElse(arrayOf()).contentEquals(arrayOf("--lsp"))
         }
         GroovyfmtSettings.get().path = a
         open()
