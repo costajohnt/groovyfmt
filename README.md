@@ -104,7 +104,7 @@ exclude = ["generated/**"]
 - Suppress a report with `// groovyfmt-ignore`. CodeNarc's `codenarc-disable` comments and `@SuppressWarnings` work too.
 - Adopt lint in an existing repository with a baseline (`--write-baseline`), so only new violations are reported.
 
-[Lint](https://github.com/costajohnt/groovyfmt/blob/main/docs/lint.md) has every rule, fixing, suppressing and the baseline. [Output formats](https://github.com/costajohnt/groovyfmt/blob/main/docs/output-formats.md) covers JSON, SARIF and GitHub annotations.
+[Lint](https://github.com/costajohnt/groovyfmt/blob/main/docs/lint.md) has every rule, fixing, suppressing and the baseline. [Output formats](https://github.com/costajohnt/groovyfmt/blob/main/docs/output-formats.md) covers JSON, SARIF and GitHub annotations. [What the Gradle rules cover](https://github.com/costajohnt/groovyfmt/blob/main/docs/lint.md#what-the-gradle-rules-cover) explains what they can check without running Gradle and what requires a Gradle-integrated linter.
 
 ## CI and pre-commit
 

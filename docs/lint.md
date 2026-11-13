@@ -161,6 +161,14 @@ These apply in `*.gradle` files.
 | GradleDynamicVersion | off | a `+` or `latest.*` dependency version (whether to pin is a policy choice) |
 | GradleRemovedApi | on | what a Gradle upgrade guide lists as removed, with the version and the replacement in the message: the `maven` plugin and the `uploadArchives` task (7.0, use `maven-publish`); the `findbugs`, `jdepend`, `osgi`, `announce`, `build-announcements` and `compare-gradle-builds` plugins (6.0) and the old JVM and JavaScript plugins (7.0); `configurations.compile`, `.runtime`, `.testCompile` and `.testRuntime` (7.0, unless the build declares that configuration); and `archiveName`, `baseName`, `classifier`, `destinationDir`, `appendix` or `extension` set in an archive task's block (8.0, use `archiveFileName`, `archiveBaseName` and so on). An archive task's block is `jar`, `war`, `ear`, `bootJar`, `bootWar`, `shadowJar`, `sourcesJar`, `javadocJar`, `distZip` or `distTar` at the top level (or in `allprojects`, `subprojects`, `project`, `configure`, `afterEvaluate` or `tasks`), or a task block typed `Jar`, `Zip`, `Tar`, `War`, `Ear`, `ShadowJar`, `BootJar` or `BootWar`. Quiet when the nearest wrapper pins a Gradle older than the removal |
 
+#### What the Gradle rules cover
+
+The rules read the build script and the nearest wrapper version; they do not invoke Gradle or require the project to configure successfully.
+
+Unused dependencies, undeclared dependencies, duplicate classes across jars and version recommendations all need the resolved dependency graph, so they are out of scope and require a linting tool that runs inside the Gradle build. Those tools and groovyfmt cover different ground and work alongside each other.
+
+These rules apply to Groovy DSL build scripts (`*.gradle`). Kotlin DSL scripts (`build.gradle.kts`, `settings.gradle.kts`) are not linted or formatted.
+
 ### Spock specifications
 
 These apply in classes whose superclass is `Specification` or ends in `Spec` or `Specification` (a project's base spec). The fixture methods `setup`, `cleanup`, `setupSpec` and `cleanupSpec` are skipped, as Spock ignores labels there.
