@@ -8,10 +8,10 @@ The action installs the release binary for the runner (Linux or macOS, x64 or ar
 
 ```yaml
 - uses: actions/checkout@v5
-- uses: costajohnt/groovyfmt@v0.10.0
+- uses: costajohnt/groovyfmt@v0.11.0
   # with:
   #   args: --check --output-format github   # the default; "" only installs
-  #   version: 0.10.0                         # default: the release of the action ref used
+  #   version: 0.11.0                         # default: the release of the action ref used
   #   token: ${{ github.token }}             # the default
 - run: groovyfmt --lint --output-format github
 ```
@@ -45,7 +45,7 @@ On a Windows runner the action's steps run in bash (Git Bash, which GitHub's Win
 ```yaml
 repos:
   - repo: https://github.com/costajohnt/groovyfmt
-    rev: v0.10.0
+    rev: v0.11.0
     hooks:
       - id: groovyfmt        # format in place; or groovyfmt-check to only report
       - id: groovyfmt-lint
@@ -99,7 +99,7 @@ plugins {
 }
 
 groovyfmt {
-    // version = '0.10.0'                          // default: the plugin's own version
+    // version = '0.11.0'                          // default: the plugin's own version
     // binary = file('/usr/local/bin/groovyfmt')  // run this binary and download nothing
     // args = ['--strict']                        // added to every run
     // paths = ['src', 'build.gradle']            // default: the project directory
