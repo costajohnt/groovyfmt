@@ -375,6 +375,96 @@ pub const RULES: &[Rule] = &[
         good: "void run() {\n    try {\n        work()\n    } catch (IOException e) {\n        throw new IllegalStateException(e)\n    }\n}",
         fixable: false,
     },
+    Rule {
+        name: "BigDecimalInstantiation",
+        default: false,
+        description: "new BigDecimal(1.1): a BigDecimal made from a double literal, which is inexact (off by default: on real code it found only tests of BigDecimal itself, with values a double holds exactly)",
+        why: "A decimal literal passed to the BigDecimal constructor goes through a double first, so `new BigDecimal(0.1)` is 0.1000000000000000055511151231257827. Pass the number as a String to get exactly the digits written.",
+        bad: "def rate = new BigDecimal(0.1)",
+        good: "def rate = new BigDecimal('0.1')",
+        fixable: false,
+    },
+    Rule {
+        name: "BitwiseOperatorInConditional",
+        default: false,
+        description: "`|` or `&` in an if, while, ternary or elvis condition (off by default: on real code nearly every one tests bit flags on purpose)",
+        why: "`|` and `&` evaluate both sides and are easily typed for `||` and `&&`. If the bitwise operation is meant, a variable holding its result says so.",
+        bad: "if (ready | retry) {\n    run()\n}",
+        good: "if (ready || retry) {\n    run()\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "DoubleNegative",
+        default: false,
+        description: "`!!x` or `!(!x)` (off by default: `!!x` is a common way to turn a value into a boolean)",
+        why: "A double negative is hard to read. Where it turns a value into a boolean, `x as boolean` says so.",
+        bad: "def found = !!result",
+        good: "def found = result as boolean",
+        fixable: false,
+    },
+    Rule {
+        name: "EmptySynchronizedStatement",
+        default: false,
+        description: "a synchronized block with nothing in it (off by default: real code gave nothing to measure it on)",
+        why: "A `synchronized` block with nothing in it takes and releases a lock and does nothing else: an unfinished edit, or a misguided attempt at a memory barrier.",
+        bad: "synchronized (lock) {\n}",
+        good: "synchronized (lock) {\n    count++\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "ForLoopShouldBeWhileLoop",
+        default: false,
+        description: "for (; condition;) with only a condition (off by default: a style preference)",
+        why: "A `for` loop without an initializer or an update is a `while` loop written in a harder way.",
+        bad: "for (; it.hasNext();) {\n    process(it.next())\n}",
+        good: "while (it.hasNext()) {\n    process(it.next())\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "IntegerGetInteger",
+        default: false,
+        description: "Integer.getInteger(name), which reads a system property (off by default: on real code it found mostly deliberate reads of system properties)",
+        why: "`Integer.getInteger(s)` doesn't parse `s`: it reads the system property named `s`. That reads like parsing, and it is sometimes called by mistake for `Integer.parseInt(s)`.",
+        bad: "def port = Integer.getInteger(text)",
+        good: "def port = Integer.parseInt(text)",
+        fixable: false,
+    },
+    Rule {
+        name: "RandomDoubleCoercedToZero",
+        default: false,
+        description: "Math.random() cast to int or long, or assigned to an int or long field or returned from a method returning one (off by default: real code gave nothing to measure it on)",
+        why: "`Math.random()` is a double from 0 up to 1, so as an int or a long it is always 0.",
+        bad: "int pick = (int) Math.random()",
+        good: "int pick = (int) (Math.random() * size)",
+        fixable: false,
+    },
+    Rule {
+        name: "UnnecessaryInstanceOfCheck",
+        default: true,
+        description: "`!x instanceof T`, which tests the boolean `!x`",
+        why: "`!` binds tighter than `instanceof`, so `!x instanceof String` asks whether a boolean is a String: always false (always true for Boolean).",
+        bad: "if (!value instanceof String) {\n    convert(value)\n}",
+        good: "if (!(value instanceof String)) {\n    convert(value)\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "UnnecessaryModOne",
+        default: false,
+        description: "`x % 1`, which is always 0 for a whole number (off by default: on real code `x % 1 != 0` tested decimals for a fractional part, which works)",
+        why: "Any whole number modulo 1 is 0, so the check meant is usually `x % 2` or `x & 1`. On a decimal, `x % 1` is its fractional part, which is a correct use.",
+        bad: "if (count % 1 == 0) {\n    flush()\n}",
+        good: "if (count % 2 == 0) {\n    flush()\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "ClassNameSameAsFilename",
+        default: false,
+        description: "a file holding only one class, interface or enum named differently than the file (off by default: a naming convention)",
+        why: "With one class in a file, naming the file after it is how readers and tools find it.",
+        bad: "// MathSpec.groovy\nclass MathHelpers {\n}",
+        good: "// MathSpec.groovy\nclass MathSpec {\n}",
+        fixable: false,
+    },
     // Unused code (src/lint/unused.rs)
     Rule {
         name: "UnusedPrivateField",
@@ -745,6 +835,7 @@ pub fn lint_file(path: &Path, src: &str) -> Result<Vec<Violation>, &'static str>
         directives,
     ] = by_module;
     basic::check(src, &basic_nodes, &mut v);
+    basic::class_name_same_as_filename(path, src, tree.root_node(), &mut v);
     unused::check(src, &unused_nodes, &name_leaves, &dynamic, &mut v);
     imports::check(path, src, &import_nodes, &mut v);
     suppress::apply(src, &directives, &mut v);
@@ -1344,6 +1435,7 @@ mod tests {
         assert_eq!(
             rules(src),
             vec![
+                ("ForLoopShouldBeWhileLoop", 4),
                 ("EmptyWhileStatement", 5),
                 ("EmptyForStatement", 6),
                 ("EmptyForStatement", 7),
@@ -1389,10 +1481,11 @@ mod tests {
         let gradle =
             "repositories { jcenter() }\ndependencies { compile 'a:b:+' }\ntask t << { }\n";
         let spock = "class S extends Specification {\n def f() {\n  when:\n  f()\n  then: 'x'\n  where:\n  a | b\n  2 | 3 | 4\n }\n def g() {\n  then:\n  x\n }\n}\n";
-        let more = "package p\nimport p.Q\nimport java.util.Date\nclass K {\n private int pf\n private void m() { }\n static { }\n { }\n boolean equals(Object o) { true }\n int hashcode() { 1 }\n String toString() { null }\n}\nclass L {\n boolean equals(String s) { true }\n}\ndef g() {\n def u = 1\n return 1\n f()\n}\ntry { f() } finally { return 1; throw new E(); assert x }\nswitch (x) { }\ndef s = [1, 1] as Set\ndef t = true ? 1 : 2\nassert true\nif (1 == 2) { f() }\nif (x != null || x.a) { f() }\nif (x % 2 == 1) { f() }\nl.removeAll(l)\nthrow RuntimeException()\nvoid h() { try { f() } catch (e) { new BadException(e) } }\nDate d = new Q()\n";
+        let more = "package p\nimport p.Q\nimport java.util.Date\nclass K {\n private int pf\n private void m() { }\n static { }\n { }\n boolean equals(Object o) { true }\n int hashcode() { 1 }\n String toString() { null }\n}\nclass L {\n boolean equals(String s) { true }\n}\ndef g() {\n def u = 1\n return 1\n f()\n}\ntry { f() } finally { return 1; throw new E(); assert x }\nswitch (x) { }\ndef s = [1, 1] as Set\ndef t = true ? 1 : 2\nassert true\nif (1 == 2) { f() }\nif (x != null || x.a) { f() }\nif (x % 2 == 1) { f() }\nl.removeAll(l)\nthrow RuntimeException()\nvoid h() { try { f() } catch (e) { new BadException(e) } }\nDate d = new Q()\ndef bd = new BigDecimal(1.5)\nif (a | b) { f() }\ndef nn = !!x\nsynchronized (l) { }\nfor (; c;) { f() }\nInteger.getInteger('p')\ndef r = (int) Math.random()\ndef io = !x instanceof String\ndef m1 = y % 1\n";
         for (name, src) in [
             ("A.groovy", more),
             ("B.groovy", "// groovyfmt-ignore DeadCode\nprintln 1\n"),
+            ("C.groovy", "class D {\n}\n"),
             ("Jenkinsfile", jenkins),
             (
                 "Jenkinsfile",

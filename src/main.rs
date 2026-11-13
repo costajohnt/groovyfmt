@@ -43,6 +43,11 @@ Modes:
       --suggest-style      Try a few indent styles without writing anything and print
                            the .groovyfmt.toml lines for the one that changes the
                            fewest files (a table of all of them goes to stderr)
+      --import-codenarc <FILE>...
+                           Print a .groovyfmt.toml [lint] table that carries over a
+                           CodeNarc configuration (ruleset XML or Groovy, codenarc.properties,
+                           .groovylintrc.json), and what it can't carry over; with -v, each
+                           rule's setting and where it comes from (stderr)
 
 Options:
       --config <FILE>      Use FILE for every file instead of the nearest config
@@ -130,6 +135,7 @@ enum Mode {
     Explain(String),
     Lsp,
     SuggestStyle,
+    ImportCodenarc,
     // development diagnostics, not in --help
     Stats,
     LintStats,
@@ -161,7 +167,7 @@ fn parse_args() -> Args {
             (Mode::Write, m) => m,
             (Mode::Lint, Mode::Stats) | (Mode::Stats, Mode::Lint) => Mode::LintStats,
             _ => die(
-                "--check, --lint, --syntax, --stdin, --rules and --suggest-style can't be combined",
+                "--check, --lint, --syntax, --stdin, --rules, --suggest-style and --import-codenarc can't be combined",
             ),
         };
     };
@@ -205,6 +211,7 @@ fn parse_args() -> Args {
                 set_mode(&mut a, Mode::Explain(rule));
             }
             "--suggest-style" => set_mode(&mut a, Mode::SuggestStyle),
+            "--import-codenarc" => set_mode(&mut a, Mode::ImportCodenarc),
             "--lsp" => set_mode(&mut a, Mode::Lsp),
             "--stats" => set_mode(&mut a, Mode::Stats),
             "--errors" => set_mode(&mut a, Mode::Errors),
@@ -315,6 +322,9 @@ fn parse_args() -> Args {
     }
     if a.mode == Mode::Lsp && !a.paths.is_empty() {
         die("--lsp takes no paths (the editor sends the documents)");
+    }
+    if a.mode == Mode::ImportCodenarc && a.paths.is_empty() {
+        die("--import-codenarc needs the CodeNarc configuration files to read");
     }
     if a.paths.is_empty() && !matches!(a.mode, Mode::Stdin | Mode::Lsp) {
         a.paths.push(PathBuf::from("."));
@@ -1032,6 +1042,9 @@ fn main() {
         eprintln!("groovyfmt: {}", printable(&info.to_string()));
     }));
     let a = parse_args();
+    if a.mode == Mode::ImportCodenarc {
+        std::process::exit(import_codenarc(&a));
+    }
     let mut res = resolver(&a);
     let code = match a.mode {
         Mode::Rules => rules(&one_config(&mut res, &a)),
@@ -1142,6 +1155,18 @@ fn explain(name: &str, cfg: &Config) -> i32 {
         bad = indent(r.bad),
         good = indent(r.good),
     ));
+    0
+}
+
+/// `--import-codenarc`: the config on stdout, with `-v` each rule's source on stderr.
+fn import_codenarc(a: &Args) -> i32 {
+    let im = groovyfmt::codenarc::import(&a.paths).unwrap_or_else(|e| die(e));
+    // text from the files (values, statements in notes) can't carry terminal controls
+    let shown = |s: String| s.lines().map(|l| printable(l) + "\n").collect::<String>();
+    if a.verbose {
+        eprint!("{}", shown(im.details()));
+    }
+    print_raw(&shown(im.toml()));
     0
 }
 

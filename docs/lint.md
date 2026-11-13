@@ -1,12 +1,12 @@
 # Lint
 
-`groovyfmt --lint` has 67 rules, 54 of them on by default. `groovyfmt --rules` lists them with their state under the config that applies, and `groovyfmt --explain <Rule>` prints a rule's description, why it matters, flagged code and a fixed version, whether `--lint --fix` fixes it, and the `.groovyfmt.toml` lines to turn it off (or on).
+`groovyfmt --lint` has 77 rules, 55 of them on by default. `groovyfmt --rules` lists them with their state under the config that applies, and `groovyfmt --explain <Rule>` prints a rule's description, why it matters, flagged code and a fixed version, whether `--lint --fix` fixes it, and the `.groovyfmt.toml` lines to turn it off (or on).
 
 The general rules are named after their [CodeNarc](https://codenarc.org/) equivalents, so existing configurations map across. The Jenkins, Gradle and Spock rules catch, in milliseconds, mistakes those tools otherwise report only when a build runs.
 
 Files that don't parse are not linted, which keeps false positives out.
 
-Turn a rule on or off in the `[lint]` table of [`.groovyfmt.toml`](configuration.md).
+Turn a rule on or off in the `[lint]` table of [`.groovyfmt.toml`](configuration.md). Coming from CodeNarc, `groovyfmt --import-codenarc` writes that table for you ([migrating from CodeNarc](#migrating-from-codenarc)).
 
 ## Rules
 
@@ -31,6 +31,9 @@ Turn a rule on or off in the `[lint]` table of [`.groovyfmt.toml`](configuration
 | UnnecessaryGString | off | a double-quoted string with nothing to interpolate (noisy where double quotes are the house style) |
 | UnusedSuppression | off | a `groovyfmt-ignore` comment that suppresses nothing (or names no rule), or a CodeNarc comment or `@SuppressWarnings` naming a groovyfmt rule it doesn't suppress ([suppressing reports](#suppressing-reports)) |
 | ComparisonWithSelf | off | a variable compared with itself (Spock equality checks do this on purpose); not inside a GORM where query (`Book.where { title == title }`, `@Where`), where the left side is the domain property |
+| DoubleNegative | off | `!!x` or `!(!x)` (`!!x` is a common way to turn a value into a boolean) |
+| ForLoopShouldBeWhileLoop | off | `for (; condition;)`, a `for` loop with only a condition (a style preference) |
+| ClassNameSameAsFilename | off | a file whose only top-level code is one class, interface, enum, trait or annotation type, named other than the file less its `.groovy` (a naming convention); a file with any other top-level code is a script and isn't checked |
 
 A block holding only a comment doesn't count as empty.
 
@@ -43,7 +46,7 @@ A block holding only a comment doesn't count as empty.
 
 ### Likely bugs
 
-Rules marked off found, on real code, almost only things written that way on purpose (mostly in tests). Turn them on where that doesn't apply.
+Rules marked off found, on real code, almost only things written that way on purpose (mostly in tests), or found nothing to measure them on. Turn them on where that doesn't apply.
 
 | Rule | Default | Flags |
 |---|---|---|
@@ -59,6 +62,7 @@ Rules marked off found, on real code, almost only things written that way on pur
 | RemoveAllOnSelf | on | `c.removeAll(c)` instead of `c.clear()` |
 | MissingNewInThrowStatement | on | `throw SomeException(...)` or `throw SomeException` without `new` (a capitalized name ending in `Exception`, `Failure` or `Fault`) |
 | ExceptionNotThrown | on | a `catch` block ending in `new SomeException(...)` that is neither thrown nor the method's or closure's return value |
+| UnnecessaryInstanceOfCheck | on | `!x instanceof T`, which tests the boolean `!x` (`!` binds tighter), so it is always false, or always true for `Boolean`; `!(x instanceof T)` was meant |
 | ThrowExceptionFromFinallyBlock | off | a `throw` in a `finally` block, unless a `catch` inside the `finally` may handle it (rethrowing a saved exception after cleanup is a common idiom) |
 | AssertWithinFinallyBlock | off | an `assert` in a `finally` block (tests check state after cleanup this way) |
 | ToStringReturnsNull | off | a `toString()` that returns `null`, ends with `null`, or is empty (found only test fixtures doing it on purpose) |
@@ -67,6 +71,12 @@ Rules marked off found, on real code, almost only things written that way on pur
 | ConstantAssertExpression | off | an `assert` whose condition is a constant (`assert false` marks unreachable code in tests) |
 | ComparisonOfTwoConstants | off | `==`, `!=`, `<`, `<=`, `>`, `>=`, `<=>`, `equals` or `compareTo` between two constants, or lists and maps of them (tests and `expect: 1 == 1` placeholders) |
 | BrokenOddnessCheck | off | `x % 2 == 1`, false for negative odd numbers (nearly every real case is a count that is never negative) |
+| BigDecimalInstantiation | off | `new BigDecimal(1.1)` or `new java.math.BigDecimal(1.1d)`: a BigDecimal made from a decimal or double literal, which goes through an inexact double; not `1.1f` or a whole number, as in CodeNarc (found only in tests of BigDecimal itself, with values a double holds exactly) |
+| BitwiseOperatorInConditional | off | `\|` or `&` in the condition of an `if`, `while`, ternary or elvis, through the binary operators the condition is made of (`(flags & MASK) != 0` too, as in CodeNarc); not inside a call or a `!` (nearly every real one tests bit flags on purpose) |
+| EmptySynchronizedStatement | off | a `synchronized` block with nothing in it; a comment counts as content, as for the other empty blocks (the projects below gave nothing to measure it on) |
+| IntegerGetInteger | off | `Integer.getInteger(name)` or `Integer.getInteger(name, default)`, which reads a system property rather than parsing `name` (found mostly deliberate reads of system properties) |
+| RandomDoubleCoercedToZero | off | `Math.random()` cast to `int`, `Integer`, `long` or `Long`, the initial value of a field of one of those types, or returned (directly or from a ternary or elvis branch) from a method declared to return one; not a local variable, as in CodeNarc, nor a `return` inside a closure in the method (nothing to measure it on) |
+| UnnecessaryModOne | off | `x % 1`, always 0 for a whole number (on real code, `x % 1 != 0` tested decimals for a fractional part, which works) |
 
 ### Unused code
 
@@ -281,3 +291,43 @@ The language server honors the config's baseline too. What it holds isn't publis
 3. `groovyfmt --lint --write-baseline` and commit `.groovyfmt-baseline.json`.
 4. Add `baseline = ".groovyfmt-baseline.json"` to `.groovyfmt.toml`.
 5. Run `groovyfmt --lint --strict` in CI, and rewrite the baseline whenever a fix leaves stale entries.
+
+## Migrating from CodeNarc
+
+`groovyfmt --import-codenarc <FILE>...` reads a CodeNarc configuration and prints the `[lint]` table of a `.groovyfmt.toml` that carries it over, then what it couldn't carry over, as TOML comments. It writes nothing. Redirect the output to start a config:
+
+```console
+$ groovyfmt --import-codenarc config/codenarc/codenarc.xml > .groovyfmt.toml
+```
+
+It reads these formats:
+
+- Ruleset XML: `<ruleset-ref>` with `<include>`, `<exclude>` and `<rule-config>`, and `<rule class="...">` with its properties.
+- Groovy rulesets: `ruleset { }` holding `ruleset('...') { }` with `exclude` and `include`, rule names, `RuleName { property = value }` and `RuleName(property: value)`.
+- `codenarc.properties`, whose `RuleName.enabled = false` lines turn rules off. Named with rulesets, it adjusts the rules they define, as in CodeNarc.
+- npm-groovy-lint's `.groovylintrc.json`, with its `extends` presets and its `rules`, where `"off"`, `enabled: false`, `disabled: true` and `severity: "off"` turn a rule off. With `codenarcRulesets`, those files are read instead of `rules`, as npm-groovy-lint does.
+
+Excludes and includes take CodeNarc's wildcards (`Empty*`) and comma-separated lists. Each groovyfmt rule named after a CodeNarc rule comes out true or false as the configuration says. A rule the configuration doesn't enable comes out false, since CodeNarc wouldn't run it. groovyfmt's Jenkins, Gradle and Spock rules and UnusedSuppression keep their defaults. From a `codenarc.properties` alone, only the rules it names are set.
+
+The report after the table lists, of the rules the configuration enables:
+
+- the rules groovyfmt has no equivalent for yet
+- the rules that need type information, which CodeNarc runs only on compiled code (its enhanced rules, the Jenkins CPS rules and a few others). They are out of scope for a tool that reads one file at a time.
+- the formatting rules the formatter covers, each with what covers it. Four need no setting: Indentation (`indent`, `continuation_indent`, `use_tabs`), TrailingWhitespace, ConsecutiveBlankLines and FileEndsWithoutNewline. Fifteen spacing rules need `normalize_spacing = true`, which leaves some spacing as written ([formatting](formatting.md#left-as-written)): SpaceAfterCatch, SpaceAfterClosingBrace, SpaceAfterComma, SpaceAfterFor, SpaceAfterIf, SpaceAfterMethodCallName, SpaceAfterMethodDeclarationName, SpaceAfterOpeningBrace, SpaceAfterSwitch, SpaceAfterWhile, SpaceAroundClosureArrow, SpaceAroundOperator, SpaceBeforeClosingBrace, SpaceBeforeOpeningBrace and SpaceInsideParentheses. The settings these need (`normalize_spacing`, and `indent` from Indentation's `spacesPerIndentLevel`) are suggested as comments above `[lint]`, since they change how files are formatted. CodeNarc's other formatting rules count as having no equivalent.
+- the properties set on the rules carried over (thresholds, `doNotApplyToFileNames`, `priority` and the like), which groovyfmt ignores
+- whatever it couldn't interpret: custom rules, statements in a Groovy ruleset other than the forms above (a ruleset is code, and isn't run), rules CodeNarc doesn't know (renamed or removed ones), and referenced rulesets it can't or won't read
+
+With `-v` it also prints, on stderr, each ruleset read, each rule with whether it is on and where that comes from, and every property.
+
+### Limits
+
+- Nothing is run and nothing is fetched.
+- The rulesets CodeNarc bundles (`rulesets/basic.xml` and so on) and npm-groovy-lint's presets come from tables generated from CodeNarc 4.0.0 and npm-groovy-lint 19.0.1 by `scripts/codenarc-data.py`.
+- Any other ruleset a configuration references is read only from inside the directory of the file named on the command line. It is looked up from the referencing file's directory and the directories above it, since CodeNarc reads `file:` paths from where the build runs. URLs (`http:` and the like), absolute paths and paths that lead out of that directory, symlinks included, are reported and skipped.
+- The XML reader takes CodeNarc's ruleset schema only. It refuses DTDs, entities other than XML's own and character references, and nesting deeper than 8.
+- Files over 1 MiB are refused, and rulesets may reference each other at most 8 deep.
+- The exit status is 0 when it printed a table, and 2 when a file can't be read or isn't a CodeNarc configuration.
+
+### On real configurations
+
+About 120 open source projects hold 37 CodeNarc configurations in 25 of them: ruleset XML, Groovy rulesets and `.groovylintrc.json`. It reads all 37. One that includes CodeNarc's rulesets wholesale sets about 45 to 51 groovyfmt rules on and leaves 150 to 300 enabled CodeNarc rules without an equivalent, most of them naming, size, style and Javadoc rules. Eight have something it can't interpret: custom rules, rules CodeNarc has since removed (`UnnecessarySubstring`, `GrailsSessionReference`), and local variables a Groovy ruleset uses for property values.

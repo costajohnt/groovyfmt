@@ -1,0 +1,91 @@
+# groovyfmt --import-codenarc .groovylintrc.json
+# (CodeNarc 4.0.0 rulesets, npm-groovy-lint 19.0.1 presets)
+
+[lint]
+UnusedImport = true
+DuplicateImport = true
+UnnecessarySemicolon = false
+EmptyCatchBlock = true
+EmptyIfStatement = true
+EmptyElseBlock = true
+EmptyTryBlock = true
+EmptyFinallyBlock = true
+EmptyWhileStatement = true
+EmptyForStatement = true
+DuplicateMapKey = true
+DuplicateCaseStatement = true
+AssignmentInConditional = true
+ComparisonWithSelf = true
+ConstantIfExpression = true
+UnnecessaryGString = false
+UnnecessaryGroovyImport = true
+ImportFromSamePackage = true
+DeadCode = true
+DuplicateSetValue = true
+EqualsAndHashCode = true
+EqualsOverloaded = true
+ReturnFromFinallyBlock = true
+ThrowExceptionFromFinallyBlock = true
+AssertWithinFinallyBlock = true
+EmptySwitchStatement = true
+EmptyStaticInitializer = true
+EmptyInstanceInitializer = true
+ConstantTernaryExpression = true
+ConstantAssertExpression = true
+ComparisonOfTwoConstants = true
+BrokenNullCheck = true
+BrokenOddnessCheck = true
+RemoveAllOnSelf = true
+ObjectOverrideMisspelledMethodName = true
+ToStringReturnsNull = true
+MissingNewInThrowStatement = true
+ExceptionNotThrown = true
+BigDecimalInstantiation = true
+BitwiseOperatorInConditional = true
+DoubleNegative = true
+EmptySynchronizedStatement = true
+ForLoopShouldBeWhileLoop = true
+IntegerGetInteger = true
+RandomDoubleCoercedToZero = true
+UnnecessaryInstanceOfCheck = true
+UnnecessaryModOne = true
+ClassNameSameAsFilename = true
+UnusedPrivateField = true
+UnusedPrivateMethod = true
+UnusedVariable = true
+# groovyfmt's Jenkins, Gradle and Spock rules and UnusedSuppression keep their defaults.
+
+# Enabled in the source, no groovyfmt equivalent yet (100):
+#   AssignmentToStaticFieldFromInstanceMethod, BooleanGetBoolean,
+#   BooleanMethodReturnsNull, BuilderMethodWithSideEffects, BusyWait,
+#   CatchArrayIndexOutOfBoundsException, CatchError, CatchException,
+#   CatchIllegalMonitorStateException, CatchIndexOutOfBoundsException,
+#   CatchNullPointerException, CatchRuntimeException, CatchThrowable, ClassForName,
+#   ClassNameSameAsSuperclass, CloneableWithoutClone, CollectAllIsDeprecated,
+#   CompareToWithoutComparable, ConfusingClassNamedException, ConfusingMethodName,
+#   ConfusingMultipleReturns, DoubleCheckedLocking, EmptyClass, EmptyMethod,
+#   EnumCustomSerializationIgnored, ExceptionExtendsError, ExceptionExtendsThrowable,
+#   ExplicitGarbageCollection, FileCreateTempFile, GStringAsMapKey,
+#   GStringExpressionWithinString, GroovyLangImmutable, HardCodedWindowsFileSeparator,
+#   HardCodedWindowsRootDirectory, HashtableIsObsolete, ImportFromSunPackages,
+#   InconsistentPropertyLocking, InconsistentPropertySynchronization, InsecureRandom,
+#   InterfaceNameSameAsSuperInterface, JavaIoPackageAccess, LocaleSetDefault,
+#   LoggerForDifferentClass, LoggerWithWrongModifiers, LoggingSwallowsStacktrace,
+#   LongLiteralWithLowerCaseL, MultipleLoggers, MultipleUnaryOperators,
+#   NestedSynchronization, NonFinalPublicField, NonFinalSubclassOfSensitiveInterface,
+#   ObjectFinalize, PackageNameMatchesFilePath, ParameterAssignmentInFilterClosure,
+#   PrintStackTrace, PublicFinalizeMethod, ReturnNullFromCatchBlock,
+#   ReturnsNullInsteadOfEmptyArray, ReturnsNullInsteadOfEmptyCollection,
+#   SerialPersistentFields, SerialVersionUID, SerializableClassMustDefineSerialVersionUID,
+#   SimpleDateFormatMissingLocale, StaticCalendarField, StaticConnection,
+#   StaticDateFormatField, StaticMatcherField, StaticSimpleDateFormatField,
+#   SwallowThreadDeath, SynchronizedMethod, SynchronizedOnBoxedPrimitive,
+#   SynchronizedOnGetClass, SynchronizedOnReentrantLock, SynchronizedOnString,
+#   SynchronizedOnThis, SynchronizedReadObjectMethod, SystemExit,
+#   SystemRunFinalizersOnExit, ThisReferenceEscapesConstructor, ThreadGroup,
+#   ThreadLocalNotStaticFinal, ThreadYield, ThrowError, ThrowException,
+#   ThrowNullPointerException, ThrowRuntimeException, ThrowThrowable,
+#   UnnecessaryBooleanExpression, UnnecessaryCollectionCall, UnnecessarySelfAssignment,
+#   UnsafeArrayDeclaration, UnusedArray, UnusedMethodParameter, UnusedObject,
+#   UnusedPrivateMethodParameter, UseOfNotifyMethod, VectorIsObsolete, VolatileArrayField,
+#   VolatileLongOrDoubleField, WaitOutsideOfWhileLoop

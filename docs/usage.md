@@ -21,6 +21,7 @@ groovyfmt [OPTIONS] [PATH]...
 | `groovyfmt --rules` | list lint rules and whether each is on |
 | `groovyfmt --explain <Rule>` | explain a lint rule: why it matters, an example, whether `--fix` fixes it, how to turn it off |
 | `groovyfmt --suggest-style` | suggest the indent settings that fit the code, writing nothing ([configuration](configuration.md#finding-the-settings-that-fit)) |
+| `groovyfmt --import-codenarc <file>...` | print the `[lint]` table that carries over a CodeNarc configuration, and what it can't carry over, writing nothing ([lint](lint.md#migrating-from-codenarc)) |
 
 ## Options
 

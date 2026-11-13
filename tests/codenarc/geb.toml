@@ -1,0 +1,141 @@
+# groovyfmt --import-codenarc gradle/codenarc/rulesets.groovy
+# (CodeNarc 4.0.0 rulesets, npm-groovy-lint 19.0.1 presets)
+
+# The formatter covers some formatting rules the source enables with these settings:
+# normalize_spacing = true
+
+[lint]
+UnusedImport = true
+DuplicateImport = true
+UnnecessarySemicolon = true
+EmptyCatchBlock = false
+EmptyIfStatement = true
+EmptyElseBlock = true
+EmptyTryBlock = true
+EmptyFinallyBlock = true
+EmptyWhileStatement = true
+EmptyForStatement = true
+DuplicateMapKey = true
+DuplicateCaseStatement = true
+AssignmentInConditional = true
+ComparisonWithSelf = true
+ConstantIfExpression = true
+UnnecessaryGString = false
+UnnecessaryGroovyImport = true
+ImportFromSamePackage = true
+DeadCode = true
+DuplicateSetValue = true
+EqualsAndHashCode = true
+EqualsOverloaded = true
+ReturnFromFinallyBlock = true
+ThrowExceptionFromFinallyBlock = false
+AssertWithinFinallyBlock = true
+EmptySwitchStatement = true
+EmptyStaticInitializer = true
+EmptyInstanceInitializer = true
+ConstantTernaryExpression = true
+ConstantAssertExpression = true
+ComparisonOfTwoConstants = true
+BrokenNullCheck = true
+BrokenOddnessCheck = true
+RemoveAllOnSelf = true
+ObjectOverrideMisspelledMethodName = true
+ToStringReturnsNull = false
+MissingNewInThrowStatement = false
+ExceptionNotThrown = false
+BigDecimalInstantiation = true
+BitwiseOperatorInConditional = true
+DoubleNegative = true
+EmptySynchronizedStatement = true
+ForLoopShouldBeWhileLoop = true
+IntegerGetInteger = true
+RandomDoubleCoercedToZero = true
+UnnecessaryInstanceOfCheck = true
+UnnecessaryModOne = true
+ClassNameSameAsFilename = true
+UnusedPrivateField = true
+UnusedPrivateMethod = true
+UnusedVariable = true
+# groovyfmt's Jenkins, Gradle and Spock rules and UnusedSuppression keep their defaults.
+
+# Enabled in the source, no groovyfmt equivalent yet (159):
+#   AbstractClassName, AddEmptyString, AssignCollectionSort, AssignCollectionUnique,
+#   BlankLineBeforePackage, BlockEndsWithBlankLine, BlockStartsWithBlankLine,
+#   BooleanGetBoolean, BracesForClass, BracesForForLoop, BracesForIfElse, BracesForMethod,
+#   BracesForTryCatchFinally, ClassForName, ClassName, ClosureAsLastMethodParameter,
+#   ClosureStatementOnOpeningLineOfMultipleLineClosure, CollectAllIsDeprecated,
+#   ConfusingMultipleReturns, ConfusingTernary, ConsecutiveLiteralAppends,
+#   ConsecutiveStringConcatenation, CouldBeElvis, CouldBeSwitchStatement,
+#   DuplicateListLiteral, DuplicateMapLiteral, DuplicateNumberLiteral,
+#   DuplicateStringLiteral, ElseBlockBraces, EmptyClass, EmptyMethod,
+#   ExplicitArrayListInstantiation, ExplicitCallToAndMethod,
+#   ExplicitCallToCompareToMethod, ExplicitCallToEqualsMethod, ExplicitCallToGetAtMethod,
+#   ExplicitCallToLeftShiftMethod, ExplicitCallToMinusMethod,
+#   ExplicitCallToMultiplyMethod, ExplicitCallToOrMethod, ExplicitCallToPlusMethod,
+#   ExplicitCallToPowerMethod, ExplicitCallToPutAtMethod, ExplicitCallToRightShiftMethod,
+#   ExplicitCallToXorMethod, ExplicitGarbageCollection, ExplicitHashMapInstantiation,
+#   ExplicitLinkedHashMapInstantiation, ExplicitStackInstantiation,
+#   ExplicitTreeSetInstantiation, FieldName, ForStatementBraces, GStringAsMapKey,
+#   GStringExpressionWithinString, GroovyLangImmutable, HardCodedWindowsFileSeparator,
+#   HardCodedWindowsRootDirectory, HashtableIsObsolete, IfStatementBraces,
+#   IfStatementCouldBeTernary, IllegalClassMember, IllegalClassReference,
+#   IllegalPackageReference, IllegalRegex, IllegalString, IllegalSubclass,
+#   ImportFromSunPackages, InterfaceName, InterfaceNameSameAsSuperInterface,
+#   InvertedCondition, JavadocConsecutiveEmptyLines, JavadocEmptyAuthorTag,
+#   JavadocEmptyExceptionTag, JavadocEmptyFirstLine, JavadocEmptyLastLine,
+#   JavadocEmptyParamTag, JavadocEmptyReturnTag, JavadocEmptySeeTag, JavadocEmptySinceTag,
+#   JavadocEmptyThrowsTag, JavadocEmptyVersionTag, JavadocMissingExceptionDescription,
+#   JavadocMissingParamDescription, JavadocMissingThrowsDescription, LineLength,
+#   LongLiteralWithLowerCaseL, MethodName, MisorderedStaticImports,
+#   MissingBlankLineAfterImports, MissingBlankLineAfterPackage,
+#   MissingBlankLineBeforeAnnotatedField, MultipleUnaryOperators, NoDouble, NoFloat,
+#   NoJavaUtilDate, NoTabCharacter, OneTopLevelClass, PackageName,
+#   PackageNameMatchesFilePath, ParameterAssignmentInFilterClosure, ParameterName,
+#   ParameterReassignment, PropertyName, PublicMethodsBeforeNonPublicMethods,
+#   RequiredRegex, RequiredString, SpaceAfterCommentDelimiter, SpaceAfterNotOperator,
+#   SpaceAfterSemicolon, SpaceAroundMapEntryColon, SpaceBeforeCommentDelimiter,
+#   StatelessClass, StaticFieldsBeforeInstanceFields, StaticMethodsBeforeInstanceMethods,
+#   TernaryCouldBeElvis, UnnecessaryBigDecimalInstantiation,
+#   UnnecessaryBigIntegerInstantiation, UnnecessaryBooleanExpression,
+#   UnnecessaryBooleanInstantiation, UnnecessaryCallForLastElement,
+#   UnnecessaryCallToSubstring, UnnecessaryCast, UnnecessaryCatchBlock,
+#   UnnecessaryCollectCall, UnnecessaryCollectionCall, UnnecessaryConstructor,
+#   UnnecessaryDefInFieldDeclaration, UnnecessaryDefInMethodDeclaration,
+#   UnnecessaryDefInVariableDeclaration, UnnecessaryDotClass,
+#   UnnecessaryDoubleInstantiation, UnnecessaryElseStatement,
+#   UnnecessaryFinalOnPrivateMethod, UnnecessaryFloatInstantiation,
+#   UnnecessaryIfStatement, UnnecessaryInstantiationToGetClass,
+#   UnnecessaryIntegerInstantiation, UnnecessaryLongInstantiation, UnnecessaryNullCheck,
+#   UnnecessaryNullCheckBeforeInstanceOf, UnnecessaryOverridingMethod,
+#   UnnecessaryParenthesesForMethodCallWithClosure, UnnecessaryPublicModifier,
+#   UnnecessarySafeNavigationOperator, UnnecessarySelfAssignment, UnnecessarySetter,
+#   UnnecessaryStringInstantiation, UnnecessaryTernaryExpression, UnnecessaryToString,
+#   UnnecessaryTransientModifier, UnusedArray, UnusedMethodParameter, UnusedObject,
+#   UnusedPrivateMethodParameter, UseCollectMany, UseCollectNested, VariableName,
+#   VectorIsObsolete, WhileStatementBraces
+
+# Formatting rules groovyfmt's formatter covers (17):
+#   ConsecutiveBlankLines: runs of blank lines always collapse to one
+#   TrailingWhitespace: trailing whitespace is always removed
+#   SpaceAfterCatch: normalize_spacing = true
+#   SpaceAfterClosingBrace: normalize_spacing = true
+#   SpaceAfterComma: normalize_spacing = true
+#   SpaceAfterFor: normalize_spacing = true
+#   SpaceAfterIf: normalize_spacing = true
+#   SpaceAfterMethodCallName: normalize_spacing = true
+#   SpaceAfterMethodDeclarationName: normalize_spacing = true
+#   SpaceAfterOpeningBrace: normalize_spacing = true
+#   SpaceAfterSwitch: normalize_spacing = true
+#   SpaceAfterWhile: normalize_spacing = true
+#   SpaceAroundClosureArrow: normalize_spacing = true
+#   SpaceAroundOperator: normalize_spacing = true
+#   SpaceBeforeClosingBrace: normalize_spacing = true
+#   SpaceBeforeOpeningBrace: normalize_spacing = true
+#   SpaceInsideParentheses: normalize_spacing = true
+
+# Rule properties ignored (5):
+#   SpaceAfterOpeningBrace.ignoreEmptyBlock = true
+#   SpaceBeforeClosingBrace.ignoreEmptyBlock = true
+#   SpaceBeforeOpeningBrace.doNotApplyToFileNames = InteractionsSupportSpec.groovy, WaitingSupportSpec.groovy
+#   UnnecessaryGroovyImport.doNotApplyToFileNames = ExceptionToPngConverter.groovy
+#   UnnecessarySemicolon.doNotApplyToFileNames = PageOrientedSpec.groovy, StrongTypingSpec.groovy

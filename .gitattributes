@@ -1,2 +1,3 @@
 tests/fixtures/** -text
 grammar/** -text linguist-generated
+tests/codenarc/** -text

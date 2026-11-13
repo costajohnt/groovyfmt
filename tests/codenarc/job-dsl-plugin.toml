@@ -1,0 +1,170 @@
+# groovyfmt --import-codenarc config/codenarc/rules-test.groovy
+# (CodeNarc 4.0.0 rulesets, npm-groovy-lint 19.0.1 presets)
+
+# The formatter covers some formatting rules the source enables with these settings:
+# normalize_spacing = true
+
+[lint]
+UnusedImport = true
+DuplicateImport = true
+UnnecessarySemicolon = true
+EmptyCatchBlock = true
+EmptyIfStatement = true
+EmptyElseBlock = true
+EmptyTryBlock = true
+EmptyFinallyBlock = true
+EmptyWhileStatement = true
+EmptyForStatement = true
+DuplicateMapKey = true
+DuplicateCaseStatement = true
+AssignmentInConditional = true
+ComparisonWithSelf = false
+ConstantIfExpression = true
+UnnecessaryGString = true
+UnnecessaryGroovyImport = true
+ImportFromSamePackage = true
+DeadCode = true
+DuplicateSetValue = true
+EqualsAndHashCode = true
+EqualsOverloaded = true
+ReturnFromFinallyBlock = true
+ThrowExceptionFromFinallyBlock = true
+AssertWithinFinallyBlock = true
+EmptySwitchStatement = true
+EmptyStaticInitializer = true
+EmptyInstanceInitializer = true
+ConstantTernaryExpression = true
+ConstantAssertExpression = true
+ComparisonOfTwoConstants = true
+BrokenNullCheck = true
+BrokenOddnessCheck = true
+RemoveAllOnSelf = true
+ObjectOverrideMisspelledMethodName = true
+ToStringReturnsNull = true
+MissingNewInThrowStatement = true
+ExceptionNotThrown = true
+BigDecimalInstantiation = true
+BitwiseOperatorInConditional = true
+DoubleNegative = true
+EmptySynchronizedStatement = true
+ForLoopShouldBeWhileLoop = true
+IntegerGetInteger = true
+RandomDoubleCoercedToZero = true
+UnnecessaryInstanceOfCheck = true
+UnnecessaryModOne = true
+ClassNameSameAsFilename = true
+UnusedPrivateField = true
+UnusedPrivateMethod = true
+UnusedVariable = true
+# groovyfmt's Jenkins, Gradle and Spock rules and UnusedSuppression keep their defaults.
+
+# Enabled in the source, no groovyfmt equivalent yet (242):
+#   AbstractClassName, AbstractClassWithPublicConstructor, AddEmptyString,
+#   AssignCollectionSort, AssignCollectionUnique,
+#   AssignmentToStaticFieldFromInstanceMethod, BlankLineBeforePackage,
+#   BlockEndsWithBlankLine, BlockStartsWithBlankLine, BooleanGetBoolean,
+#   BooleanMethodReturnsNull, BracesForClass, BracesForForLoop, BracesForIfElse,
+#   BracesForMethod, BracesForTryCatchFinally, BusyWait,
+#   CatchArrayIndexOutOfBoundsException, CatchError, CatchException,
+#   CatchIllegalMonitorStateException, CatchIndexOutOfBoundsException,
+#   CatchNullPointerException, CatchRuntimeException, CatchThrowable, ChainedTest,
+#   ClassEndsWithBlankLine, ClassForName, ClassName, ClassNameSameAsSuperclass,
+#   ClassStartsWithBlankLine, CloneableWithoutClone, CloseWithoutCloseable,
+#   ClosureAsLastMethodParameter, ClosureStatementOnOpeningLineOfMultipleLineClosure,
+#   CollectAllIsDeprecated, CompareToWithoutComparable, ConfusingClassNamedException,
+#   ConfusingMultipleReturns, ConfusingTernary, ConsecutiveLiteralAppends,
+#   ConsecutiveStringConcatenation, ConstantsOnlyInterface, CouldBeElvis, CoupledTestCase,
+#   DoubleCheckedLocking, ElseBlockBraces, EmptyClass, EmptyMethod,
+#   EnumCustomSerializationIgnored, ExceptionExtendsError, ExceptionExtendsThrowable,
+#   ExplicitArrayListInstantiation, ExplicitCallToAndMethod, ExplicitCallToDivMethod,
+#   ExplicitCallToGetAtMethod, ExplicitCallToLeftShiftMethod, ExplicitCallToMinusMethod,
+#   ExplicitCallToModMethod, ExplicitCallToMultiplyMethod, ExplicitCallToOrMethod,
+#   ExplicitCallToPlusMethod, ExplicitCallToPowerMethod, ExplicitCallToPutAtMethod,
+#   ExplicitCallToRightShiftMethod, ExplicitCallToXorMethod, ExplicitGarbageCollection,
+#   ExplicitHashMapInstantiation, ExplicitHashSetInstantiation,
+#   ExplicitLinkedHashMapInstantiation, ExplicitLinkedListInstantiation,
+#   ExplicitStackInstantiation, ExplicitTreeSetInstantiation, FieldName,
+#   FieldTypeRequired, FinalClassWithProtectedMember, ForStatementBraces, GStringAsMapKey,
+#   GetterMethodCouldBeProperty, GroovyLangImmutable, HardCodedWindowsFileSeparator,
+#   HardCodedWindowsRootDirectory, HashtableIsObsolete, IfStatementBraces,
+#   IllegalClassMember, IllegalClassReference, IllegalPackageReference, IllegalRegex,
+#   IllegalString, IllegalSubclass, ImplementationAsType, ImportFromSunPackages,
+#   InconsistentPropertyLocking, InconsistentPropertySynchronization, InsecureRandom,
+#   InterfaceName, InterfaceNameSameAsSuperInterface, InvertedCondition, InvertedIfElse,
+#   JUnitAssertAlwaysFails, JUnitAssertAlwaysSucceeds, JUnitFailWithoutMessage,
+#   JUnitLostTest, JUnitPublicField, JUnitPublicProperty, JUnitSetUpCallsSuper,
+#   JUnitStyleAssertions, JUnitTearDownCallsSuper, JUnitTestMethodWithoutAssert,
+#   JUnitUnnecessarySetUp, JUnitUnnecessaryTearDown, JUnitUnnecessaryThrowsException,
+#   LineLength, LocaleSetDefault, LoggerForDifferentClass, LoggerWithWrongModifiers,
+#   LoggingSwallowsStacktrace, LongLiteralWithLowerCaseL, MisorderedStaticImports,
+#   MissingBlankLineAfterImports, MissingBlankLineAfterPackage,
+#   MissingBlankLineBeforeAnnotatedField, MultipleLoggers, MultipleUnaryOperators,
+#   NestedForLoop, NestedSynchronization, NoJavaUtilDate, NoScriptBindings,
+#   NoTabCharacter, NoWildcardImports, NonFinalSubclassOfSensitiveInterface,
+#   ObjectFinalize, OneTopLevelClass, OptionalCollectionReturnType, OptionalField,
+#   OptionalMethodParameter, PackageName, PackageNameMatchesFilePath,
+#   ParameterAssignmentInFilterClosure, ParameterName, ParameterReassignment,
+#   PrintStackTrace, Println, PrivateFieldCouldBeFinal, PropertyName,
+#   PublicFinalizeMethod, PublicMethodsBeforeNonPublicMethods, RequiredRegex,
+#   RequiredString, ReturnNullFromCatchBlock, ReturnsNullInsteadOfEmptyArray,
+#   ReturnsNullInsteadOfEmptyCollection, SerialPersistentFields, SerialVersionUID,
+#   SimpleDateFormatMissingLocale, SpaceAfterNotOperator, SpaceAfterSemicolon,
+#   SpaceAroundMapEntryColon, StatelessClass, StatelessSingleton, StaticCalendarField,
+#   StaticConnection, StaticDateFormatField, StaticFieldsBeforeInstanceFields,
+#   StaticMatcherField, StaticSimpleDateFormatField, SwallowThreadDeath,
+#   SynchronizedMethod, SynchronizedOnBoxedPrimitive, SynchronizedOnGetClass,
+#   SynchronizedOnReentrantLock, SynchronizedOnString, SynchronizedOnThis,
+#   SynchronizedReadObjectMethod, SystemErrPrint, SystemExit, SystemOutPrint,
+#   SystemRunFinalizersOnExit, TernaryCouldBeElvis, ThisReferenceEscapesConstructor,
+#   ThreadGroup, ThreadLocalNotStaticFinal, ThreadYield, ThrowError, ThrowException,
+#   ThrowNullPointerException, ThrowRuntimeException, ThrowThrowable,
+#   UnnecessaryBigDecimalInstantiation, UnnecessaryBigIntegerInstantiation,
+#   UnnecessaryBooleanInstantiation, UnnecessaryCallForLastElement,
+#   UnnecessaryCallToSubstring, UnnecessaryCast, UnnecessaryCatchBlock,
+#   UnnecessaryCollectCall, UnnecessaryCollectionCall, UnnecessaryConstructor,
+#   UnnecessaryDefInFieldDeclaration, UnnecessaryDefInMethodDeclaration,
+#   UnnecessaryDefInVariableDeclaration, UnnecessaryDotClass,
+#   UnnecessaryDoubleInstantiation, UnnecessaryFail, UnnecessaryFinalOnPrivateMethod,
+#   UnnecessaryFloatInstantiation, UnnecessaryIfStatement,
+#   UnnecessaryInstantiationToGetClass, UnnecessaryIntegerInstantiation,
+#   UnnecessaryLongInstantiation, UnnecessaryNullCheck,
+#   UnnecessaryNullCheckBeforeInstanceOf, UnnecessaryPackageReference,
+#   UnnecessaryParenthesesForMethodCallWithClosure, UnnecessaryPublicModifier,
+#   UnnecessaryReturnKeyword, UnnecessarySafeNavigationOperator,
+#   UnnecessarySelfAssignment, UnnecessarySetter, UnnecessaryStringInstantiation,
+#   UnnecessaryTernaryExpression, UnnecessaryToString, UnnecessaryTransientModifier,
+#   UnsafeArrayDeclaration, UnusedArray, UnusedMethodParameter,
+#   UnusedPrivateMethodParameter, UseAssertEqualsInsteadOfAssertTrue,
+#   UseAssertFalseInsteadOfNegation, UseAssertNullInsteadOfAssertEquals,
+#   UseAssertSameInsteadOfAssertTrue, UseAssertTrueInsteadOfAssertEquals,
+#   UseAssertTrueInsteadOfNegation, UseCollectMany, UseCollectNested, UseOfNotifyMethod,
+#   VariableName, VectorIsObsolete, VolatileArrayField, VolatileLongOrDoubleField,
+#   WaitOutsideOfWhileLoop, WhileStatementBraces
+
+# Enabled in the source, needs type information (CodeNarc compiles the code for it), out of scope (1):
+#   NonSerializableFieldInSerializableClass
+
+# Formatting rules groovyfmt's formatter covers (18):
+#   ConsecutiveBlankLines: runs of blank lines always collapse to one
+#   FileEndsWithoutNewline: files always end with one newline
+#   TrailingWhitespace: trailing whitespace is always removed
+#   SpaceAfterCatch: normalize_spacing = true
+#   SpaceAfterClosingBrace: normalize_spacing = true
+#   SpaceAfterComma: normalize_spacing = true
+#   SpaceAfterFor: normalize_spacing = true
+#   SpaceAfterIf: normalize_spacing = true
+#   SpaceAfterMethodCallName: normalize_spacing = true
+#   SpaceAfterMethodDeclarationName: normalize_spacing = true
+#   SpaceAfterOpeningBrace: normalize_spacing = true
+#   SpaceAfterSwitch: normalize_spacing = true
+#   SpaceAfterWhile: normalize_spacing = true
+#   SpaceAroundClosureArrow: normalize_spacing = true
+#   SpaceAroundOperator: normalize_spacing = true
+#   SpaceBeforeClosingBrace: normalize_spacing = true
+#   SpaceBeforeOpeningBrace: normalize_spacing = true
+#   SpaceInsideParentheses: normalize_spacing = true
+
+# Rule properties ignored (3):
+#   SpaceAfterOpeningBrace.ignoreEmptyBlock = true
+#   SpaceBeforeClosingBrace.ignoreEmptyBlock = true
+#   UnusedVariable.ignoreVariableNames = ignored

@@ -1,4 +1,6 @@
 pub mod baseline;
+pub mod codenarc;
+mod codenarc_data;
 pub mod config;
 pub mod diff;
 pub mod fix;
