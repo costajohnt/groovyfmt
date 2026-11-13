@@ -35,6 +35,7 @@ import com.intellij.util.concurrency.SequentialTaskExecutor
 import com.redhat.devtools.lsp4ij.LanguageServerEnablementSupport
 import com.redhat.devtools.lsp4ij.LanguageServerFactory
 import com.redhat.devtools.lsp4ij.LanguageServerManager
+import com.redhat.devtools.lsp4ij.ServerStatus
 import com.redhat.devtools.lsp4ij.client.features.LSPClientFeatures
 import com.redhat.devtools.lsp4ij.client.features.LSPFormattingFeature
 import com.redhat.devtools.lsp4ij.server.OSProcessStreamConnectionProvider
@@ -103,18 +104,26 @@ class GroovyfmtService(val project: Project) : Disposable {
         if (active) restart()
     }
 
-    fun restart(): Future<*> = queue.submit {
+    /**
+     * Finds the binary again and restarts the server if it changed, or always with `force`
+     * (Restart groovyfmt). Restarting a server that is still starting can leave its process
+     * behind, so an unchanged binary leaves a running or starting server alone.
+     */
+    fun restart(force: Boolean = false): Future<*> = queue.submit {
         if (project.isDisposed) return@submit
         active = true
         stoppedInLsp4ij = false
         notice?.expire()
+        val before = binary
         val found = resolve()
         binary = found
         ApplicationManager.getApplication().invokeLater({
             // A later restart may have changed the binary since: then this step is stale, and
-            // starting the server could find the plugin turned off, which LSP4IJ throws for.
+            // starting the server could find the plugin turned off.
             if (binary !== found) return@invokeLater
             val manager = LanguageServerManager.getInstance(project)
+            val running = manager.getServerStatus(SERVER_ID).let { it == ServerStatus.started || it == ServerStatus.starting }
+            if (!force && found != null && found == before && running) return@invokeLater
             // a plain stop: LSP4IJ's default stop also turns the server off
             manager.stop(SERVER_ID, LanguageServerManager.StopOptions().setWillDisable(false))
             // starts it for the open files groovyfmt serves, if there are any
@@ -377,6 +386,6 @@ class GroovyfmtRestartAction : AnAction() {
     override fun actionPerformed(e: AnActionEvent) {
         GroovyfmtSettings.get().downloadDeclined = false
         notFoundShown.set(false)
-        e.project?.service<GroovyfmtService>()?.restart()
+        e.project?.service<GroovyfmtService>()?.restart(force = true)
     }
 }

@@ -253,6 +253,8 @@ jobs:
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
+      # Dependency verification is on: gradle/verification-metadata.xml checks every download,
+      # the IDEs included.
       - name: Tests, the plugin zip and the Plugin Verifier
         env:
           GROOVYFMT_BIN: ${{ github.workspace }}/target/release/groovyfmt
