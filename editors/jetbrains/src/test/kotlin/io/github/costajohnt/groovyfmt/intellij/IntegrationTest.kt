@@ -82,11 +82,16 @@ class IntegrationTest : UsefulTestCase() {
         WriteCommandAction.runWriteCommandAction(fixture.project) { fixture.editor.document.setText(SAMPLE) }
     }
 
-    /** Opens the sample. The IDE highlights an opened file at once, which sets up LSP4IJ's diagnostics; a test has to ask. */
+    /**
+     * Opens the sample. The IDE highlights an opened file at once, which sets up LSP4IJ's
+     * diagnostics; a test has to ask. It asks on a file groovyfmt doesn't handle: opening the
+     * sample starts the plugin, whose server start would land in the middle of highlighting it.
+     */
     private fun open() {
+        fixture.configureByText("warmup.txt", "")
+        fixture.doHighlighting()
         val file = fixture.configureByText("A.groovy", SAMPLE)
         assertTrue(file.virtualFile.isInLocalFileSystem)
-        fixture.doHighlighting()
     }
 
     /** LSP4IJ puts diagnostics straight into the document's markup, outside the highlighting passes. */
