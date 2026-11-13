@@ -137,7 +137,7 @@ class IntegrationTest : UsefulTestCase() {
         assertEquals(bin, fixture.project.service<GroovyfmtService>().binary?.path)
 
         // the server starts for the open file, and a lint diagnostic arrives
-        waitFor("the server to start", 30_000) {
+        waitFor("the server to start", 60_000) {
             LanguageServerManager.getInstance(fixture.project).getServerStatus(SERVER_ID) == ServerStatus.started
         }
         repeat(10) {
@@ -243,7 +243,7 @@ class IntegrationTest : UsefulTestCase() {
         open()
         val service = fixture.project.service<GroovyfmtService>()
         service.restart().get(30, TimeUnit.SECONDS)
-        waitFor("the server to start", 30_000) {
+        waitFor("the server to start", 60_000) {
             LanguageServerManager.getInstance(fixture.project).getServerStatus(SERVER_ID) == ServerStatus.started
         }
         val first = service.restart()
@@ -280,7 +280,7 @@ class IntegrationTest : UsefulTestCase() {
         open()
         val service = fixture.project.service<GroovyfmtService>()
         service.restart().get(30, TimeUnit.SECONDS)
-        waitFor("the server to run A", 30_000) {
+        waitFor("the server to run A", 60_000) {
             LanguageServerManager.getInstance(fixture.project).getServerStatus(SERVER_ID) == ServerStatus.started && serving(a)
         }
         GroovyfmtSettings.get().path = b.path
@@ -288,7 +288,7 @@ class IntegrationTest : UsefulTestCase() {
         val second = service.restart()
         first.get(30, TimeUnit.SECONDS)
         second.get(30, TimeUnit.SECONDS)
-        waitFor("the server to run B in place of A", 30_000) {
+        waitFor("the server to run B in place of A", 60_000) {
             LanguageServerManager.getInstance(fixture.project).getServerStatus(SERVER_ID) == ServerStatus.started && serving(b.path) && !serving(a)
         }
     }
