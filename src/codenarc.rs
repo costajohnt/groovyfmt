@@ -10,8 +10,9 @@
 //! sources by `scripts/codenarc-data.py`.
 
 use crate::codenarc_data::{CODENARC_VERSION, NPM_GROOVY_LINT_VERSION, PRESETS, RULES, RULESETS};
-use crate::{display_path, text};
+use crate::{display_path, printable, text};
 use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use tree_sitter::Node;
 
@@ -21,6 +22,12 @@ pub const MAX_BYTES: u64 = 1 << 20;
 const MAX_XML_DEPTH: usize = 8;
 /// How deep rulesets may reference other ruleset files.
 const MAX_REFS: usize = 8;
+/// For a whole import: ruleset references followed, distinct files read and bytes read.
+/// Each file is read and interpreted once (`Import::cache`), and every rule list holds each
+/// rule at most twice (on and off), so a reference repeated or fanned out costs little.
+const MAX_REF_COUNT: usize = 100_000;
+const MAX_FILES: usize = 256;
+const MAX_TOTAL_BYTES: u64 = 16 << 20;
 const NAMESPACE: &str = "http://codenarc.org/ruleset/1.0";
 
 /// The CodeNarc formatting rules groovyfmt's formatter covers, and how. Only rules whose
@@ -63,6 +70,7 @@ const SPACING: &str = "normalize_spacing = true";
 
 /// A rule as CodeNarc would hold it after reading the configuration: CodeNarc runs each
 /// instance, so a rule is on when any instance of it is.
+#[derive(Clone)]
 struct Inst {
     name: String,
     on: bool,
@@ -118,6 +126,23 @@ pub struct Import {
     root: PathBuf,
     /// Files being read, outermost first, so a reference cycle stops.
     reading: Vec<PathBuf>,
+    /// The rules of each file read, by canonical path.
+    cache: HashMap<PathBuf, Vec<Inst>>,
+    refs: usize,
+    bytes: u64,
+    /// A whole-import limit was reached; the import fails with this.
+    fatal: Option<String>,
+}
+
+/// Adds `more` to `out`, keeping one instance per rule and state: whether a rule is on
+/// depends only on whether some instance of it is, so the rest add nothing.
+fn merge(out: &mut Vec<Inst>, more: Vec<Inst>) {
+    let mut seen: HashSet<(String, bool)> = out.iter().map(|i| (i.name.clone(), i.on)).collect();
+    for i in more {
+        if seen.insert((i.name.clone(), i.on)) {
+            out.push(i);
+        }
+    }
 }
 
 /// Reads each file in turn. An error is a file that can't be read or isn't a configuration
@@ -129,9 +154,13 @@ pub fn import(files: &[PathBuf]) -> Result<Import, String> {
         props: BTreeSet::new(),
         notes: Vec::new(),
         rulesets: Vec::new(),
-        inputs: files.iter().map(|f| display_path(f)).collect(),
+        inputs: files.iter().map(|f| printable(&display_path(f))).collect(),
         root: PathBuf::new(),
         reading: Vec::new(),
+        cache: HashMap::new(),
+        refs: 0,
+        bytes: 0,
+        fatal: None,
     };
     // rulesets first: codenarc.properties adjusts the rules they define, as in CodeNarc
     let (props, sets): (Vec<_>, Vec<_>) = files.iter().partition(|f| has_ext(f, "properties"));
@@ -139,11 +168,16 @@ pub fn import(files: &[PathBuf]) -> Result<Import, String> {
         let real = std::fs::canonicalize(f).map_err(|e| format!("{}: {e}", display_path(f)))?;
         im.root = real.parent().map(Path::to_path_buf).unwrap_or_default();
         let src = read(f)?;
+        im.count(&real, src.len())
+            .map_err(|e| format!("{}: {e}", display_path(f)))?;
         let insts = im
             .load(f, &real, &src)
             .map_err(|e| format!("{}: {e}", display_path(f)))?;
-        im.insts.extend(insts);
+        merge(&mut im.insts, insts);
         im.defines_set = true;
+        if let Some(e) = im.fatal.take() {
+            return Err(format!("{}: {e}", display_path(f)));
+        }
     }
     for f in props {
         let src = read(f)?;
@@ -155,8 +189,8 @@ pub fn import(files: &[PathBuf]) -> Result<Import, String> {
 /// `file:line`, or just the file for line 0 (a JSON configuration's notes have no line).
 fn place(file: &Path, line: usize) -> String {
     match line {
-        0 => display_path(file),
-        n => format!("{}:{n}", display_path(file)),
+        0 => printable(&display_path(file)),
+        n => format!("{}:{n}", printable(&display_path(file))),
     }
 }
 
@@ -164,16 +198,31 @@ fn has_ext(p: &Path, ext: &str) -> bool {
     p.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext))
 }
 
+/// A configuration file's text. A directory, FIFO or device is refused before it is opened,
+/// and the opened handle is checked again and read only up to the limit, as the formatter
+/// reads source files (a path swapped for a FIFO in between is the same accepted race).
 fn read(p: &Path) -> Result<String, String> {
-    let shown = display_path(p);
-    let meta = std::fs::metadata(p).map_err(|e| format!("{shown}: {e}"))?;
+    use std::io::Read;
+    let shown = printable(&display_path(p));
+    let not_file = || format!("{shown}: not a regular file");
+    if !std::fs::metadata(p)
+        .map_err(|e| format!("{shown}: {e}"))?
+        .is_file()
+    {
+        return Err(not_file());
+    }
+    let f = std::fs::File::open(p).map_err(|e| format!("{shown}: {e}"))?;
+    let meta = f.metadata().map_err(|e| format!("{shown}: {e}"))?;
     if !meta.is_file() {
-        return Err(format!("{shown}: not a file"));
+        return Err(not_file());
     }
     if meta.len() > MAX_BYTES {
         return Err(format!("{shown}: larger than {MAX_BYTES} bytes"));
     }
-    let bytes = std::fs::read(p).map_err(|e| format!("{shown}: {e}"))?;
+    let mut bytes = Vec::new();
+    f.take(MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("{shown}: {e}"))?;
     // checked again on what was read, in case the file grew
     if bytes.len() as u64 > MAX_BYTES {
         return Err(format!("{shown}: larger than {MAX_BYTES} bytes"));
@@ -225,6 +274,20 @@ fn matches(patterns: &str, name: &str) -> bool {
 
 impl Import {
     /// The rules a ruleset file defines, by its format.
+    /// Counts a file about to be interpreted against the whole-import limits.
+    fn count(&mut self, real: &Path, len: usize) -> Result<(), String> {
+        self.bytes += len as u64;
+        if self.cache.len() >= MAX_FILES || self.bytes > MAX_TOTAL_BYTES {
+            let e = format!(
+                "the rulesets it references add up to more than {MAX_FILES} files or {MAX_TOTAL_BYTES} bytes ({})",
+                printable(&display_path(real))
+            );
+            self.fatal.get_or_insert(e.clone());
+            return Err(e);
+        }
+        Ok(())
+    }
+
     fn load(&mut self, shown: &Path, real: &Path, src: &str) -> Result<Vec<Inst>, String> {
         if self.reading.len() >= MAX_REFS {
             return Err(format!(
@@ -248,16 +311,40 @@ impl Import {
             self.dsl(shown, src)
         };
         self.reading.pop();
+        if let Ok(v) = &r {
+            self.cache.insert(real.to_path_buf(), v.clone());
+        }
         r
     }
 
+    /// Notes, properties and everything else taken from a configuration go through these, so
+    /// no line break or CI workflow command in a file can leave the comment it is printed in.
+    fn push_note(&mut self, s: String) {
+        self.notes.push(printable(&s));
+    }
+
+    fn add_prop(&mut self, (r, p, v): (String, String, String)) {
+        self.props
+            .insert((printable(&r), printable(&p), printable(&v)));
+    }
+
     fn note(&mut self, file: &Path, line: usize, what: impl std::fmt::Display) {
-        self.notes.push(format!("{}: {what}", place(file, line)));
+        self.push_note(format!("{}: {what}", place(file, line)));
     }
 
     /// The rules of the ruleset at `path`, referenced from `from`: one CodeNarc bundles, or a
     /// file inside the input's directory. `None`, with a note, for one that can't be read.
     fn ruleset(&mut self, path: &str, from: &Path, line: usize) -> Option<Vec<Inst>> {
+        if self.fatal.is_some() {
+            return None;
+        }
+        self.refs += 1;
+        if self.refs > MAX_REF_COUNT {
+            self.fatal = Some(format!(
+                "more than {MAX_REF_COUNT} ruleset references in all"
+            ));
+            return None;
+        }
         let bare = path.strip_prefix("classpath:").unwrap_or(path);
         if let Some((p, members)) = RULESETS.iter().find(|(p, _)| *p == bare) {
             self.rulesets
@@ -291,7 +378,13 @@ impl Import {
             );
             return None;
         }
-        if Path::new(rel).is_absolute() {
+        // `/etc/x` is rooted on Windows too, and `C:x` names a drive's current directory
+        let r = Path::new(rel);
+        if r.has_root()
+            || r.components()
+                .next()
+                .is_some_and(|c| matches!(c, std::path::Component::Prefix(_)))
+        {
             self.note(from, line, format!("{path}: not read, an absolute path"));
             return None;
         }
@@ -312,11 +405,16 @@ impl Import {
                 continue;
             }
             self.rulesets
-                .push(format!("{rel} from {}", place(from, line)));
+                .push(format!("{} from {}", printable(rel), place(from, line)));
+            if let Some(v) = self.cache.get(&real) {
+                return Some(v.clone());
+            }
             let r = match read(&real) {
                 // read's message names the file by its full path; the note names it as written
                 Err(e) => Err(e.rsplit(": ").next().unwrap_or("").to_string()),
-                Ok(src) => self.load(Path::new(rel), &real, &src),
+                Ok(src) => self
+                    .count(&real, src.len())
+                    .and_then(|()| self.load(Path::new(rel), &real, &src)),
             };
             return match r {
                 Ok(v) => Some(v),
@@ -339,7 +437,7 @@ impl Import {
     fn filter(&mut self, mut rules: Vec<Inst>, f: Filter) -> Vec<Inst> {
         for (rule, prop, val, at) in f.configs {
             if !rules.iter().any(|r| r.name == rule) {
-                self.notes.push(format!(
+                self.push_note(format!(
                     "{at}: {rule} isn't in the ruleset it configures (CodeNarc stops with an error)"
                 ));
                 continue;
@@ -352,13 +450,13 @@ impl Import {
                             r.why = format!("{} at {at}", if on { "enabled" } else { "disabled" });
                         }
                     }
-                    None => self.notes.push(format!(
+                    None => self.push_note(format!(
                         "{at}: {rule}.enabled = {}: not a literal true or false",
                         val.text()
                     )),
                 }
             } else {
-                self.props.insert((rule, prop, val.text()));
+                self.add_prop((rule, prop, val.text()));
             }
         }
         let mut kept = Vec::new();
@@ -383,7 +481,7 @@ impl Import {
     }
 
     fn xml_ruleset(&mut self, file: &Path, root: &El) -> Result<Vec<Inst>, String> {
-        let at = |e: &El| format!("{}:{}", display_path(file), e.line);
+        let at = |e: &El| place(file, e.line);
         let mut out = Vec::new();
         for e in &root.kids {
             match e.name.as_str() {
@@ -411,7 +509,10 @@ impl Import {
                         }
                     }
                     if let Some(rules) = self.ruleset(path, file, e.line) {
-                        out.extend(self.filter(rules, f));
+                        {
+                            let kept = self.filter(rules, f);
+                            merge(&mut out, kept);
+                        }
                     }
                 }
                 "rule" => {
@@ -436,7 +537,7 @@ impl Import {
                         let (prop, val) = (p.need("name")?, p.need("value")?);
                         self.rule_prop(&mut inst, prop, Val::Lit(val.into()), &at(p));
                     }
-                    out.push(inst);
+                    merge(&mut out, vec![inst]);
                 }
                 "rule-script" => {
                     self.note(
@@ -454,8 +555,7 @@ impl Import {
     /// A property set on a rule named on its own (not through a ruleset).
     fn rule_prop(&mut self, inst: &mut Inst, prop: &str, val: Val, at: &str) {
         if prop != "enabled" {
-            self.props
-                .insert((inst.name.clone(), prop.into(), val.text()));
+            self.add_prop((inst.name.clone(), prop.into(), val.text()));
             return;
         }
         match val.bool() {
@@ -465,7 +565,7 @@ impl Import {
                     inst.why = format!("disabled at {at}");
                 }
             }
-            None => self.notes.push(format!(
+            None => self.push_note(format!(
                 "{at}: {}.enabled = {}: not a literal true or false",
                 inst.name,
                 val.text()
@@ -511,7 +611,7 @@ impl Import {
     }
 
     fn dsl_top(&mut self, file: &Path, src: &str, body: Node, out: &mut Vec<Inst>) {
-        let at = |n: Node| format!("{}:{}", display_path(file), line(n));
+        let at = |n: Node| place(file, line(n));
         for n in named(body) {
             let Some(c) = call(n, src) else {
                 self.note(
@@ -538,9 +638,12 @@ impl Import {
                         self.dsl_ruleset_body(file, src, cl, &mut f, &mut extra);
                     }
                     if let Some(rules) = self.ruleset(&path, file, line(n)) {
-                        out.extend(self.filter(rules, f));
+                        {
+                        let kept = self.filter(rules, f);
+                        merge(out, kept);
                     }
-                    out.extend(extra);
+                    }
+                    merge(out, extra);
                 }
                 "rule" => self.note(
                     file,
@@ -556,7 +659,7 @@ impl Import {
                     for (prop, val, pn) in self.settings(file, src, &c) {
                         self.rule_prop(&mut inst, &prop, val, &at(pn));
                     }
-                    out.push(inst);
+                    merge(out, vec![inst]);
                 }
                 name => self.note(
                     file,
@@ -577,7 +680,7 @@ impl Import {
         f: &mut Filter,
         extra: &mut Vec<Inst>,
     ) {
-        let at = |n: Node| format!("{}:{}", display_path(file), line(n));
+        let at = |n: Node| place(file, line(n));
         for n in named(body) {
             let c = call(n, src);
             match c {
@@ -683,7 +786,7 @@ impl Import {
         let crate::json::Value::Obj(top) = &v else {
             return Err("not a .groovylintrc.json (not a JSON object)".into());
         };
-        let shown = display_path(file);
+        let shown = printable(&display_path(file));
         if let Some(sets) = v.get("codenarcRulesets").str() {
             if !v.get("rules").is_null() {
                 self.note(
@@ -695,7 +798,7 @@ impl Import {
             let mut out = Vec::new();
             for s in sets.split(',').map(str::trim).filter(|s| !s.is_empty()) {
                 if let Some(r) = self.ruleset(s, file, 0) {
-                    out.extend(r);
+                    merge(&mut out, r);
                 }
             }
             return Ok(out);
@@ -745,7 +848,7 @@ impl Import {
                 if let Obj(m) = val {
                     for (p, pv) in m {
                         if !matches!(p.as_str(), "enabled" | "disabled" | "severity") {
-                            self.props.insert((name.into(), p.clone(), json_text(pv)));
+                            self.add_prop((name.into(), p.clone(), json_text(pv)));
                         }
                     }
                 }
@@ -818,15 +921,15 @@ impl Import {
             {
                 continue;
             }
-            let at = format!("{}:{}", display_path(file), i + 1);
+            let at = place(file, i + 1);
             if !known(rule) {
-                self.notes.push(format!(
+                self.push_note(format!(
                     "{at}: {rule}: not a CodeNarc {CODENARC_VERSION} rule"
                 ));
                 continue;
             }
             if prop != "enabled" {
-                self.props.insert((rule.into(), prop.into(), val.into()));
+                self.add_prop((rule.into(), prop.into(), val.into()));
                 continue;
             }
             let Some(on) = Val::Lit(val.into()).bool() else {
@@ -840,7 +943,7 @@ impl Import {
                 (r.on, r.why, found) = (on, why.clone(), true);
             }
             if !found && self.defines_set {
-                self.notes.push(format!(
+                self.push_note(format!(
                     "{at}: {rule} isn't in the rulesets, so this does nothing (as in CodeNarc)"
                 ));
             } else if !found {
@@ -901,7 +1004,7 @@ impl Import {
         let spacing = fmt.iter().any(|(_, how)| *how == SPACING);
         if indent.is_some() || spacing {
             o += "\n# The formatter covers some formatting rules the source enables with these settings:\n";
-            if let Some((_, _, n)) = indent {
+            if let Some(n) = indent.and_then(|(_, _, n)| n.parse::<u8>().ok()) {
                 o += &format!("# indent = {n}\n");
             }
             if spacing {
@@ -1730,6 +1833,168 @@ mod tests {
         let b = import(&[f]).unwrap().toml();
         assert_eq!(a, b);
         assert!(a.contains("# normalize_spacing = true\n"), "{a}");
+    }
+
+    #[test]
+    fn source_text_cannot_leave_its_comment() {
+        let d = Dir::new("inject");
+        let evil = "x\n[lint]\nEmptyCatchBlock = true\n::error::pwned\r##[group]g\"#";
+        let esc = |s: &str| {
+            s.replace('&', "&amp;")
+                .replace('\n', "&#10;")
+                .replace('\r', "&#13;")
+                .replace('"', "&quot;")
+        };
+        let f = d.write(
+            "c.xml",
+            &format!(
+                "{NS}<ruleset-ref path=\"{p}\"/>\n<ruleset-ref path='rulesets/basic.xml'><rule-config name='DeadCode'><property name='x' value=\"{p}\"/></rule-config></ruleset-ref>\n<rule class=\"org.codenarc.rule.{p}Rule\"/>\n<rule class=\"com.{p}\"/>\n</ruleset>\n",
+                p = esc(evil)
+            ),
+        );
+        let g = d.write(
+            "d.groovy",
+            &format!("ruleset {{\n    ruleset('''{evil}''')\n    DeadCode {{ x = '''{evil}''' }}\n    '''{evil}'''\n}}\n"),
+        );
+        let j = d.write(
+            "e/.groovylintrc.json",
+            "{\"rules\": {\"DeadCode\": {\"x\": \"a\\n::error::b\"}, \"a\\n[lint]\\nX = 1\": \"off\"}, \"k\\r::warning::\": 1}",
+        );
+        for file in [f, g, j] {
+            let im = import(std::slice::from_ref(&file)).unwrap();
+            for out in [im.toml(), im.details()] {
+                for l in out.lines() {
+                    assert!(!l.trim_start().starts_with("::"), "{l}");
+                    assert!(!l.contains("##["), "{l}");
+                    assert!(!l.contains('\r'), "{l:?}");
+                }
+            }
+            let t = im.toml();
+            // a TOML document whose only table is [lint], holding only groovyfmt's rule names
+            let doc: toml::Table = t.parse().unwrap_or_else(|e| panic!("{e}\n{t}"));
+            assert_eq!(doc.keys().collect::<Vec<_>>(), ["lint"], "{t}");
+            let lint = doc["lint"].as_table().unwrap();
+            assert!(!lint.is_empty() || !t.contains("\n[lint]\n"));
+            for k in lint.keys() {
+                assert!(crate::lint::RULES.iter().any(|r| r.name == k), "{k}");
+            }
+            assert_eq!(t.lines().filter(|l| l.starts_with('[')).count(), 1, "{t}");
+            // the injected `EmptyCatchBlock = true` didn't take (c.xml includes basic, which has it)
+            if !file.ends_with("c.xml") {
+                let v = lint.get("EmptyCatchBlock").and_then(|v| v.as_bool());
+                assert_ne!(v, Some(true), "{t}");
+            }
+        }
+        // it stays text in a comment
+        let t = import(&[d.0.join("d.groovy")]).unwrap().toml();
+        assert!(t.contains("\\n[lint]\\nEmptyCatchBlock = true\\n"), "{t}");
+    }
+
+    #[test]
+    fn repeated_and_fanned_out_references_are_read_once() {
+        let d = Dir::new("fanout");
+        d.write(
+            "one.groovy",
+            "ruleset {\n    ruleset('rulesets/basic.xml')\n}\n",
+        );
+        let many = "    ruleset('one.groovy')\n".repeat(10_000);
+        let f = d.write("many.groovy", &format!("ruleset {{\n{many}}}\n"));
+        let t = std::time::Instant::now();
+        let im = import(&[f]).unwrap();
+        assert!(t.elapsed().as_secs() < 20, "{:?}", t.elapsed());
+        assert_eq!(im.cache.len(), 2);
+        assert!(im.insts.len() <= 2 * RULES.len());
+        assert!(im.states()["DeadCode"]);
+        // a diamond 30 levels deep, each level referencing the next twice: 2^30 paths
+        for k in 0..30 {
+            let next = if k == 29 {
+                "rulesets/imports.xml".to_string()
+            } else {
+                format!("l{}.groovy", k + 1)
+            };
+            d.write(
+                &format!("l{k}.groovy"),
+                &format!("ruleset {{\n    ruleset('{next}')\n    ruleset('{next}') {{ exclude 'UnusedImport' }}\n}}\n"),
+            );
+        }
+        let t = std::time::Instant::now();
+        let im = import(&[d.0.join("l0.groovy")]).unwrap();
+        assert!(t.elapsed().as_secs() < 20, "{:?}", t.elapsed());
+        // the chain stops at the reference depth limit, with a note
+        assert_eq!(im.cache.len(), MAX_REFS);
+        assert!(im.toml().contains("more than 8 deep"));
+        // wide instead: 7 levels of 10 files, each referencing all 10 of the next level
+        for k in 0..7 {
+            for w in 0..10 {
+                let body: String = if k == 6 {
+                    "    ruleset('rulesets/imports.xml')\n".into()
+                } else {
+                    (0..10)
+                        .map(|x| format!("    ruleset('w{}_{x}.groovy')\n", k + 1))
+                        .collect()
+                };
+                d.write(
+                    &format!("w{k}_{w}.groovy"),
+                    &format!("ruleset {{\n{body}}}\n"),
+                );
+            }
+        }
+        let t = std::time::Instant::now();
+        let im = import(&[d.0.join("w0_0.groovy")]).unwrap();
+        assert!(t.elapsed().as_secs() < 20, "{:?}", t.elapsed());
+        assert_eq!(im.cache.len(), 61);
+        assert!(im.states()["UnusedImport"]);
+        // the whole-import caps stop a configuration that needs more
+        let refs = (0..MAX_FILES + 5)
+            .map(|k| {
+                d.write(&format!("cap/f{k}.groovy"), "ruleset {\n}\n");
+                format!("    ruleset('f{k}.groovy')\n")
+            })
+            .collect::<String>();
+        let f = d.write("cap/top.groovy", &format!("ruleset {{\n{refs}}}\n"));
+        let e = import(&[f]).err().unwrap();
+        assert!(e.contains(&format!("more than {MAX_FILES} files")), "{e}");
+    }
+
+    #[test]
+    fn refs_that_are_not_regular_files_are_not_opened() {
+        let d = Dir::new("special");
+        std::fs::create_dir_all(d.0.join("dir.xml")).unwrap();
+        let f = d.write(
+            "c.groovy",
+            "ruleset {\n    ruleset('dir.xml')\n    ruleset('fifo.xml')\n}\n",
+        );
+        #[cfg(unix)]
+        {
+            let fifo = d.0.join("fifo.xml");
+            let ok = std::process::Command::new("mkfifo").arg(&fifo).status();
+            assert!(ok.is_ok_and(|s| s.success()));
+        }
+        // a FIFO would block the open forever; it is never opened
+        let t = import(&[f]).unwrap().toml();
+        assert!(t.contains("dir.xml: not found"), "{t}");
+        #[cfg(unix)]
+        assert!(t.contains("fifo.xml: not found"), "{t}");
+        // named on the command line, they are refused too
+        let e = import(&[d.0.join("dir.xml")]).err().unwrap();
+        assert!(e.contains("not a regular file"), "{e}");
+        #[cfg(unix)]
+        {
+            let e = import(&[d.0.join("fifo.xml")]).err().unwrap();
+            assert!(e.contains("not a regular file"), "{e}");
+        }
+        // a cycle through two files stops
+        d.write("a.groovy", "ruleset {\n    ruleset('b.groovy')\n}\n");
+        d.write(
+            "b.groovy",
+            "ruleset {\n    ruleset('a.groovy')\n    ruleset('rulesets/imports.xml')\n}\n",
+        );
+        let im = import(&[d.0.join("a.groovy")]).unwrap();
+        assert!(
+            im.toml()
+                .contains("references itself, directly or through others")
+        );
+        assert!(im.states()["UnusedImport"]);
     }
 
     #[test]

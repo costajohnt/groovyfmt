@@ -6,7 +6,7 @@ use groovyfmt::format::{Outcome, Style, format};
 use groovyfmt::lint::{self, RULES};
 use groovyfmt::report::{self, Diagnostic, FileReport};
 use groovyfmt::syntax::{self, SyntaxError};
-use groovyfmt::{MAX_FILE_BYTES, display_path};
+use groovyfmt::{MAX_FILE_BYTES, display_path, printable};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -764,24 +764,6 @@ fn write_in_place(path: &Path, read: FileId, contents: &str) -> std::io::Result<
     f.set_len(0)?;
     f.write_all(contents.as_bytes())?;
     f.sync_all()
-}
-
-/// Control characters escaped, so a crafted file name or file content (lint messages quote
-/// source text) can't break a report line or inject CI workflow commands such as `::set-env`.
-/// The GitHub Actions runner also takes the older `##[command]` form anywhere in a line, so
-/// `##[` becomes `##\[`; nothing printed after this (`gh_escape`, `shown`) adds or removes
-/// a `\` or `[`, so the sequence can't come back.
-fn printable(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_control() {
-                c.escape_debug().to_string()
-            } else {
-                c.to_string()
-            }
-        })
-        .collect::<String>()
-        .replace("##[", "##\\[")
 }
 
 /// A path for display. A leading `:` gets `./` in front, so no report line can start

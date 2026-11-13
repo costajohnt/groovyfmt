@@ -97,6 +97,24 @@ pub fn display_path(p: &Path) -> String {
     s
 }
 
+/// Control characters escaped, so a crafted file name or file content (lint messages quote
+/// source text) can't break a report line or inject CI workflow commands such as `::set-env`.
+/// The GitHub Actions runner also takes the older `##[command]` form anywhere in a line, so
+/// `##[` becomes `##\[`; nothing printed after this (`gh_escape`, `shown`) adds or removes
+/// a `\` or `[`, so the sequence can't come back.
+pub fn printable(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_control() {
+                c.escape_debug().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect::<String>()
+        .replace("##[", "##\\[")
+}
+
 /// Groovy sources, Gradle build scripts, and Jenkinsfiles.
 pub fn is_groovy_file(path: &Path) -> bool {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");

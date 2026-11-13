@@ -325,7 +325,9 @@ With `-v` it also prints, on stderr, each ruleset read, each rule with whether i
 - The rulesets CodeNarc bundles (`rulesets/basic.xml` and so on) and npm-groovy-lint's presets come from tables generated from CodeNarc 4.0.0 and npm-groovy-lint 19.0.1 by `scripts/codenarc-data.py`.
 - Any other ruleset a configuration references is read only from inside the directory of the file named on the command line. It is looked up from the referencing file's directory and the directories above it, since CodeNarc reads `file:` paths from where the build runs. URLs (`http:` and the like), absolute paths and paths that lead out of that directory, symlinks included, are reported and skipped.
 - The XML reader takes CodeNarc's ruleset schema only. It refuses DTDs, entities other than XML's own and character references, and nesting deeper than 8.
-- Files over 1 MiB are refused, and rulesets may reference each other at most 8 deep.
+- Files over 1 MiB are refused, and rulesets may reference each other at most 8 deep. A directory, FIFO or device named as a ruleset is never opened.
+- Each file is read once however often it is referenced. An import that would follow more than 100,000 references, or read more than 256 files or 16 MiB in all, stops with an error.
+- Text from a configuration (paths, values, statements) is printed with control characters escaped and `##[` defused, so it stays inside its comment and can't pass for a CI workflow command.
 - The exit status is 0 when it printed a table, and 2 when a file can't be read or isn't a CodeNarc configuration.
 
 ### On real configurations
