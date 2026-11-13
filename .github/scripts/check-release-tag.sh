@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Fails unless the pushed tag (GITHUB_REF_NAME) is v<Cargo.toml version>, the
-# checked-out commit is on origin/main, and CHANGELOG.md has a heading for the
-# version. Run from the repository root with full history fetched.
+# Fails unless the pushed tag (GITHUB_REF_NAME) is v<Cargo.toml version>, the VS Code
+# extension has the same version, the checked-out commit is on origin/main, and
+# CHANGELOG.md has a heading for the version. Run from the repository root with full history fetched.
 set -euo pipefail
 
 tag=${GITHUB_REF_NAME:?GITHUB_REF_NAME is not set}
@@ -10,6 +10,11 @@ version=$(cargo metadata --no-deps --format-version 1 --locked |
 
 if [ "$tag" != "v$version" ]; then
   echo "::error::Tag $tag does not match the Cargo.toml version $version (expected v$version)"
+  exit 1
+fi
+vscode=$(jq -r .version editors/vscode/package.json)
+if [ "$vscode" != "$version" ]; then
+  echo "::error::editors/vscode/package.json has version $vscode, expected $version"
   exit 1
 fi
 if ! git merge-base --is-ancestor HEAD origin/main; then
