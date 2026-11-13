@@ -88,6 +88,8 @@ In Groovy a line break can end a statement. So a break goes only where Groovy's 
 - **After `=`** in an assignment or declaration, when nothing else on the line can break.
 - **In a class, interface, trait, enum or record header**, before `extends`, `implements` or `permits`, and after each comma between their types. The grammar takes a newline before and after each of these keywords (`classDeclaration : … (NL* EXTENDS NL* typeList)? (NL* IMPLEMENTS NL* typeList)? …`) and after each comma (`typeList : type (COMMA NL* type)*`). The header breaks before as few keywords as leave its first line fitting (`class FooSpec extends Specification`, then `implements GrailsUnitTest, DataTest {`), the `{` staying at the end of the last line. A clause still too long on its own line then takes one type per line.
 
+Each of these break positions was checked against Groovy 2.4.21 (the version Jenkins bundles), 3.0.25 and 4.0.24, which all read the code with and without the break as the same syntax tree (records and `sealed` / `permits` need Groovy 4).
+
 For each line over the limit, the outermost construct that lies wholly on that line breaks one of these ways. The file is then re-indented (and respaced, with `normalize_spacing`), the lines are measured again, and pieces still too long break further. Continuation lines get `continuation_indent`.
 
 An operator or `=` breaks only when every resulting piece fits. So `a.b().c().d() == x` breaks the chain, and `x == [a, b, c]` breaks the list instead. A single binary operator doesn't leave a piece shorter than 8 columns (`f(x) ==` then `1`).
