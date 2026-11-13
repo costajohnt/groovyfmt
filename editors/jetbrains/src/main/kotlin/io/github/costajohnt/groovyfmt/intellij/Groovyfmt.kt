@@ -19,6 +19,9 @@ import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.logger
+import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.FileEditorManagerListener
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
@@ -41,8 +44,12 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.util.Properties
 import java.util.concurrent.Future
+import java.util.concurrent.atomic.AtomicBoolean
 
 const val SERVER_ID = "groovyfmt"
+
+/** Whether "groovyfmt was not found" was shown in this IDE session; Restart groovyfmt clears it. */
+val notFoundShown = AtomicBoolean()
 private val LOG = logger<GroovyfmtService>()
 
 /** The files groovyfmt formats, as plugin.xml maps them to the server. */
@@ -54,9 +61,10 @@ fun isGroovyfmtFile(file: VirtualFile) = file.isInLocalFileSystem && FILE_NAMES.
 private fun projectDir(project: Project): String? = project.basePath?.takeIf { File(it).isDirectory }
 
 /**
- * Which groovyfmt binary a project runs, found again on every [restart]: when the project opens,
- * when the settings change, when the project becomes trusted, and on "Restart groovyfmt". The
- * language server runs only while [binary] is set.
+ * Which groovyfmt binary a project runs, found again on every [restart]. Nothing happens in a
+ * project until [activate]: the first groovyfmt file opened in it, or a groovyfmt action. After
+ * that it is found again when the settings change, when the project becomes trusted, and on
+ * "Restart groovyfmt". The language server runs only while [binary] is set.
  */
 @Service(Service.Level.PROJECT)
 class GroovyfmtService(val project: Project) : Disposable {
@@ -65,6 +73,11 @@ class GroovyfmtService(val project: Project) : Disposable {
 
     @Volatile
     var binary: Found? = null
+        private set
+
+    /** Whether a groovyfmt file or action has needed the binary in this project yet. */
+    @Volatile
+    var active = false
         private set
 
     /** The last problem reported, for the tests. */
@@ -82,27 +95,47 @@ class GroovyfmtService(val project: Project) : Disposable {
 
     override fun dispose() {}
 
+    /** Finds the binary the first time a groovyfmt file or action needs it. */
+    fun activate(): Future<*>? = if (active) null else restart()
+
+    /** Finds the binary again, if anything in this project has needed it. */
+    fun restartIfActive() {
+        if (active) restart()
+    }
+
     fun restart(): Future<*> = queue.submit {
         if (project.isDisposed) return@submit
+        active = true
         stoppedInLsp4ij = false
         notice?.expire()
         val found = resolve()
         binary = found
         ApplicationManager.getApplication().invokeLater({
+            // A later restart may have changed the binary since: then this step is stale, and
+            // starting the server could find the plugin turned off, which LSP4IJ throws for.
+            if (binary !== found) return@invokeLater
             val manager = LanguageServerManager.getInstance(project)
             // a plain stop: LSP4IJ's default stop also turns the server off
             manager.stop(SERVER_ID, LanguageServerManager.StopOptions().setWillDisable(false))
             // starts it for the open files groovyfmt serves, if there are any
-            if (found != null) manager.start(SERVER_ID)
+            if (found != null && !stoppedInLsp4ij) manager.start(SERVER_ID)
         }, project.disposed)
     }
 
-    private fun problem(message: String, vararg actions: NotificationAction) {
+    /**
+     * Reports a problem in a notification. `missing`: groovyfmt simply isn't installed, which is
+     * shown at most once per IDE session, and never after "Don't show again".
+     */
+    private fun problem(message: String, vararg actions: NotificationAction, missing: Boolean = false) {
         lastProblem = message
         LOG.warn(message)
+        if (missing) {
+            if (GroovyfmtSettings.get().silenceNotFound || !notFoundShown.compareAndSet(false, true)) return
+        }
         val n = NotificationGroupManager.getInstance().getNotificationGroup("groovyfmt")
             .createNotification("groovyfmt", message, NotificationType.WARNING)
         actions.forEach { n.addAction(it) }
+        if (missing) n.addAction(NotificationAction.createSimpleExpiring("Don't show again") { GroovyfmtSettings.get().silenceNotFound = true })
         n.addAction(NotificationAction.createSimple("Settings") {
             ShowSettingsUtil.getInstance().showSettingsDialog(project, GroovyfmtConfigurable::class.java)
         })
@@ -173,21 +206,23 @@ class GroovyfmtService(val project: Project) : Disposable {
         val v = pluginVersion()
         val missing = "groovyfmt was not found in the path settings, node_modules or PATH."
         if (TARGETS["$platform-$arch"] == null) {
-            return problem("$missing There is no prebuilt binary for $platform-$arch; install groovyfmt and set its path.")
+            return problem("$missing There is no prebuilt binary for $platform-$arch; install groovyfmt and set its path.", missing = true)
         }
         val sha256 = embeddedSha256(checksums(), v, platform, arch)
             ?: return problem(
                 "$missing This build of the plugin carries no checksums for groovyfmt $v (only release builds do), so it does not download groovyfmt. " +
                     "Install groovyfmt another way and set its path if it is not on PATH, or install a release build of the plugin.",
+                missing = true,
             )
         if (GroovyfmtSettings.get().downloadDeclined) {
-            return problem("$missing Install it, set its path, or run Tools, Restart groovyfmt to be offered the download again.")
+            return problem("$missing Install it, set its path, or run Tools, Restart groovyfmt to be offered the download again.", missing = true)
         }
-        // dismissed without a choice, it is offered again at the next restart
+        // dismissed without a choice, it is offered again after Restart groovyfmt or in the next IDE session
         problem(
             "$missing Download groovyfmt $v for $platform-$arch from its GitHub release? Before it runs, the download is checked against the SHA-256 checksum that this plugin release carries.",
             NotificationAction.createSimpleExpiring("Download") { download(v, platform, arch, sha256) },
             NotificationAction.createSimpleExpiring("Not now") { GroovyfmtSettings.get().downloadDeclined = true },
+            missing = true,
         )
     }
 
@@ -204,17 +239,25 @@ class GroovyfmtService(val project: Project) : Disposable {
     }
 }
 
-/** Starts the service's binary once a project opens, and again when the project becomes trusted. */
+/**
+ * Finds the binary when the first groovyfmt file opens in a project (a project without Groovy
+ * files never runs or reports anything), and again when the project becomes trusted.
+ */
 class GroovyfmtStartup : ProjectActivity {
     override suspend fun execute(project: Project) {
         val service = project.service<GroovyfmtService>()
         ApplicationManager.getApplication().messageBus.connect(service)
             .subscribe(TrustedProjectsListener.TOPIC, object : TrustedProjectsListener {
                 override fun onProjectTrusted(project: Project) {
-                    if (project == service.project) service.restart()
+                    if (project == service.project) service.restartIfActive()
                 }
             })
-        service.restart()
+        project.messageBus.connect(service).subscribe(FileEditorManagerListener.FILE_EDITOR_MANAGER, object : FileEditorManagerListener {
+            override fun fileOpened(source: FileEditorManager, file: VirtualFile) {
+                if (isGroovyfmtFile(file)) service.activate()
+            }
+        })
+        if (FileEditorManager.getInstance(project).openFiles.any(::isGroovyfmtFile)) service.activate()
     }
 }
 
@@ -271,6 +314,8 @@ class GroovyfmtReformatAction : AnAction() {
         fun reformat(project: Project, document: com.intellij.openapi.editor.Document, file: VirtualFile) {
             val service = project.service<GroovyfmtService>()
             val bin = service.binary ?: run {
+                // the first groovyfmt action in a project finds the binary; after that, a
+                // missing binary has been reported, and this asks again
                 service.restart()
                 return
             }
@@ -279,7 +324,7 @@ class GroovyfmtReformatAction : AnAction() {
             ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Reformatting with groovyfmt", true) {
                 var out: String? = null
                 override fun run(indicator: ProgressIndicator) {
-                    out = format(bin.path, text, file.path, projectDir(project))
+                    out = format(bin.path, text, file.path, projectDir(project), indicator)
                 }
                 override fun onSuccess() {
                     val formatted = out ?: return
@@ -293,14 +338,27 @@ class GroovyfmtReformatAction : AnAction() {
             })
         }
 
-        /** `text` formatted as the file at `path`; throws with groovyfmt's message if it can't be. */
-        fun format(bin: String, text: String, path: String, cwd: String?): String {
+        /**
+         * `text` formatted as the file at `path`; throws with groovyfmt's message if it can't be.
+         * The process is killed past `timeoutMs` or when `indicator` is cancelled.
+         */
+        fun format(bin: String, text: String, path: String, cwd: String?, indicator: ProgressIndicator? = null, timeoutMs: Int = 60_000): String {
             val cmd = GeneralCommandLine(bin, "--stdin", "--stdin-filepath", path).withCharset(StandardCharsets.UTF_8)
             if (cwd != null) cmd.withWorkDirectory(cwd)
             val handler = CapturingProcessHandler(cmd)
-            handler.processInput.use { it.write(text.toByteArray(StandardCharsets.UTF_8)) }
-            val r = handler.runProcess(60_000)
-            if (r.isTimeout) throw java.io.IOException("groovyfmt did not finish within 60 seconds")
+            // Written from another thread while the output is read and the timeout runs: a
+            // document larger than the pipe would otherwise block here, before either starts,
+            // for as long as the process doesn't read it. Killing the process ends the write.
+            ApplicationManager.getApplication().executeOnPooledThread {
+                try {
+                    handler.processInput.use { it.write(text.toByteArray(StandardCharsets.UTF_8)) }
+                } catch (e: java.io.IOException) {
+                    // the process exited or was killed without reading all of it
+                }
+            }
+            val r = if (indicator != null) handler.runProcessWithProgressIndicator(indicator, timeoutMs) else handler.runProcess(timeoutMs)
+            if (r.isCancelled) throw ProcessCanceledException()
+            if (r.isTimeout) throw java.io.IOException("groovyfmt did not finish within ${timeoutMs / 1000} seconds")
             if (r.exitCode != 0) throw java.io.IOException("groovyfmt could not format ${File(path).name}: ${r.stderr.trim()}")
             // the document holds \n line endings whatever the file has
             return r.stdout.replace("\r\n", "\n")
@@ -318,6 +376,7 @@ class GroovyfmtRestartAction : AnAction() {
 
     override fun actionPerformed(e: AnActionEvent) {
         GroovyfmtSettings.get().downloadDeclined = false
+        notFoundShown.set(false)
         e.project?.service<GroovyfmtService>()?.restart()
     }
 }

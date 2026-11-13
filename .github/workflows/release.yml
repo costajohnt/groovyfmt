@@ -87,58 +87,11 @@ jobs:
   # The release JetBrains plugin zip, carrying the SHA-256 of this run's archives
   # (groovyfmt-checksums.properties). The plugin downloads groovyfmt only against those, never
   # against a checksum fetched from the release. ci.yml skips the plugin for a tag, so its tests
-  # run here, against this release's own Linux binary. This job runs after `release` and
-  # attaches the zip itself, so the release never waits on the plugin: if this job fails, the
-  # release stands without the zip, and a rerun of this job attaches it.
+  # run here, against this release's own Linux binary. It runs after `release`, so the release
+  # never waits on the plugin. The build runs Gradle, its plugins and dependencies and an IDE,
+  # so it gets a read-only token; attach-jetbrains, which runs none of that, writes the release.
   jetbrains:
     needs: [check, ci, release]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    defaults:
-      run:
-        working-directory: editors/jetbrains
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          persist-credentials: false
-      - uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
-      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
-        with:
-          distribution: temurin
-          java-version: 21.0.13
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          merge-multiple: true
-          path: ${{ runner.temp }}/archives
-      - name: Test and package with the archives' checksums
-        run: |
-          set -euxo pipefail
-          version=${GITHUB_REF_NAME#v}
-          archives=$RUNNER_TEMP/archives
-          linux=groovyfmt-$GITHUB_REF_NAME-x86_64-unknown-linux-musl
-          mkdir "$RUNNER_TEMP/bin"
-          tar -xzf "$archives/$linux.tar.gz" -C "$RUNNER_TEMP/bin"
-          export GROOVYFMT_BIN=$RUNNER_TEMP/bin/$linux/groovyfmt
-          ./gradlew --no-daemon --no-scan -PgroovyfmtArchives="$archives" check buildPlugin
-          zip=build/distributions/groovyfmt-jetbrains-$version.zip
-          unzip -l "$zip"
-          unzip -p "$zip" "groovyfmt-jetbrains/lib/groovyfmt-jetbrains-$version.jar" > plugin.jar
-          unzip -p plugin.jar groovyfmt-checksums.properties | tee checksums.properties
-          grep -qx "version=$version" checksums.properties
-          test "$(grep -c '^[a-z0-9]*-[a-z0-9]*=[0-9a-f]\{64\}$' checksums.properties)" -eq 5
-      - name: Attach the zip to the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" "build/distributions/groovyfmt-jetbrains-${GITHUB_REF_NAME#v}.zip" --repo "$GITHUB_REPOSITORY" --clobber
-
-  # Off until the repository variable PUBLISH_JETBRAINS is 'true'. Needs the plugin uploaded
-  # to JetBrains Marketplace by hand once and the secret JETBRAINS_MARKETPLACE_TOKEN; the
-  # signing secrets JETBRAINS_CERTIFICATE_CHAIN, JETBRAINS_PRIVATE_KEY and
-  # JETBRAINS_PRIVATE_KEY_PASSWORD are optional. See docs/releasing.md.
-  publish-jetbrains:
-    needs: jetbrains
-    if: vars.PUBLISH_JETBRAINS == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -158,19 +111,130 @@ jobs:
         with:
           merge-multiple: true
           path: ${{ runner.temp }}/archives
-      # Built again from the tag and the same archives, so it carries the same checksums as
-      # the zip attached to the release; signed when the signing secrets exist.
-      - name: Publish
+      # Dependency verification is on: gradle/verification-metadata.xml checks every download.
+      - name: Test and package with the archives' checksums
+        run: |
+          set -euxo pipefail
+          version=${GITHUB_REF_NAME#v}
+          archives=$RUNNER_TEMP/archives
+          linux=groovyfmt-$GITHUB_REF_NAME-x86_64-unknown-linux-musl
+          mkdir "$RUNNER_TEMP/bin"
+          tar -xzf "$archives/$linux.tar.gz" -C "$RUNNER_TEMP/bin"
+          export GROOVYFMT_BIN=$RUNNER_TEMP/bin/$linux/groovyfmt
+          ./gradlew --no-daemon --no-scan -PgroovyfmtArchives="$archives" check buildPlugin
+          zip=build/distributions/groovyfmt-jetbrains-$version.zip
+          unzip -l "$zip"
+          unzip -p "$zip" "groovyfmt-jetbrains/lib/groovyfmt-jetbrains-$version.jar" > "$RUNNER_TEMP/plugin.jar"
+          unzip -p "$RUNNER_TEMP/plugin.jar" groovyfmt-checksums.properties | tee "$RUNNER_TEMP/checksums.properties"
+          grep -qx "version=$version" "$RUNNER_TEMP/checksums.properties"
+          test "$(grep -c '^[a-z0-9]*-[a-z0-9]*=[0-9a-f]\{64\}$' "$RUNNER_TEMP/checksums.properties")" -eq 5
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: jetbrains-plugin
+          path: editors/jetbrains/build/distributions/groovyfmt-jetbrains-*.zip
+
+  # Attaches the zip the jetbrains job built and tested. No checkout and no build: the only
+  # code with the write token is gh. A rerun of this job attaches the zip again.
+  attach-jetbrains:
+    needs: jetbrains
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: jetbrains-plugin
+      - name: Attach the zip to the release
         env:
-          JETBRAINS_MARKETPLACE_TOKEN: ${{ secrets.JETBRAINS_MARKETPLACE_TOKEN }}
-          JETBRAINS_CERTIFICATE_CHAIN: ${{ secrets.JETBRAINS_CERTIFICATE_CHAIN }}
-          JETBRAINS_PRIVATE_KEY: ${{ secrets.JETBRAINS_PRIVATE_KEY }}
-          JETBRAINS_PRIVATE_KEY_PASSWORD: ${{ secrets.JETBRAINS_PRIVATE_KEY_PASSWORD }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          zip=groovyfmt-jetbrains-${GITHUB_REF_NAME#v}.zip
+          test -f "$zip"
+          gh release upload "$GITHUB_REF_NAME" "$zip" --repo "$GITHUB_REPOSITORY" --clobber
+
+  # Off until the repository variable PUBLISH_JETBRAINS is 'true'. Publishes the exact zip
+  # the jetbrains job built and tested, through the Marketplace upload API
+  # (https://plugins.jetbrains.com/api/updates/upload), with no checkout and no Gradle. Needs
+  # the plugin uploaded to JetBrains Marketplace by hand once and the secret
+  # JETBRAINS_MARKETPLACE_TOKEN. With the secrets JETBRAINS_CERTIFICATE_CHAIN,
+  # JETBRAINS_PRIVATE_KEY and JETBRAINS_PRIVATE_KEY_PASSWORD it signs the zip first with
+  # JetBrains' Marketplace ZIP Signer CLI, pinned by SHA-256. Each secret is only in the step
+  # that uses it. See docs/releasing.md.
+  publish-jetbrains:
+    needs: jetbrains
+    if: vars.PUBLISH_JETBRAINS == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      SIGNER_VERSION: 0.1.45
+      SIGNER_SHA256: fc48b8a4165907e8164fc2a1256ed0d0fe6f7b25acb33ac48660ab13e7f64bb8
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: jetbrains-plugin
+          path: ${{ runner.temp }}/plugin
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: 21.0.13
+      - name: Sign, if the signing secrets exist
+        env:
+          CHAIN: ${{ secrets.JETBRAINS_CERTIFICATE_CHAIN }}
+          KEY: ${{ secrets.JETBRAINS_PRIVATE_KEY }}
+          KEY_PASSWORD: ${{ secrets.JETBRAINS_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          zip=$RUNNER_TEMP/plugin/groovyfmt-jetbrains-${GITHUB_REF_NAME#v}.zip
+          test -f "$zip"
+          if [ -z "$CHAIN" ] || [ -z "$KEY" ]; then echo "no signing secrets: the zip is published unsigned"; exit 0; fi
+          dir=$RUNNER_TEMP/signing
+          (umask 077 && mkdir "$dir" && printf '%s\n' "$CHAIN" > "$dir/chain.crt" && printf '%s\n' "$KEY" > "$dir/private.pem")
+          curl -fsSL -o "$dir/signer.jar" "https://github.com/JetBrains/marketplace-zip-signer/releases/download/$SIGNER_VERSION/marketplace-zip-signer-cli.jar"
+          echo "$SIGNER_SHA256  $dir/signer.jar" | sha256sum -c -
+          java -jar "$dir/signer.jar" sign -in "$zip" -out "$zip.signed" -cert-file "$dir/chain.crt" -key-file "$dir/private.pem" -key-pass "$KEY_PASSWORD"
+          java -jar "$dir/signer.jar" verify -in "$zip.signed" -cert "$dir/chain.crt"
+          mv "$zip.signed" "$zip"
+          rm -rf "$dir"
+      - name: Upload to JetBrains Marketplace
+        env:
+          TOKEN: ${{ secrets.JETBRAINS_MARKETPLACE_TOKEN }}
         run: |
           set -euo pipefail
           version=${GITHUB_REF_NAME#v}
           if [[ $version == *-* ]]; then echo "$version is a prerelease: not published"; exit 0; fi
-          ./gradlew --no-daemon --no-scan -PgroovyfmtArchives="$RUNNER_TEMP/archives" publishPlugin
+          # the token goes in a header file, never on a command line
+          headers=$RUNNER_TEMP/marketplace-headers
+          (umask 077 && printf 'Authorization: Bearer %s\n' "$TOKEN" > "$headers")
+          curl -fsS --header @"$headers" -F xmlId=groovyfmt -F "file=@$RUNNER_TEMP/plugin/groovyfmt-jetbrains-$version.zip" \
+            https://plugins.jetbrains.com/api/updates/upload
+          rm -f "$headers"
+
+  # Off until the repository variable PUBLISH_CRATE is 'true'. Trusted publishing:
+  # crates.io trusts this repository's release.yml, and the auth action trades the
+  # job's OIDC token for a publish token that is revoked when the job ends. No
+  # token secret is used. See docs/releasing.md.
+  publish-crate:
+    needs: release
+    if: vars.PUBLISH_CRATE == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+        id: auth
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish --locked
 
   # Off until the repository variable PUBLISH_NPM is 'true'. Needs the repository
   # public and a trusted publisher on npmjs.com for each package; no token

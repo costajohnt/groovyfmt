@@ -68,17 +68,8 @@ intellijPlatform {
             create(IntelliJPlatformType.AndroidStudio, "2026.2.2.8")
         }
     }
-    // Marketplace signing and publishing, for release.yml only. A secret that isn't set comes
-    // through as an empty variable, which counts as unset.
-    fun secret(name: String) = providers.environmentVariable(name).filter { it.isNotBlank() }
-    signing {
-        certificateChain = secret("JETBRAINS_CERTIFICATE_CHAIN")
-        privateKey = secret("JETBRAINS_PRIVATE_KEY")
-        password = secret("JETBRAINS_PRIVATE_KEY_PASSWORD")
-    }
-    publishing {
-        token = secret("JETBRAINS_MARKETPLACE_TOKEN")
-    }
+    // No signing or publishing here: release.yml signs and uploads the tested zip itself, so
+    // no Marketplace secret is ever in a Gradle run.
     buildSearchableOptions = false
 }
 

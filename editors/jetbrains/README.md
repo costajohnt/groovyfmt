@@ -32,6 +32,7 @@ To format on save, turn on **Use groovyfmt for Reformat Code** and the IDE's **S
 | Path to groovyfmt | empty | For every project. It must be an absolute path. |
 | Path for this project | empty | Stored in `.idea/groovyfmt.xml`, absolute or relative to the project directory. Used over the path above, and only in a trusted project. |
 | Use groovyfmt for Reformat Code | off | See above. |
+| Notify when groovyfmt is not installed | on | At most once per IDE session. |
 
 Everything about formatting and linting (indentation, line length, which rules run, excluded files, the lint baseline) lives in groovyfmt's config file, `.groovyfmt.toml`, the same one the command line reads. The server finds the config for each file by walking up from its directory and reads it again on every request, so an edit to `.groovyfmt.toml` applies right away. See [Configuration](https://github.com/costajohnt/groovyfmt/blob/main/docs/configuration.md) and [Lint](https://github.com/costajohnt/groovyfmt/blob/main/docs/lint.md).
 
@@ -44,7 +45,9 @@ The plugin runs the first of these that exists:
 3. The project's npm package, in a trusted project: `node_modules/@groovyfmt/<platform>/bin/groovyfmt`, then `node_modules/.bin/groovyfmt`.
 4. `groovyfmt` on `PATH` (absolute entries only).
 5. The release binary it downloaded before, for this plugin's version.
-6. Otherwise, in a release build, it asks whether to download that binary. "Not now" is remembered; **Tools | Restart groovyfmt** asks again. Dismissing the notification without choosing asks again next time.
+6. Otherwise, in a release build, it asks whether to download that binary. "Not now" is remembered; **Tools | Restart groovyfmt** asks again. Dismissing the notification without choosing asks again in the next IDE session.
+
+It looks only once a Groovy, Gradle or Jenkins file opens in a project, or a groovyfmt action runs: a project without them never runs anything and gets no notification. The notification that groovyfmt isn't installed appears at most once per IDE session; **Don't show again** on it, or the setting **Notify when groovyfmt is not installed**, silences it for good. Short of that, **Tools | Restart groovyfmt** shows it again.
 
 The language server arrived in groovyfmt 0.9.0. An older binary is reported instead of started.
 

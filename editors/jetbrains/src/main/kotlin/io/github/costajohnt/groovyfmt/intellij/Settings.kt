@@ -25,6 +25,8 @@ class GroovyfmtSettings : SimplePersistentStateComponent<GroovyfmtSettings.Optio
         /** Reformat Code uses groovyfmt in files the IDE has its own formatter for. */
         var useForReformatCode by property(false)
         var downloadDeclined by property(false)
+        /** "groovyfmt was not found" is never shown ("Don't show again"). */
+        var silenceNotFound by property(false)
     }
 
     companion object {
@@ -67,11 +69,16 @@ class GroovyfmtConfigurable(private val project: Project) : BoundConfigurable("g
             checkBox("Use groovyfmt for Reformat Code").bindSelected(app::useForReformatCode)
                 .comment("Off: Reformat Code keeps the IDE's own Groovy formatter, and Code, Reformat with groovyfmt runs groovyfmt. On: Reformat Code, and so the Reformat code action on save, runs groovyfmt.")
         }
+        row {
+            checkBox("Notify when groovyfmt is not installed")
+                .bindSelected({ !app.silenceNotFound }, { app.silenceNotFound = !it })
+                .comment("At most once per IDE session, in a project with Groovy, Gradle or Jenkins files open.")
+        }
     }
 
     override fun apply() {
         super.apply()
         // the IDE-wide settings change every open project's binary
-        for (p in ProjectManager.getInstance().openProjects) p.service<GroovyfmtService>().restart()
+        for (p in ProjectManager.getInstance().openProjects) p.service<GroovyfmtService>().restartIfActive()
     }
 }

@@ -26,6 +26,7 @@ import java.util.concurrent.TimeUnit
 // row and the IDE's Groovy formatter two, so the result shows which formatter ran.
 private const val SAMPLE = "class A {\ndef f() {\nprintln 1;\n\n\n\nprintln 2\n}\n}\n"
 private const val FORMATTED = "class A {\n    def f() {\n        println 1;\n\n        println 2\n    }\n}\n"
+private const val IDE_FORMATTED = "class A {\n    def f() {\n        println 1;\n\n\n        println 2\n    }\n}\n"
 
 /**
  * The plugin in the IDE with LSP4IJ, on files on disk (groovyfmt serves only file: documents).
@@ -115,11 +116,17 @@ class IntegrationTest : UsefulTestCase() {
         assertEquals(HighlightSeverity.WARNING, semicolon.severity)
         assertEquals(2, fixture.editor.document.getLineNumber(semicolon.startOffset))
 
-        // Reformat Code keeps the IDE's own formatter by default
+        // Reformat Code keeps the IDE's own formatter by default: its output, and still its
+        // output after as long as groovyfmt is given below
         fixture.performEditorAction(IdeActions.ACTION_EDITOR_REFORMAT)
         PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
-        val ide = fixture.editor.document.text
-        assertTrue("the IDE's formatter keeps two blank lines:\n$ide", ide.contains("println 1;\n\n\n"))
+        assertEquals(IDE_FORMATTED, fixture.editor.document.text)
+        val end = System.currentTimeMillis() + 30_000
+        while (System.currentTimeMillis() < end) {
+            PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+            Thread.sleep(100)
+        }
+        assertEquals(IDE_FORMATTED, fixture.editor.document.text)
 
         // Reformat with groovyfmt
         reset()
@@ -173,6 +180,67 @@ class IntegrationTest : UsefulTestCase() {
         assertTrue(service.lastProblem.orEmpty(), service.lastProblem.orEmpty().contains("was not found in the path settings, node_modules or PATH"))
         assertTrue(LanguageServerManager.getInstance(project).getServerStatus(SERVER_ID) != ServerStatus.started)
         println("integration: untrusted project ran nothing from the project (${service.lastProblem})")
+    }
+
+    /** A project finds no binary and reports nothing until a groovyfmt file opens. */
+    fun testNothingRunsUntilAGroovyfmtFileOpens() {
+        val service = fixture.project.service<GroovyfmtService>()
+        fixture.configureByText("notes.txt", "notes\n")
+        repeat(20) {
+            PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+            Thread.sleep(100)
+        }
+        assertFalse("activated by a file groovyfmt doesn't handle", service.active)
+        assertNull(service.lastProblem)
+        fixture.configureByText("build.gradle", "apply plugin: 'java'\n")
+        waitFor("the first groovyfmt file to activate the plugin", 30_000) { service.active && service.lastProblem != null }
+    }
+
+    /**
+     * A restart superseded by a later one before its UI step runs must not start the server:
+     * here the second turns the plugin off, and LSP4IJ throws when asked to start a server
+     * whose plugin says it is off. Both resolve before the UI step of either runs, since this
+     * test holds the UI thread.
+     */
+    fun testASupersededRestartDoesNotStartTheServer() {
+        GroovyfmtSettings.get().path = bin()
+        open()
+        val service = fixture.project.service<GroovyfmtService>()
+        val first = service.restart()
+        GroovyfmtSettings.get().enabled = false
+        val second = service.restart()
+        first.get(30, TimeUnit.SECONDS)
+        second.get(30, TimeUnit.SECONDS)
+        repeat(20) {
+            PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+            Thread.sleep(100)
+        }
+        assertNull(service.binary)
+        assertTrue(LanguageServerManager.getInstance(fixture.project).getServerStatus(SERVER_ID) != ServerStatus.started)
+    }
+
+    /** A binary that never reads its input can't hang Reformat with groovyfmt: the timeout kills it. */
+    fun testReformatTimesOutOnABinaryThatNeverReadsItsInput() {
+        val stuck = File(Files.createTempDirectory("groovyfmt-stuck").toFile(), "groovyfmt")
+        stuck.writeText("#!/bin/sh\nexec sleep 60\n")
+        stuck.setExecutable(true)
+        // far more than a pipe holds
+        val big = "println 1\n".repeat(200_000)
+        val result = com.intellij.openapi.application.ApplicationManager.getApplication().executeOnPooledThread<Throwable?> {
+            try {
+                GroovyfmtReformatAction.format(stuck.path, big, "/tmp/A.groovy", null, timeoutMs = 2_000)
+                null
+            } catch (e: Throwable) {
+                e
+            }
+        }
+        val error = try {
+            result.get(20, TimeUnit.SECONDS)
+        } catch (e: java.util.concurrent.TimeoutException) {
+            fail("format still running after 20 s against a 2 s timeout")
+            null
+        }
+        assertTrue("$error", error is java.io.IOException && error.message!!.contains("did not finish"))
     }
 
     /**

@@ -8,10 +8,11 @@
 
 `release.yml` then checks the tag (`check`), runs all of `ci.yml` on it (`ci`), and creates the GitHub release with the five archives and their `.sha256` files (`release`): a `.tar.gz` for each Linux and macOS target and a `.zip` for Windows, plus the VS Code extension as `groovyfmt-<version>.vsix`. After that, the `jetbrains` job tests the JetBrains plugin, packages it and attaches `groovyfmt-jetbrains-<version>.zip` to the release; `release` doesn't wait for it, so a failure there leaves the release without the zip, and rerunning that job attaches it. The pre-commit hooks (`.pre-commit-hooks.yaml`) and the GitHub Action (`action.yml`) need nothing more: they are used straight from the tag.
 
-Six more jobs publish to registries. Each is off until a repository variable switches it on, and each runs only after `release` succeeds (`publish-jetbrains` after `jetbrains`), on the tag push itself. Rerunning a whole release workflow fails at `release` because the GitHub release already exists, so switch a channel on before pushing the tag you want it to publish.
+Seven more jobs publish to registries. Each is off until a repository variable switches it on, and each runs only after `release` succeeds (`publish-jetbrains` after the JetBrains build), on the tag push itself. Rerunning a whole release workflow fails at `release` because the GitHub release already exists, so switch a channel on before pushing the tag you want it to publish.
 
 | Variable | Job | Publishes |
 |---|---|---|
+| `PUBLISH_CRATE` = `true` | `publish-crate` | `groovyfmt` to crates.io, through trusted publishing |
 | `PUBLISH_NPM` = `true` | `publish-npm` | `groovyfmt`, `@groovyfmt/{darwin,linux}-{arm64,x64}` and `@groovyfmt/win32-x64` to npm, with provenance |
 | `PUBLISH_IMAGE` = `true` | `publish-image` | `ghcr.io/costajohnt/groovyfmt:<version>` and `:latest` for linux/amd64 and linux/arm64 |
 | `PUBLISH_GRADLE_PLUGIN` = `true` | `publish-gradle-plugin` | the Gradle plugin `io.github.costajohnt.groovyfmt` to the Gradle Plugin Portal |
@@ -104,17 +105,19 @@ A new namespace's extensions show as unverified until the namespace is claimed; 
 
 `editors/jetbrains/` is the plugin (Kotlin, built with the IntelliJ Platform Gradle Plugin 2.x and JDK 21). It depends on Red Hat's LSP4IJ plugin for the language server client and runs in IDEs based on IntelliJ Platform 2024.2 or later. Its version is the `Cargo.toml` version, read by its build, and with no groovyfmt installed it downloads the release of that version. `ci.yml`'s `jetbrains` job runs its unit tests and its integration tests in IntelliJ IDEA Community 2024.2 (against the commit's own groovyfmt: diagnostics and formatting, an untrusted project whose planted binaries must not run, and LSP4IJ's user-defined server), the Plugin Verifier against IntelliJ IDEA Community 2024.2 and 2025.2, IntelliJ IDEA 2026.3 and Android Studio 2026.2, and builds a zip to try out. That zip carries no checksums, so it refuses to download groovyfmt. `scripts/ci-local.sh` runs the tests when a JDK 21 or later is the current Java or is named by `JDK21_HOME` (the Gradle plugin's oldest-Gradle tests need the current Java to be older than 21).
 
-The release zip comes from `release.yml`'s `jetbrains` job, which runs after `release`. It builds the plugin with `-PgroovyfmtArchives=<dir>` pointing at the five archives built in the same run, which hashes them (checking each against its `.sha256`) into `groovyfmt-checksums.properties` inside the plugin, runs the tests against the release's own Linux binary, and attaches `groovyfmt-jetbrains-<version>.zip` to the GitHub release. Like the VS Code extension, the plugin never trusts a checksum fetched from the release.
+The release zip comes from `release.yml`'s `jetbrains` job, which runs after `release`. It builds the plugin with `-PgroovyfmtArchives=<dir>` pointing at the five archives built in the same run, which hashes them (checking each against its `.sha256`) into `groovyfmt-checksums.properties` inside the plugin, runs the tests against the release's own Linux binary, and uploads the zip as the `jetbrains-plugin` artifact. That job runs Gradle, its plugins and dependencies and an IDE, so its token is read-only. `attach-jetbrains`, which checks nothing out and runs only `gh`, attaches `groovyfmt-jetbrains-<version>.zip` to the GitHub release. Like the VS Code extension, the plugin never trusts a checksum fetched from the release.
 
-`publish-jetbrains` builds the same zip again from the tag and the same archives and runs `publishPlugin`. A prerelease version isn't published. That needs, once:
+The build verifies every dependency it downloads against `editors/jetbrains/gradle/verification-metadata.xml` (SHA-256), the IDEs the IntelliJ Platform Gradle Plugin fetches and LSP4IJ included. After changing a dependency or an IDE version, regenerate it with `./gradlew --no-scan --write-verification-metadata sha256 check buildPlugin verifyPlugin` (with `GROOVYFMT_BIN` set) and review the diff.
+
+`publish-jetbrains` publishes the very zip the `jetbrains` job built and tested: no checkout and no Gradle. When the signing secrets exist, it signs the zip with JetBrains' Marketplace ZIP Signer CLI (the jar pinned by version and SHA-256 in the workflow), then uploads it with the Marketplace upload API (`POST https://plugins.jetbrains.com/api/updates/upload` with the plugin's `xmlId`). Each secret is set only in the step that uses it, and the token goes to `curl` in a header file, never on a command line. A prerelease version isn't published. That needs, once:
 
 1. A JetBrains Account, signed in at https://plugins.jetbrains.com, and an organization vendor profile named `groovyfmt` created there, as the VS Code extension's publisher is `groovyfmt`. `plugin.xml` names the vendor `groovyfmt` and gives the plugin the id `groovyfmt`; Marketplace keeps a plugin's id for good, so it can't be changed after the first upload.
 2. The first upload by hand: JetBrains Marketplace only accepts a plugin's first version through its website. Take `groovyfmt-jetbrains-<version>.zip` from a release, choose Upload plugin on https://plugins.jetbrains.com, pick the vendor, the license (MIT, https://github.com/costajohnt/groovyfmt/blob/main/LICENSE) and the tags, and upload. JetBrains reviews a new plugin before it is listed.
 3. A token: on https://plugins.jetbrains.com/author/me/tokens, Generate Token, then `gh secret set JETBRAINS_MARKETPLACE_TOKEN --repo costajohnt/groovyfmt`.
-4. Signing, optional: Marketplace accepts an unsigned plugin, and the IDE then warns when it is installed. To sign, create a key and certificate as JetBrains' plugin signing guide describes (`openssl genpkey` with `-aes-256-cbc`, `openssl rsa`, then `openssl req -new -x509`), and store them with `gh secret set JETBRAINS_PRIVATE_KEY`, `gh secret set JETBRAINS_PRIVATE_KEY_PASSWORD` and `gh secret set JETBRAINS_CERTIFICATE_CHAIN` (each with `--repo costajohnt/groovyfmt`, the PEM contents as the value). `publishPlugin` signs whenever the key and the chain are set. Signing the first upload too keeps every version signed.
+4. Signing, optional: Marketplace accepts an unsigned plugin, and the IDE then warns when it is installed. To sign, create a key and certificate as JetBrains' plugin signing guide describes (`openssl genpkey` with `-aes-256-cbc`, `openssl rsa`, then `openssl req -new -x509`), and store them with `gh secret set JETBRAINS_PRIVATE_KEY`, `gh secret set JETBRAINS_PRIVATE_KEY_PASSWORD` and `gh secret set JETBRAINS_CERTIFICATE_CHAIN` (each with `--repo costajohnt/groovyfmt`, the PEM contents as the value). The job signs whenever the key and the chain are set. Signing the first upload too keeps every version signed.
 5. `gh variable set PUBLISH_JETBRAINS --body true --repo costajohnt/groovyfmt`.
 
-To publish by hand instead: in `editors/jetbrains` at the tagged commit, with the release's archives downloaded to a directory, `JETBRAINS_MARKETPLACE_TOKEN=... ./gradlew -PgroovyfmtArchives=<dir> publishPlugin`. Marketplace refuses a version it already has.
+To publish by hand instead, upload the release's zip on the plugin's Marketplace page, or with `curl --header "Authorization: Bearer <token>" -F xmlId=groovyfmt -F file=@groovyfmt-jetbrains-<version>.zip https://plugins.jetbrains.com/api/updates/upload`. Marketplace refuses a version it already has.
 
 ## Verifying release downloads
 
@@ -154,10 +157,13 @@ For each later release, render the formula again and commit it to the tap.
 
 ## crates.io
 
-Nothing publishes to crates.io yet, and no workflow job does. The crate is ready to package: the grammar is vendored in `grammar/` (no git dependencies), `include` in `Cargo.toml` limits the package to the sources, the grammar, `build.rs`, the tests, `README.md`, `LICENSE` and `CHANGELOG.md`, and `cargo publish --dry-run --locked` succeeds. The package is MIT: the vendored grammar is `Apache-2.0 OR MIT` and groovyfmt uses it under MIT, with both of its license files kept in `grammar/`. What remains is a decision to publish and, once:
+`groovyfmt` 0.9.2 was published to crates.io by hand on 2026-11-12, from the `v0.9.2` tag, with a short-lived API token (crates.io allows trusted publishing only for a crate that already exists). Later versions publish from `release.yml`'s `publish-crate` job:
 
-1. A crates.io account (sign in with GitHub as `costajohnt`) and an API token with the `publish-new` and `publish-update` scopes, or trusted publishing from `release.yml` once the crate exists.
-2. `cargo publish --locked` from the tagged commit. A version can't be replaced once published, only yanked.
+- crates.io trusts this repository's `release.yml` (crate settings, Trusted Publishing: owner `costajohnt`, repository `groovyfmt`, workflow `release.yml`, no environment).
+- `rust-lang/crates-io-auth-action` trades the job's OIDC token for a publish token, and revokes it when the job ends. No token secret is stored.
+- The job runs `cargo publish --locked` from the tag, after `release` succeeds, when `PUBLISH_CRATE` is `true`.
+
+A version can't be replaced once published, only yanked. Once a CI publish has worked, the crate's "Require trusted publishing for all new versions" setting can be switched on so an API token can no longer publish it.
 
 ## Going public, in order
 

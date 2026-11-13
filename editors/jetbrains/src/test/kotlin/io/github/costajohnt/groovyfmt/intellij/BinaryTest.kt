@@ -2,6 +2,7 @@ package io.github.costajohnt.groovyfmt.intellij
 
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
+import org.junit.After
 import org.junit.AfterClass
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -77,6 +78,8 @@ class FindBinaryTest {
     private val launcher = File(ws, "node_modules/.bin/groovyfmt")
     // what a hostile repository would ship for a relative path setting to land on
     private val planted = File(ws, "bin/groovyfmt")
+    private val rel = "groovyfmt-test-rel-${ProcessHandle.current().pid()}"
+    private val relDecoy = File(System.getProperty("user.dir"), rel)
 
     init {
         assumeFalse("uses Unix executables", windows)
@@ -84,8 +87,14 @@ class FindBinaryTest {
         fakeBin(launcher)
         fakeBin(File(onPath))
         fakeBin(planted)
-        // where the relative PATH entry `rel` would resolve from the project directory
-        fakeBin(File(ws, "rel/groovyfmt"))
+        // where the relative PATH entry `rel` resolves: against the process's working directory,
+        // as it would against the IDE's
+        fakeBin(File(relDecoy, "groovyfmt"))
+    }
+
+    @After
+    fun removeDecoy() {
+        relDecoy.deleteRecursively()
     }
 
     private fun where(
@@ -93,7 +102,7 @@ class FindBinaryTest {
         projectPath: String? = null,
         trusted: Boolean = true,
         projectDir: String? = ws.path,
-        envPath: String = listOf("rel", pathDir.path).joinToString(File.pathSeparator),
+        envPath: String = listOf(rel, pathDir.path).joinToString(File.pathSeparator),
     ) = Where(appPath, projectPath, trusted, projectDir, envPath, platform, arch)
 
     @Test
@@ -151,7 +160,8 @@ class FindBinaryTest {
     @Test
     fun `then PATH, skipping relative entries`() {
         assertEquals(Found(onPath, "PATH"), findBinary(where(projectDir = null)))
-        assertNull(findBinary(where(projectDir = null, envPath = "rel")))
+        assertTrue(File(rel, "groovyfmt").canExecute())
+        assertNull(findBinary(where(projectDir = null, envPath = rel)))
     }
 
     @Test
