@@ -1,7 +1,7 @@
 <idea-plugin>
-  <id>io.github.costajohnt.groovyfmt</id>
+  <id>groovyfmt</id>
   <name>groovyfmt</name>
-  <vendor url="https://github.com/costajohnt/groovyfmt">costajohnt</vendor>
+  <vendor url="https://github.com/costajohnt/groovyfmt">groovyfmt</vendor>
   <description><![CDATA[
 <p>Formats and lints Groovy, Gradle build scripts and Jenkinsfiles with
 <a href="https://github.com/costajohnt/groovyfmt">groovyfmt</a>, a fast formatter and linter written in Rust.

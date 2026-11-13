@@ -17,7 +17,7 @@ Six more jobs publish to registries. Each is off until a repository variable swi
 | `PUBLISH_GRADLE_PLUGIN` = `true` | `publish-gradle-plugin` | the Gradle plugin `io.github.costajohnt.groovyfmt` to the Gradle Plugin Portal |
 | `PUBLISH_VSCODE` = `true` | `publish-vscode` | the VS Code extension `groovyfmt.groovyfmt` to the Visual Studio Marketplace |
 | `PUBLISH_OPENVSX` = `true` | `publish-openvsx` | the same extension to Open VSX (VSCodium, Cursor and other VS Code builds) |
-| `PUBLISH_JETBRAINS` = `true` | `publish-jetbrains` | the JetBrains plugin `io.github.costajohnt.groovyfmt` to JetBrains Marketplace |
+| `PUBLISH_JETBRAINS` = `true` | `publish-jetbrains` | the JetBrains plugin `groovyfmt` (vendor `groovyfmt`) to JetBrains Marketplace |
 
 Set one with `gh variable set PUBLISH_NPM --body true --repo costajohnt/groovyfmt`, and unset it the same way with `--body false` or `gh variable delete`. A version with a `-` (a prerelease) is published under the npm dist-tag `next` and gets no `latest` image tag.
 
@@ -108,7 +108,7 @@ The release zip comes from `release.yml`'s `jetbrains` job, which runs after `re
 
 `publish-jetbrains` builds the same zip again from the tag and the same archives and runs `publishPlugin`. A prerelease version isn't published. That needs, once:
 
-1. A JetBrains Account, signed in at https://plugins.jetbrains.com. The upload below asks which vendor publishes the plugin: the personal account, or an organization vendor profile created there. `plugin.xml` names the vendor `costajohnt`.
+1. A JetBrains Account, signed in at https://plugins.jetbrains.com, and an organization vendor profile named `groovyfmt` created there, as the VS Code extension's publisher is `groovyfmt`. `plugin.xml` names the vendor `groovyfmt` and gives the plugin the id `groovyfmt`; Marketplace keeps a plugin's id for good, so it can't be changed after the first upload.
 2. The first upload by hand: JetBrains Marketplace only accepts a plugin's first version through its website. Take `groovyfmt-jetbrains-<version>.zip` from a release, choose Upload plugin on https://plugins.jetbrains.com, pick the vendor, the license (MIT, https://github.com/costajohnt/groovyfmt/blob/main/LICENSE) and the tags, and upload. JetBrains reviews a new plugin before it is listed.
 3. A token: on https://plugins.jetbrains.com/author/me/tokens, Generate Token, then `gh secret set JETBRAINS_MARKETPLACE_TOKEN --repo costajohnt/groovyfmt`.
 4. Signing, optional: Marketplace accepts an unsigned plugin, and the IDE then warns when it is installed. To sign, create a key and certificate as JetBrains' plugin signing guide describes (`openssl genpkey` with `-aes-256-cbc`, `openssl rsa`, then `openssl req -new -x509`), and store them with `gh secret set JETBRAINS_PRIVATE_KEY`, `gh secret set JETBRAINS_PRIVATE_KEY_PASSWORD` and `gh secret set JETBRAINS_CERTIFICATE_CHAIN` (each with `--repo costajohnt/groovyfmt`, the PEM contents as the value). `publishPlugin` signs whenever the key and the chain are set. Signing the first upload too keeps every version signed.
