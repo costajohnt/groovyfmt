@@ -112,7 +112,7 @@ GitHub Actions:
 
 ```yaml
 - uses: actions/checkout@v5
-- uses: costajohnt/groovyfmt@v0.12.0      # runs groovyfmt --check --output-format github
+- uses: costajohnt/groovyfmt@v0.13.0      # runs groovyfmt --check --output-format github
 - run: groovyfmt --lint --output-format github
 ```
 
@@ -121,7 +121,7 @@ pre-commit:
 ```yaml
 repos:
   - repo: https://github.com/costajohnt/groovyfmt
-    rev: v0.12.0
+    rev: v0.13.0
     hooks:
       - id: groovyfmt        # format in place; or groovyfmt-check to only report
       - id: groovyfmt-lint
@@ -153,7 +153,7 @@ Against [npm-groovy-lint](https://github.com/nvuillam/npm-groovy-lint) 19.0.1 (C
 | lint, npm-groovy-lint's default rule set | 30.3 s | |
 | format | did not finish in 15 min (two attempts) | 0.19 s |
 
-The groovyfmt figures were measured on 2026-11-10 with a build between 0.5.0 and 0.6.0, when 14 rules were on by default. Today 54 are.
+The groovyfmt figures were measured on 2026-11-10 with a build between 0.5.0 and 0.6.0, when 14 rules were on by default. Today 55 are.
 
 The comparison flatters groovyfmt somewhat. It skips the 9 spock files it can't parse, which npm-groovy-lint still processes, and CodeNarc's default rule set is far larger. All 9 are generated AST snapshots used as test fixtures, and 8 of them aren't valid Groovy source.
 
