@@ -22,6 +22,7 @@ import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
@@ -117,18 +118,20 @@ class GroovyfmtService(val project: Project) : Disposable {
         val before = binary
         val found = resolve()
         binary = found
-        ApplicationManager.getApplication().invokeLater({
+        // After indexing: LSP4IJ connects no file while the IDE indexes, as it does just after a
+        // file opens, and won't retry a file it has already tried.
+        DumbService.getInstance(project).runWhenSmart {
             // A later restart may have changed the binary since: then this step is stale, and
             // starting the server could find the plugin turned off.
-            if (binary !== found) return@invokeLater
+            if (project.isDisposed || binary !== found) return@runWhenSmart
             val manager = LanguageServerManager.getInstance(project)
             val running = manager.getServerStatus(SERVER_ID).let { it == ServerStatus.started || it == ServerStatus.starting }
-            if (!force && found != null && found == before && running) return@invokeLater
+            if (!force && found != null && found == before && running) return@runWhenSmart
             // a plain stop: LSP4IJ's default stop also turns the server off
             manager.stop(SERVER_ID, LanguageServerManager.StopOptions().setWillDisable(false))
             // starts it for the open files groovyfmt serves, if there are any
             if (found != null && !stoppedInLsp4ij) manager.start(SERVER_ID)
-        }, project.disposed)
+        }
     }
 
     /**
