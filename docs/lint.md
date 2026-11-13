@@ -153,7 +153,7 @@ These apply in `*.gradle` files.
 
 #### What the Gradle rules cover
 
-The rules read the build script and the nearest wrapper version. They never run the build and produce reports on a build that does not evaluate.
+The rules read the build script and the nearest wrapper version; they do not invoke Gradle or require the project to configure successfully.
 
 Questions that need the resolved dependency graph are out of scope: unused dependencies, undeclared dependencies, duplicate classes across jars, and version recommendations all require a linting tool that runs inside the Gradle build. Those tools and groovyfmt cover different ground and work alongside each other.
 
