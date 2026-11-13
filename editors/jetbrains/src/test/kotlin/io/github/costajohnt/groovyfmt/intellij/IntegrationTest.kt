@@ -50,6 +50,14 @@ class IntegrationTest : UsefulTestCase() {
                 path = null
                 useForReformatCode = false
             }
+            // the server's process and its reader threads end before the leak check runs
+            val manager = LanguageServerManager.getInstance(fixture.project)
+            manager.stop(SERVER_ID, LanguageServerManager.StopOptions().setWillDisable(false))
+            val end = System.currentTimeMillis() + 10_000
+            while (manager.getServerStatus(SERVER_ID).let { it != ServerStatus.stopped && it != ServerStatus.none } && System.currentTimeMillis() < end) {
+                PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+                Thread.sleep(100)
+            }
             fixture.tearDown()
         } catch (e: Throwable) {
             addSuppressedException(e)
