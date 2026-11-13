@@ -2,7 +2,7 @@
 
 ## A release
 
-1. Bump `version` in `Cargo.toml` (and `Cargo.lock`), add a `## <version> (<date>)` heading to `CHANGELOG.md`, merge to `main`.
+1. Bump `version` in `Cargo.toml` (and `Cargo.lock`), add a `## <version> (<date>)` heading to `CHANGELOG.md`, and update the version pinned in the examples (`costajohnt/groovyfmt@v<version>`, `rev: v<version>`, `version: <version>`, `version = '<version>'`) in `README.md` and `docs/ci.md`; `grep -rnF '<old version>' README.md docs/ci.md` finds them. Merge to `main`.
 2. Run `gh workflow run ci.yml --ref main` and wait for it to pass. Pull requests and pushes skip the two macOS release builds and the macOS action and npm jobs (hosted macOS runners are scarce); this run has them, so a macOS break shows up before the tag does.
 3. Tag the merge commit `v<version>` and push the tag.
 
@@ -44,7 +44,7 @@ cargo build --release --locked --target x86_64-pc-windows-gnu
 CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=$PWD/scripts/wine-run.sh cargo test --locked --target x86_64-pc-windows-gnu
 ```
 
-`scripts/wine-run.sh` runs each test binary, and through it `groovyfmt.exe`, under Wine with a UTF-8 locale and the prefix `~/.wine-gf`; `scripts/ci-local.sh` does all of this when the tools are there. Wine maps `/` to the drive `Z:`, so Linux paths work as arguments. The test binaries also run on a Windows machine as they are: copy them with `groovyfmt.exe` and `tests/fixtures`, and set `GROOVYFMT_TEST_BIN` and `GROOVYFMT_TEST_FIXTURES` to those copies (the paths cargo bakes in are Linux ones). That is how the README's Windows results were checked on Windows Server 2022.
+`scripts/wine-run.sh` runs each test binary, and through it `groovyfmt.exe`, under Wine with a UTF-8 locale and the prefix `~/.wine-gf`; `scripts/ci-local.sh` does all of this when the tools are there. Wine maps `/` to the drive `Z:`, so Linux paths work as arguments. The test binaries also run on a Windows machine as they are: copy them with `groovyfmt.exe` and `tests/fixtures`, and set `GROOVYFMT_TEST_BIN` and `GROOVYFMT_TEST_FIXTURES` to those copies (the paths cargo bakes in are Linux ones). That is how the results in [Windows](windows.md) were checked on Windows Server 2022.
 
 ## Docker image
 
@@ -99,4 +99,4 @@ Nothing publishes to crates.io yet, and no workflow job does. The crate is ready
 5. Gradle plugin: create the portal account and API key secrets as above, then set `PUBLISH_GRADLE_PLUGIN`.
 6. Push the next release tag. Check that `publish-npm`, `publish-image` and `publish-gradle-plugin` succeeded, `npx groovyfmt --version` prints the new version, and `docker run --rm ghcr.io/costajohnt/groovyfmt --version` too (after making the package public).
 7. Homebrew: create the tap from that release as above.
-8. In `README.md`, mark npm, Homebrew, Docker and the Gradle plugin as available in the Install table and drop the "not published yet" lines and the private-repository notes.
+8. In `README.md` (Install) and `docs/ci.md` (Gradle), drop the "not published yet" lines for each channel that is now published.

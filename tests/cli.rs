@@ -2353,7 +2353,7 @@ fn long_paths_work() {
 }
 
 // The Windows side of the unix-only tests above: what groovyfmt does there instead, as
-// README's Windows section describes it.
+// docs/windows.md describes it.
 
 /// The names in `dir`.
 #[cfg(windows)]
