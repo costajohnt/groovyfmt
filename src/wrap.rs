@@ -1472,19 +1472,21 @@ mod tests {
     fn class_headers_break_before_extends_and_implements_then_after_commas() {
         let at60 = |s: &str| fmt_with(s, &at(60));
         assert_eq!(
-            at60(
-                "class FooSpec extends Specification implements GrailsUnitTest, DataTest {\n}\n"
-            ),
+            at60("class FooSpec extends Specification implements GrailsUnitTest, DataTest {\n}\n"),
             "class FooSpec extends Specification\n    implements GrailsUnitTest, DataTest {\n}\n"
         );
         // before both, when the first line would still be too long; after a `>` too
         assert_eq!(
-            at60("class FooSpec<T> extends AbstractSpecificationWithLongName<T> implements Testing {\n}\n"),
+            at60(
+                "class FooSpec<T> extends AbstractSpecificationWithLongName<T> implements Testing {\n}\n"
+            ),
             "class FooSpec<T>\n    extends AbstractSpecificationWithLongName<T>\n    implements Testing {\n}\n"
         );
         // one type per line when a clause still doesn't fit on its own line
         assert_eq!(
-            at60("class FooSpec extends Specification implements GrailsUnitTest, DataTest, ServiceUnitTest<FooService> {\n}\n"),
+            at60(
+                "class FooSpec extends Specification implements GrailsUnitTest, DataTest, ServiceUnitTest<FooService> {\n}\n"
+            ),
             "class FooSpec extends Specification\n    implements GrailsUnitTest,\n        DataTest,\n        ServiceUnitTest<FooService> {\n}\n"
         );
         // interfaces, traits, enums and records, an annotation before it, a nested class and
@@ -1510,12 +1512,16 @@ mod tests {
             "@CompileStatic class FooSpec extends Specification\n    implements X {\n}\n"
         );
         assert_eq!(
-            at60("class A {\n    static class Inner extends SomeLongBaseClass implements Other {\n    }\n}\n"),
+            at60(
+                "class A {\n    static class Inner extends SomeLongBaseClass implements Other {\n    }\n}\n"
+            ),
             "class A {\n    static class Inner extends SomeLongBaseClass\n        implements Other {\n    }\n}\n"
         );
         // a comment on an annotation's line above doesn't hold it back
         assert_eq!(
-            at60("@Ann // why\nclass FooSpec extends Specification implements GrailsUnitTest, X {\n}\n"),
+            at60(
+                "@Ann // why\nclass FooSpec extends Specification implements GrailsUnitTest, X {\n}\n"
+            ),
             "@Ann // why\nclass FooSpec extends Specification\n    implements GrailsUnitTest, X {\n}\n"
         );
         assert_eq!(
