@@ -344,11 +344,9 @@ fn fixtures_format_whitespace_only_and_idempotently() {
     let left = [
         "package ",
         "import ",
-        "@SuppressWarnings(",
         "println \"a GString",
         "String s = \"a very long string",
         "foo(a, b) // a long trailing comment",
-        "implementation group:",
         "names.each { name ->",
         "lines inside a multi-line string",
         "argumentOne ",
@@ -366,6 +364,8 @@ fn fixtures_format_whitespace_only_and_idempotently() {
         "        ) {\n",
         "        return computeTheFirstThing(argumentOne) +\n            computeTheSecondThing(argumentTwo) +\n            more\n",
         "        def other = configuredValueFromTheEnvironment ?:\n            defaultValueFromTheConfigurationFile\n",
+        "@SuppressWarnings([\n    'UnusedVariable',\n",
+        "        implementation group: 'org.something',\n            name: 'artifact-name',\n            version: '1.2.3-SNAPSHOT'\n",
     ] {
         assert!(wrapped.contains(line), "{line:?} in\n{wrapped}");
     }
