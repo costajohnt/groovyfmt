@@ -31,7 +31,11 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
     // A build can still declare its own configuration called `compile`: then it's valid.
     let mut declared = HashSet::new();
     let mut deps = Vec::new();
+    // GradleRemovedApi: (node, message, the Gradle major that removed it)
+    let mut removed: Vec<(Node, String, u32)> = Vec::new();
+    let mut conf_refs = Vec::new();
     crate::preorder(root, |n| {
+        removed_api(src, n, &mut removed, &mut conf_refs);
         match n.kind() {
             "method_invocation" => jcenter(src, n, v),
             "command_chain" => {
@@ -101,7 +105,223 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
             dynamic_version(src, &c, v);
         }
     }
+    for (n, name) in conf_refs {
+        if !declared.contains(name) {
+            let new = REMOVED.iter().find(|(old, _)| *old == name).map_or("", |r| r.1);
+            removed.push((
+                n,
+                format!("The `{name}` configuration was removed in Gradle 7.0, so `configurations.{name}` fails; use {new}, or a resolvable one such as runtimeClasspath"),
+                7,
+            ));
+        }
+    }
+    if removed.is_empty() {
+        return;
+    }
+    let major = wrapper_major(path);
+    for (n, msg, since) in removed {
+        // quiet under a wrapper pinning a Gradle that still has it; without a wrapper, a
+        // current Gradle (8 or 9, which have none of these) runs the build
+        if major.is_none_or(|m| m >= since) {
+            v.push(at(n, "GradleRemovedApi", msg));
+        }
+    }
 }
+
+/// Core plugins removed from Gradle: id, the major that removed it, the replacement. From
+/// the upgrade guides for 5.x to 6.0 and 6.x to 7.0.
+const REMOVED_PLUGINS: &[(&str, u32, &str)] = &[
+    ("maven", 7, "use the maven-publish plugin"),
+    ("findbugs", 6, "use the SpotBugs plugin (com.github.spotbugs)"),
+    ("jdepend", 6, "use a community plugin from the Gradle Plugin Portal"),
+    ("osgi", 6, "use a community OSGi plugin such as biz.aQute.bnd.builder"),
+    ("announce", 6, "use a community notification plugin"),
+    ("build-announcements", 6, "use a community notification plugin"),
+    ("compare-gradle-builds", 6, "use a Build Scan to compare builds"),
+    ("java-lang", 7, "use the java-library plugin"),
+    ("scala-lang", 7, "use the scala plugin"),
+    ("junit-test-suite", 7, "use the java-library plugin"),
+    ("jvm-component", 7, "use the java-library plugin"),
+    ("jvm-resources", 7, "use the java-library plugin"),
+    ("coffeescript-base", 7, "use a plugin from the Gradle Plugin Portal"),
+    ("envjs", 7, "use a plugin from the Gradle Plugin Portal"),
+    ("javascript-base", 7, "use a plugin from the Gradle Plugin Portal"),
+    ("jshint", 7, "use a plugin from the Gradle Plugin Portal"),
+    ("rhino", 7, "use a plugin from the Gradle Plugin Portal"),
+];
+
+/// Properties of archive tasks (Jar, Zip, ...) removed in Gradle 8.0, and their
+/// replacements. `version` is left out: in a task block it falls through to the project's
+/// own `version`, which is valid.
+const ARCHIVE_PROPS: &[(&str, &str)] = &[
+    ("appendix", "archiveAppendix"),
+    ("archiveName", "archiveFileName"),
+    ("baseName", "archiveBaseName"),
+    ("classifier", "archiveClassifier"),
+    ("destinationDir", "destinationDirectory"),
+    ("extension", "archiveExtension"),
+];
+/// Task types that extend AbstractArchiveTask.
+const ARCHIVE_TYPES: &[&str] = &["Jar", "Zip", "Tar", "War", "Ear", "ShadowJar", "BootJar", "BootWar"];
+/// Archive tasks that core plugins (and Spring Boot's and Shadow's) create under these names.
+const ARCHIVE_TASKS: &[&str] = &[
+    "jar", "war", "ear", "sourcesJar", "javadocJar", "distZip", "distTar", "bootJar", "bootWar", "shadowJar",
+];
+/// Blocks a task configuration block can sit in and still mean the task.
+const TASK_SCOPES: &[&str] = &["allprojects", "subprojects", "project", "configure", "afterEvaluate", "tasks"];
+
+/// The last part of a dotted name: `ShadowJar` of `com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar`.
+fn last(t: &str) -> &str {
+    t.rsplit('.').next().unwrap_or(t)
+}
+
+fn removed_api<'a>(
+    src: &'a str,
+    n: Node<'a>,
+    out: &mut Vec<(Node<'a>, String, u32)>,
+    conf_refs: &mut Vec<(Node<'a>, &'a str)>,
+) {
+    // configurations.compile
+    if n.kind() == "field_access"
+        && let (Some(o), Some(f)) = (n.child_by_field_name("object"), n.child_by_field_name("field"))
+        && last(text(o, src)) == "configurations"
+        && REMOVED.iter().any(|(old, _)| *old == text(f, src))
+    {
+        conf_refs.push((n, text(f, src)));
+    }
+    // apply plugin: 'maven', apply(plugin: 'maven')
+    if n.kind() == "named_argument"
+        && n.child_by_field_name("key").is_some_and(|k| text(k, src) == "plugin")
+        && let Some(val) = n.child_by_field_name("value")
+        && let Some(id) = constant_value(val, src).filter(|_| val.kind() == "string_literal")
+        && let Some((_, since, new)) = REMOVED_PLUGINS.iter().find(|p| p.0 == id)
+        && n.parent()
+            .and_then(|p| if p.kind() == "argument_list" { p.parent() } else { Some(p) })
+            .and_then(|p| p.child_by_field_name("receiver").or_else(|| p.child_by_field_name("function")))
+            .is_some_and(|f| text(f, src) == "apply")
+    {
+        out.push((n, format!("The `{id}` plugin was removed in Gradle {since}.0; {new}"), *since));
+    }
+    if let Some(body) = archive_body(src, n) {
+        for s in statements(body) {
+            let name = match call(s, src) {
+                Some(c) if !c.args.is_empty() && c.body.is_none() => Some(c.name),
+                _ => s
+                    .named_child(0)
+                    .filter(|a| {
+                        s.kind() == "expression_statement"
+                            && a.kind() == "assignment_expression"
+                            && a.child_by_field_name("operator")
+                                .is_some_and(|o| o.kind() == "=")
+                    })
+                    .and_then(|a| a.child_by_field_name("left"))
+                    .filter(|l| l.kind() == "identifier")
+                    .map(|l| text(l, src)),
+            };
+            if let Some((old, new)) = name.and_then(|x| ARCHIVE_PROPS.iter().find(|p| p.0 == x)) {
+                out.push((
+                    s,
+                    format!("The `{old}` property of archive tasks was removed in Gradle 8.0; use {new}"),
+                    8,
+                ));
+            }
+        }
+    }
+    let Some(c) = call(n, src) else { return };
+    // plugins { id 'maven' }
+    if c.name == "id"
+        && let [a] = c.args.as_slice()
+        && a.kind() == "string_literal"
+        && let Some(id) = constant_value(*a, src)
+        && let Some((_, since, new)) = REMOVED_PLUGINS.iter().find(|p| p.0 == id)
+        && owners(n, src).next() == Some("plugins")
+    {
+        out.push((n, format!("The `{id}` plugin was removed in Gradle {since}.0; {new}"), *since));
+    }
+    // a build may declare its own task of that name
+    if c.name == "uploadArchives"
+        && c.body.is_some()
+        && !["task uploadArchives", "'uploadArchives'", "\"uploadArchives\""]
+            .iter()
+            .any(|d| src.contains(d))
+    {
+        out.push((
+            n,
+            "The uploadArchives task was removed in Gradle 7.0; publish with the maven-publish or ivy-publish plugin".into(),
+            7,
+        ));
+    }
+}
+
+/// The names of the calls whose closures hold `n`, innermost first.
+fn owners<'a>(n: Node<'a>, src: &'a str) -> impl Iterator<Item = &'a str> {
+    std::iter::successors(n.parent(), |p| p.parent())
+        .filter(|p| p.kind() == "closure")
+        .map(move |cl| {
+            let p = cl.parent();
+            p.and_then(|p| call(p, src))
+                .or_else(|| p.and_then(|p| p.parent()).and_then(|g| call(g, src)))
+                .map(|c| c.name)
+                .or_else(|| {
+                    p.filter(|p| p.kind() == "method_invocation")
+                        .and_then(|p| p.child_by_field_name("function"))
+                        .map(|f| last(text(f, src)))
+                })
+                .unwrap_or("")
+        })
+}
+
+/// The configuration block of an archive task: `jar { }` (where it means the task),
+/// `task x(type: Jar) { }`, `tasks.register('x', Zip) { }`, `tasks.withType(Jar) { }` or
+/// `tasks.withType(Jar).configureEach { }`.
+fn archive_body<'a>(src: &'a str, n: Node<'a>) -> Option<Node<'a>> {
+    let typed = |m: Node| {
+        let Some(a) = m.child_by_field_name("arguments") else {
+            return false;
+        };
+        let mut c = a.walk();
+        a.named_children(&mut c).any(|x| {
+            let x = if x.kind() == "named_argument"
+                && x.child_by_field_name("key").is_some_and(|k| text(k, src) == "type")
+            {
+                x.child_by_field_name("value")
+            } else {
+                Some(x)
+            };
+            x.is_some_and(|x| {
+                matches!(x.kind(), "identifier" | "field_access")
+                    && ARCHIVE_TYPES.contains(&last(text(x, src)))
+            })
+        })
+    };
+    let in_scope = || owners(n, src).all(|o| TASK_SCOPES.contains(&o));
+    match n.kind() {
+        "method_invocation" => {
+            let body = n.child_by_field_name("closure")?;
+            let f = n.child_by_field_name("function")?;
+            let ok = typed(n)
+                || (f.kind() == "field_access"
+                    && f.child_by_field_name("field")
+                        .is_some_and(|x| text(x, src) == "configureEach")
+                    && f.child_by_field_name("object")
+                        .is_some_and(|o| o.kind() == "method_invocation" && typed(o)))
+                || (f.kind() == "identifier"
+                    && ARCHIVE_TASKS.contains(&text(f, src))
+                    && n.child_by_field_name("arguments")
+                        .is_none_or(|a| a.named_child_count() == 0)
+                    && in_scope());
+            ok.then_some(body)
+        }
+        "command_chain" => {
+            let c = call(n, src)?;
+            (ARCHIVE_TASKS.contains(&c.name) && c.args.is_empty() && in_scope())
+                .then_some(c.body)
+                .flatten()
+        }
+        _ => None,
+    }
+}
+
 
 /// The major Gradle version of the nearest `gradle/wrapper/gradle-wrapper.properties` in
 /// the script's directory or above it (`distributionUrl=.../gradle-6.9-bin.zip` is 6). A
@@ -341,6 +561,54 @@ mod tests {
                 ("GradleLeftShiftTask", 5),
             ]
         );
+    }
+
+    #[test]
+    fn removed_api() {
+        let src = "apply plugin: 'maven'\napply(plugin: 'findbugs')\nplugins {\n    id 'osgi'\n    id 'java'\n}\njar {\n    classifier = 'all'\n    baseName 'x'\n    version = '1'\n}\ntask docs(type: Zip) {\n    appendix = 'docs'\n}\ntasks.register('src', Jar) { archiveName = 'a.jar' }\ntasks.withType(Tar).configureEach { extension = 'tgz' }\nsubprojects { war { destinationDir = file('d') } }\nuploadArchives {\n    repositories { }\n}\nfrom configurations.runtime\ndef cp = project.configurations.testCompile\n";
+        assert_eq!(
+            rules("build.gradle", src),
+            vec![
+                ("GradleRemovedApi", 1),
+                ("GradleRemovedApi", 2),
+                ("GradleRemovedApi", 4),
+                ("GradleRemovedApi", 8),
+                ("GradleRemovedApi", 9),
+                ("GradleRemovedApi", 13),
+                ("GradleRemovedApi", 15),
+                ("GradleRemovedApi", 16),
+                ("GradleRemovedApi", 17),
+                ("GradleRemovedApi", 18),
+                ("GradleRemovedApi", 21),
+                ("GradleRemovedApi", 22),
+            ]
+        );
+        // not the same names elsewhere: a dependency's artifact classifier, a local
+        // variable, a jar block that isn't the task, the new properties, a declared
+        // configuration, a build's own uploadArchives task, an id outside plugins { }
+        let src = "def archiveName = 'x'\ndependencies {\n    implementation('a:b:1') {\n        artifact {\n            classifier = 'jakarta'\n        }\n    }\n}\npublishing { publications { maven(MavenPublication) { artifact(sourcesJar) { classifier 'sources' } } } }\njar {\n    archiveClassifier = 'all'\n    if (GradleVersion.current() < GradleVersion.version('6.0')) {\n        baseName = 'old'\n    }\n}\nconfigurations { runtime }\nfrom configurations.runtime\ntask uploadArchives\nuploadArchives { }\ndependencies { id 'maven' }\napply plugin: 'maven-publish'\n";
+        assert_eq!(rules("build.gradle", src), vec![]);
+    }
+
+    #[test]
+    fn removed_api_follows_the_wrapper() {
+        let root = std::env::temp_dir().join(format!("groovyfmt-removed-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("gradle/wrapper")).unwrap();
+        let props = root.join("gradle/wrapper/gradle-wrapper.properties");
+        let src = "apply plugin: 'findbugs'\napply plugin: 'maven'\njar { classifier = 'x' }\n";
+        let run = |v: &str| {
+            std::fs::write(&props, format!("distributionUrl=https\\://services.gradle.org/distributions/gradle-{v}-bin.zip\n")).unwrap();
+            rules(root.join("build.gradle").to_str().unwrap(), src)
+                .iter()
+                .map(|r| r.1)
+                .collect::<Vec<_>>()
+        };
+        // findbugs went in 6.0, maven in 7.0, classifier in 8.0
+        assert_eq!(run("5.6"), vec![]);
+        assert_eq!(run("6.9"), vec![1]);
+        assert_eq!(run("7.6"), vec![1, 2]);
+        assert_eq!(run("8.14"), vec![1, 2, 3]);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
