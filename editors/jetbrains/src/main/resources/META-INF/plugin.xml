@@ -1,0 +1,51 @@
+<idea-plugin>
+  <id>groovyfmt</id>
+  <name>groovyfmt</name>
+  <vendor url="https://github.com/costajohnt/groovyfmt">groovyfmt</vendor>
+  <description><![CDATA[
+<p>Formats and lints Groovy, Gradle build scripts and Jenkinsfiles with
+<a href="https://github.com/costajohnt/groovyfmt">groovyfmt</a>, a fast formatter and linter written in Rust.
+The plugin starts <code>groovyfmt --lsp</code>, the language server built into the groovyfmt binary, through
+<a href="https://plugins.jetbrains.com/plugin/23257-lsp4ij">LSP4IJ</a>, so the IDE gives the same results as the command line.</p>
+<ul>
+  <li>parse errors and lint violations as you type, with a quick fix for each fixable violation and a fix-all action</li>
+  <li><b>Code | Reformat with groovyfmt</b> formats the file with groovyfmt</li>
+  <li>optionally, <b>Reformat Code</b> (and so the Reformat code action on save) uses groovyfmt in place of the IDE's Groovy formatter</li>
+</ul>
+<p>It covers <code>*.groovy</code>, <code>*.gvy</code>, <code>*.gy</code>, <code>*.gsh</code>, <code>*.gradle</code>, <code>*.jenkinsfile</code>,
+<code>Jenkinsfile</code> and <code>Jenkinsfile.*</code>, and works alongside the bundled Groovy and Gradle support and any Jenkins plugin.</p>
+<p>It runs the groovyfmt you installed (a path setting, the project's npm package, or <code>PATH</code>), or offers to download the
+release that matches its own version, checked against SHA-256 checksums packaged into the plugin when it was built. In an untrusted
+project nothing from the project decides which binary runs. No telemetry.</p>
+  ]]></description>
+
+  <depends>com.intellij.modules.platform</depends>
+  <depends>com.redhat.devtools.lsp4ij</depends>
+
+  <extensions defaultExtensionNs="com.redhat.devtools.lsp4ij">
+    <server id="groovyfmt" name="groovyfmt" factoryClass="io.github.costajohnt.groovyfmt.intellij.GroovyfmtServerFactory">
+      <description><![CDATA[groovyfmt, the Groovy, Gradle and Jenkinsfile formatter and linter.]]></description>
+    </server>
+    <!-- by file name, whatever file type another plugin gives these files -->
+    <fileNamePatternMapping patterns="*.groovy;*.gvy;*.gy;*.gsh;*.gradle;*.jenkinsfile;Jenkinsfile;Jenkinsfile.*"
+                            serverId="groovyfmt" languageId="groovy"/>
+  </extensions>
+
+  <extensions defaultExtensionNs="com.intellij">
+    <notificationGroup id="groovyfmt" displayType="BALLOON"/>
+    <postStartupActivity implementation="io.github.costajohnt.groovyfmt.intellij.GroovyfmtStartup"/>
+    <projectConfigurable parentId="tools" instance="io.github.costajohnt.groovyfmt.intellij.GroovyfmtConfigurable"
+                         id="groovyfmt" displayName="groovyfmt"/>
+  </extensions>
+
+  <actions>
+    <action id="groovyfmt.Reformat" class="io.github.costajohnt.groovyfmt.intellij.GroovyfmtReformatAction"
+            text="Reformat with groovyfmt" description="Format the file with groovyfmt">
+      <add-to-group group-id="CodeFormatGroup" anchor="after" relative-to-action="ReformatCode"/>
+    </action>
+    <action id="groovyfmt.Restart" class="io.github.costajohnt.groovyfmt.intellij.GroovyfmtRestartAction"
+            text="Restart groovyfmt" description="Find the groovyfmt binary again and restart its language server">
+      <add-to-group group-id="ToolsMenu" anchor="last"/>
+    </action>
+  </actions>
+</idea-plugin>
