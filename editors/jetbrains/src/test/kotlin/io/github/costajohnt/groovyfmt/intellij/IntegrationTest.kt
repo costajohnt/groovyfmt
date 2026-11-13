@@ -54,7 +54,10 @@ class IntegrationTest : UsefulTestCase() {
             val manager = LanguageServerManager.getInstance(fixture.project)
             manager.stop(SERVER_ID, LanguageServerManager.StopOptions().setWillDisable(false))
             val end = System.currentTimeMillis() + 10_000
-            while (manager.getServerStatus(SERVER_ID).let { it != ServerStatus.stopped && it != ServerStatus.none } && System.currentTimeMillis() < end) {
+            fun serverThreads() = Thread.getAllStackTraces().keys.count { it.isAlive && it.name.contains(" --lsp") }
+            while ((manager.getServerStatus(SERVER_ID).let { it != ServerStatus.stopped && it != ServerStatus.none } || serverThreads() > 0) &&
+                System.currentTimeMillis() < end
+            ) {
                 PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
                 Thread.sleep(100)
             }
@@ -213,7 +216,9 @@ class IntegrationTest : UsefulTestCase() {
     /**
      * A restart superseded by a later one before its UI step runs must not start the server:
      * here the second turns the plugin off while the server runs. Both resolve before the UI
-     * step of either runs, since this test holds the UI thread.
+     * step of either runs, since this test holds the UI thread. (With LSP4IJ 0.21.0 this also
+     * passes without the plugin's staleness check: its default start options re-enable the
+     * server instead of throwing. It guards the outcome, not that mechanism.)
      */
     fun testASupersededRestartDoesNotStartTheServer() {
         GroovyfmtSettings.get().path = bin()
