@@ -1,6 +1,6 @@
 # Lint
 
-`groovyfmt --lint` has 59 rules, 46 of them on by default. `groovyfmt --rules` lists them with their state under the config that applies, and `groovyfmt --explain <Rule>` prints a rule's description, why it matters, flagged code and a fixed version, whether `--lint --fix` fixes it, and the `.groovyfmt.toml` lines to turn it off (or on).
+`groovyfmt --lint` has 67 rules, 54 of them on by default. `groovyfmt --rules` lists them with their state under the config that applies, and `groovyfmt --explain <Rule>` prints a rule's description, why it matters, flagged code and a fixed version, whether `--lint --fix` fixes it, and the `.groovyfmt.toml` lines to turn it off (or on).
 
 The general rules are named after their [CodeNarc](https://codenarc.org/) equivalents, so existing configurations map across. The Jenkins, Gradle and Spock rules catch, in milliseconds, mistakes those tools otherwise report only when a build runs.
 
@@ -127,8 +127,17 @@ The section lists follow the [syntax reference](https://www.jenkins.io/doc/book/
 | JenkinsDuplicateStageName | on | two stages with the same name in one `stages` or `parallel` |
 | JenkinsStageName | on | a stage with no name, or a name that isn't a plain string (`stage("Deploy ${env}")` is rejected) |
 | JenkinsAgentForm | on | `agent` with no value, a bare `agent` other than `any` or `none`, or an `agent { }` block that is empty or names more than one agent type |
+| JenkinsParallelNesting | on | `parallel` or `matrix` in a stage that is already inside a `parallel` or `matrix` (at any depth of `stages`), and `agent` or `tools` on the stage that holds a `parallel` or `matrix` |
+| JenkinsWhenNesting | on | `allOf` or `anyOf` with no condition in its block, `not` with other than one, any of the three given arguments, and a block of conditions under any other condition (`branch(...) { }`); `expression { }` takes code and is fine |
+| JenkinsMatrixAxes | on | a `matrix` without `axes`; an empty `axes`, `excludes` or `exclude`; an axis without `name` or `values`, with a name that isn't a plain string made of letters, digits and `_`, a value that isn't a plain string or number, or a name or value given twice; an exclude axis with both `values` and `notValues` |
+| JenkinsInputSection | on | a stage's `input { }` without `message`, with a field other than `message`, `id`, `ok`, `submitter`, `submitterParameter` and `parameters`, or with a field twice or without exactly one value |
+| JenkinsEnvironmentEntry | on | an `environment` line that isn't `KEY = value`, a key that isn't letters, digits and `_` (not starting with a digit) or is set twice, and a value that isn't a quoted string, a literal, a method call or literals joined with `+` (`FOO = params.BAR` is rejected; `FOO = "${params.BAR}"` is not) |
+| JenkinsDuplicateOption | on | the same option twice in one `options`, or the same trigger twice in one `triggers` |
+| JenkinsToolVersion | on | a `tools` line that isn't a tool type with exactly one installation name (`maven` alone, or two names) |
 
-Option names and agent types aren't checked against a list. Plugins add their own, and any block-scoped step is a valid option.
+The new rules above follow the plugin's parser (`ModelParser.groovy`) and validator (`ModelValidatorImpl.groovy`) and their messages. On the plugin's own test pipelines, the Jenkins rules now catch 81 of the 132 invalid ones (49 before). The other 51 need the installed plugins or a running Jenkins to judge: step, option, trigger, parameter and agent parameters and types, tool installations, script security, and validator extensions from test plugins. Of the 289 other test pipelines, the rules report 6, each one a pipeline a test expects to fail or a test marked `@Ignore` (a matrix without `axes`).
+
+Option names and agent types aren't checked against a list. Plugins add their own, and any block-scoped step is a valid option. Step parameters aren't checked either.
 
 ### Gradle build scripts
 
@@ -140,6 +149,7 @@ These apply in `*.gradle` files.
 | GradleJcenter | on | `jcenter()`, deprecated in Gradle 7.0 and removed in 9.0 |
 | GradleLeftShiftTask | on | `task name << { }`, removed in Gradle 5.0 |
 | GradleDynamicVersion | off | a `+` or `latest.*` dependency version (whether to pin is a policy choice) |
+| GradleRemovedApi | on | what a Gradle upgrade guide lists as removed, with the version and the replacement in the message: the `maven` plugin and the `uploadArchives` task (7.0, use `maven-publish`); the `findbugs`, `jdepend`, `osgi`, `announce`, `build-announcements` and `compare-gradle-builds` plugins (6.0) and the old JVM and JavaScript plugins (7.0); `configurations.compile`, `.runtime`, `.testCompile` and `.testRuntime` (7.0, unless the build declares that configuration); and `archiveName`, `baseName`, `classifier`, `destinationDir`, `appendix` or `extension` set in an archive task's block (8.0, use `archiveFileName`, `archiveBaseName` and so on). An archive task's block is `jar`, `war`, `ear`, `bootJar`, `bootWar`, `shadowJar`, `sourcesJar`, `javadocJar`, `distZip` or `distTar` at the top level (or in `allprojects`, `subprojects`, `project`, `configure`, `afterEvaluate` or `tasks`), or a task block typed `Jar`, `Zip`, `Tar`, `War`, `Ear`, `ShadowJar`, `BootJar` or `BootWar`. Quiet when the nearest wrapper pins a Gradle older than the removal |
 
 ### Spock specifications
 

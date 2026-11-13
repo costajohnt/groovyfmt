@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- Seven Jenkinsfile lint rules for what the Declarative Pipeline plugin's parser and validator reject when a build starts, on by default: `JenkinsParallelNesting` (a `parallel` or `matrix` inside another, or `agent` or `tools` on the stage holding one), `JenkinsWhenNesting` (`allOf`, `anyOf` and `not` with the wrong number of conditions or with arguments, and nested conditions under any other condition), `JenkinsMatrixAxes` (a matrix without `axes`, an axis without a valid `name` or `values`, repeated axis names or values, empty `excludes`), `JenkinsInputSection` (a stage `input` without `message`, an unknown or repeated field), `JenkinsEnvironmentEntry` (an `environment` line that isn't `KEY = value`, an invalid or repeated key, a value such as `params.X` that must be quoted), `JenkinsDuplicateOption` (an option or trigger twice) and `JenkinsToolVersion` (a `tools` line without exactly one installation). On the plugin's own test pipelines the Jenkins rules now catch 81 of the 132 invalid ones (49 before); the other 51 need the installed plugins or a running Jenkins to judge. Of its 289 other test pipelines, they report only 6, all of them pipelines its tests expect to fail or tests marked `@Ignore`. They report nothing on the other real pipelines in about 120 open source repositories.
+- `GradleRemovedApi`, on by default, for what the Gradle upgrade guides list as removed: the `maven` plugin and `uploadArchives` (7.0), the `findbugs`, `jdepend`, `osgi` and announce plugins (6.0), `configurations.compile` and the other removed configurations (7.0), and an archive task's `archiveName`, `baseName`, `classifier`, `destinationDir`, `appendix` and `extension` (8.0). The message names the version and the replacement. Like `GradleRemovedConfiguration`, it stays quiet when the nearest Gradle wrapper pins a version that still has the construct. In about 120 open source repositories it reports 9 places, all of them builds whose own wrapper no longer has what they use.
+
 ### Fixed
 
 - EqualsOverloaded no longer reports a typed `equals(T)` when the class, or a superclass declared in the same file, also declares `equals(Object)`, which can delegate to it, and no longer reports an abstract (bodyless) `equals` declaration. A superclass in another file can't be seen, so a subclass's `equals(T)` there is still reported.

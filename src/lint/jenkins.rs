@@ -303,11 +303,19 @@ fn pipeline(src: &str, p: Node, v: &mut Vec<Violation>) {
             ));
         }
     }
-    children(src, &secs, false, 0, v);
+    children(src, &secs, false, false, 0, v);
 }
 
-/// Checks the sections found in a pipeline, stage or matrix.
-fn children(src: &str, secs: &[Call], in_stage: bool, depth: usize, v: &mut Vec<Violation>) {
+/// Checks the sections found in a pipeline, stage or matrix. `nested`: inside a `parallel`
+/// or `matrix` (at any depth of `stages`), where another one is rejected.
+fn children(
+    src: &str,
+    secs: &[Call],
+    in_stage: bool,
+    nested: bool,
+    depth: usize,
+    v: &mut Vec<Violation>,
+) {
     if depth > MAX_DEPTH {
         return;
     }
@@ -354,14 +362,13 @@ fn children(src: &str, secs: &[Call], in_stage: bool, depth: usize, v: &mut Vec<
             }
             "stages" | "parallel" => {
                 if let Some(b) = c.body {
-                    stages(src, c.name, b, depth + 1, v);
+                    let nested = nested || c.name == "parallel";
+                    stages(src, c.name, b, nested, depth + 1, v);
                 }
             }
             "matrix" => {
                 if let Some(b) = c.body {
                     let secs = sections(src, b, MATRIX, "matrix { }", v);
-                    // The reference requires `axes` too, but the plugin's own tests run a
-                    // matrix without it (matrix/matrixStagesGroupsAndStages), so only `stages`
                     if !secs.iter().any(|s| s.name == "stages") {
                         v.push(at(
                             c.node,
@@ -369,7 +376,38 @@ fn children(src: &str, secs: &[Call], in_stage: bool, depth: usize, v: &mut Vec<
                             "matrix { } has no `stages`, which it requires".into(),
                         ));
                     }
-                    children(src, &secs, true, depth + 1, v);
+                    // JenkinsMissingSection leaves a missing `axes` alone (it once read an
+                    // ignored plugin test as valid); the validator requires it
+                    // (ModelValidatorImpl: RequiredSection "axes").
+                    if !secs.iter().any(|s| s.name == "axes") {
+                        v.push(at(
+                            c.node,
+                            "JenkinsMatrixAxes",
+                            "matrix { } has no `axes`, which it requires; add axes { axis { name 'X'; values 'a', 'b' } }".into(),
+                        ));
+                    }
+                    matrix(src, &secs, v);
+                    children(src, &secs, true, true, depth + 1, v);
+                }
+            }
+            "input" => {
+                if let Some(b) = c.body {
+                    input(src, c.node, b, v);
+                }
+            }
+            "environment" => {
+                if let Some(b) = c.body {
+                    environment(src, b, v);
+                }
+            }
+            "triggers" => {
+                if let Some(b) = c.body {
+                    duplicate_names(src, b, "triggers", v);
+                }
+            }
+            "tools" => {
+                if let Some(b) = c.body {
+                    tools(src, b, v);
                 }
             }
             "steps" => {
@@ -382,7 +420,7 @@ fn children(src: &str, secs: &[Call], in_stage: bool, depth: usize, v: &mut Vec<
     }
 }
 
-fn stages(src: &str, what: &str, body: Node, depth: usize, v: &mut Vec<Violation>) {
+fn stages(src: &str, what: &str, body: Node, nested: bool, depth: usize, v: &mut Vec<Violation>) {
     let mut names = HashSet::new();
     let mut any = false;
     for s in statements(body) {
@@ -409,7 +447,7 @@ fn stages(src: &str, what: &str, body: Node, depth: usize, v: &mut Vec<Violation
             continue;
         }
         any = true;
-        if let Some(n) = stage(src, &c, depth, v)
+        if let Some(n) = stage(src, &c, nested, depth, v)
             && !names.insert(n.clone())
         {
             v.push(at(
@@ -431,7 +469,13 @@ fn stages(src: &str, what: &str, body: Node, depth: usize, v: &mut Vec<Violation
 }
 
 /// Checks a stage; returns its name when it's a valid literal.
-fn stage(src: &str, c: &Call, depth: usize, v: &mut Vec<Violation>) -> Option<String> {
+fn stage(
+    src: &str,
+    c: &Call,
+    nested: bool,
+    depth: usize,
+    v: &mut Vec<Violation>,
+) -> Option<String> {
     let name = match c.args.first() {
         None => {
             v.push(at(
@@ -483,7 +527,35 @@ fn stage(src: &str, c: &Call, depth: usize, v: &mut Vec<Violation>) -> Option<St
             ),
         ));
     }
-    children(src, &secs, true, depth, v);
+    // ModelValidatorImpl.validateElement(ModelASTStage): NoNestedWithinNestedStages first,
+    // then (with one kind of run) AgentInNestedStages and ToolsInNestedStages
+    let fan = runs
+        .iter()
+        .find(|r| matches!(r.name, "parallel" | "matrix"));
+    if let Some(f) = fan {
+        if nested {
+            v.push(at(
+                f.node,
+                "JenkinsParallelNesting",
+                format!(
+                    "`{}` can't go in a stage that is itself inside parallel or matrix; Jenkins allows one level",
+                    f.name
+                ),
+            ));
+        } else if runs.iter().all(|r| r.name == f.name) {
+            for s in secs.iter().filter(|s| matches!(s.name, "agent" | "tools")) {
+                v.push(at(
+                    s.node,
+                    "JenkinsParallelNesting",
+                    format!(
+                        "`{}` is not allowed in stage{label}, which holds {}; put it in the stages inside",
+                        s.name, f.name
+                    ),
+                ));
+            }
+        }
+    }
+    children(src, &secs, true, nested, depth, v);
     name
 }
 
@@ -568,16 +640,43 @@ fn when(src: &str, body: Node, depth: usize, v: &mut Vec<Violation>) {
                     WHEN.join(", ")
                 ),
             ));
-        } else if matches!(c.name, "allOf" | "anyOf" | "not")
-            && let Some(b) = c.body
-        {
-            when(src, b, depth + 1, v);
+        } else if matches!(c.name, "allOf" | "anyOf" | "not") {
+            // ModelValidatorImpl.validateElement(ModelASTWhenCondition)
+            let n = c.body.map_or(0, |b| statements(b).len());
+            let msg = if !c.args.is_empty() {
+                format!(
+                    "`{}` takes no arguments, only conditions in its block",
+                    c.name
+                )
+            } else if c.name == "not" && n != 1 {
+                format!("`not` needs exactly one condition in its block, not {n}")
+            } else if n == 0 {
+                format!("`{}` needs at least one condition in its block", c.name)
+            } else {
+                String::new()
+            };
+            if !msg.is_empty() {
+                v.push(at(s, "JenkinsWhenNesting", msg));
+            }
+            if let Some(b) = c.body {
+                when(src, b, depth + 1, v);
+            }
+        } else if c.body.is_some() && c.name != "expression" {
+            v.push(at(
+                s,
+                "JenkinsWhenNesting",
+                format!(
+                    "`{}` takes no block of conditions; only allOf, anyOf and not nest (and expression takes code)",
+                    c.name
+                ),
+            ));
         }
     }
 }
 
 fn options(src: &str, c: &Call, in_stage: bool, v: &mut Vec<Violation>) {
     let Some(body) = c.body else { return };
+    duplicate_names(src, body, "options", v);
     for s in statements(body) {
         let Some(o) = call(s, src) else { continue };
         let msg = match o.name {
@@ -631,6 +730,331 @@ fn agent(src: &str, c: &Call, v: &mut Vec<Violation>) {
         _ => return,
     };
     v.push(at(c.node, "JenkinsAgentForm", msg));
+}
+
+/// An option or trigger given twice in one block (DuplicateOptionName, DuplicateTriggerName).
+fn duplicate_names(src: &str, body: Node, what: &str, v: &mut Vec<Violation>) {
+    let mut seen = HashSet::new();
+    for s in statements(body) {
+        if let Some(c) = call(s, src)
+            && !seen.insert(c.name)
+        {
+            v.push(at(
+                s,
+                "JenkinsDuplicateOption",
+                format!(
+                    "`{}` appears twice in this {what} {{ }}; Jenkins rejects a repeat",
+                    c.name
+                ),
+            ));
+        }
+    }
+}
+
+/// Each entry of `tools { }` is a tool type and one version (ModelParser.parseTools).
+fn tools(src: &str, body: Node, v: &mut Vec<Violation>) {
+    for s in statements(body) {
+        if call(s, src).is_some_and(|c| c.args.len() == 1 && c.body.is_none()) {
+            continue;
+        }
+        v.push(at(
+            s,
+            "JenkinsToolVersion",
+            format!(
+                "`{}` is not a tool entry; tools {{ }} takes a tool type and one installation name, as in maven 'maven-3.9'",
+                head(s, src)
+            ),
+        ));
+    }
+}
+
+/// The fields of a stage's `input { }` (ModelParser.parseInput, and MissingInputMessage).
+const INPUT: &[&str] = &[
+    "message",
+    "id",
+    "ok",
+    "submitter",
+    "submitterParameter",
+    "parameters",
+];
+
+fn input(src: &str, node: Node, body: Node, v: &mut Vec<Violation>) {
+    let mut seen = HashSet::new();
+    for s in statements(body) {
+        let msg = match call(s, src) {
+            None => format!("`{}` is not an input field", head(s, src)),
+            Some(c) if !INPUT.contains(&c.name) => format!(
+                "`{}` is not an input field; input takes {}",
+                c.name,
+                INPUT.join(", ")
+            ),
+            Some(c) if !seen.insert(c.name) => format!("`{}` appears twice in input {{ }}", c.name),
+            Some(c) if c.args.len() + usize::from(c.body.is_some()) != 1 => {
+                format!("input field `{}` takes exactly one value", c.name)
+            }
+            Some(_) => continue,
+        };
+        v.push(at(s, "JenkinsInputSection", msg));
+    }
+    if !seen.contains("message") {
+        v.push(at(
+            node,
+            "JenkinsInputSection",
+            "input { } has no `message`, which it requires".into(),
+        ));
+    }
+}
+
+/// What the validator takes as an environment variable or axis name
+/// (Utils.validEnvIdentifier).
+fn env_identifier(s: &str) -> bool {
+    let mut c = s.chars();
+    c.next()
+        .is_some_and(|f| f.is_ascii_alphabetic() || f == '_')
+        && c.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+/// Entries of `environment { }`: `KEY = value` with a valid, unique key, and a value that
+/// is a literal, a string, a method call, or literals and strings joined with `+`
+/// (ModelParser.parseEnvironment).
+fn environment(src: &str, body: Node, v: &mut Vec<Violation>) {
+    let mut seen = HashSet::new();
+    for s in statements(body) {
+        let a = s
+            .named_child(0)
+            .filter(|a| s.kind() == "expression_statement" && a.kind() == "assignment_expression")
+            .filter(|a| {
+                a.child_by_field_name("operator")
+                    .is_some_and(|o| o.kind() == "=")
+            });
+        let (Some(key), Some(value)) = (
+            a.and_then(|a| a.child_by_field_name("left")),
+            a.and_then(|a| a.child_by_field_name("right")),
+        ) else {
+            v.push(at(
+                s,
+                "JenkinsEnvironmentEntry",
+                format!(
+                    "`{}` is not an environment entry; environment {{ }} takes only KEY = value lines",
+                    head(s, src)
+                ),
+            ));
+            continue;
+        };
+        let k = text(key, src);
+        let msg = if key.kind() != "identifier" || !env_identifier(k) {
+            format!(
+                "`{k}` is not a valid environment variable name; use letters, digits and _, not starting with a digit"
+            )
+        } else if !seen.insert(k) {
+            format!("`{k}` is set twice in this environment {{ }}; Jenkins rejects a repeat")
+        } else if !env_value(value) {
+            format!(
+                "The value of `{k}` must be a quoted string, a literal or a method call (`{}` is none of these); write \"${{...}}\" to use an expression",
+                head(value, src)
+            )
+        } else {
+            continue;
+        };
+        v.push(at(s, "JenkinsEnvironmentEntry", msg));
+    }
+}
+
+fn env_value(n: Node) -> bool {
+    match n.kind() {
+        "string_literal" | "number_literal" | "boolean_literal" | "null_literal"
+        | "method_invocation" | "command_chain" => true,
+        // `-1`: whether Groovy reads it as a constant isn't certain, so it is let through
+        "unary_expression" => true,
+        "parenthesized_expression" => n.named_child(0).is_some_and(env_value),
+        "binary_expression" => {
+            n.child_by_field_name("operator")
+                .is_some_and(|o| o.kind() == "+")
+                && n.child_by_field_name("left").is_some_and(concat_part)
+                && n.child_by_field_name("right").is_some_and(|r| {
+                    matches!(
+                        r.kind(),
+                        "string_literal" | "number_literal" | "boolean_literal" | "null_literal"
+                    )
+                })
+        }
+        _ => false,
+    }
+}
+
+/// The left side of a `+` in an environment value: a literal, or another `+` of them
+/// (ModelParser.envValueForStringConcat).
+fn concat_part(n: Node) -> bool {
+    match n.kind() {
+        "string_literal" | "number_literal" | "boolean_literal" | "null_literal" => true,
+        "binary_expression" => env_value(n),
+        _ => false,
+    }
+}
+
+/// `axes` and `excludes` of a matrix (ModelParser.parseMatrix*, ModelValidatorImpl for
+/// ModelASTAxisContainer, ModelASTAxis, ModelASTExcludes, ModelASTExclude).
+fn matrix(src: &str, secs: &[Call], v: &mut Vec<Violation>) {
+    let mut push = |n: Node, m: String| v.push(at(n, "JenkinsMatrixAxes", m));
+    for sec in secs
+        .iter()
+        .filter(|s| matches!(s.name, "axes" | "excludes"))
+    {
+        let Some(body) = sec.body else { continue };
+        let item = if sec.name == "axes" {
+            "axis"
+        } else {
+            "exclude"
+        };
+        let items: Vec<Call> = statements(body)
+            .into_iter()
+            .filter_map(|s| {
+                let c = call(s, src).filter(|c| c.name == item && c.body.is_some());
+                if c.is_none() {
+                    push(
+                        s,
+                        format!(
+                            "`{}` is not an {item} block; {} {{ }} holds only {item} {{ }} blocks",
+                            head(s, src),
+                            sec.name
+                        ),
+                    );
+                }
+                c
+            })
+            .collect();
+        if items.is_empty() {
+            push(sec.node, format!("{} {{ }} has no {item}", sec.name));
+        }
+        // the axes of `axes`, or of each `exclude`
+        let groups: Vec<Vec<Call>> = if sec.name == "axes" {
+            vec![items]
+        } else {
+            items
+                .into_iter()
+                .filter_map(|e| {
+                    let b = e.body?;
+                    let axes: Vec<Call> = statements(b)
+                        .into_iter()
+                        .filter_map(|s| {
+                            let c = call(s, src).filter(|c| c.name == "axis" && c.body.is_some());
+                            if c.is_none() {
+                                push(
+                                    s,
+                                    format!("`{}` is not an axis block; exclude {{ }} holds only axis {{ }} blocks", head(s, src)),
+                                );
+                            }
+                            c
+                        })
+                        .collect();
+                    if axes.is_empty() {
+                        push(e.node, "exclude { } has no axis".into());
+                    }
+                    Some(axes)
+                })
+                .collect()
+        };
+        for axes in groups {
+            let mut names = HashSet::new();
+            for a in axes {
+                axis(src, &a, sec.name == "excludes", &mut names, &mut push);
+            }
+        }
+    }
+}
+
+fn axis<'a>(
+    src: &'a str,
+    a: &Call<'a>,
+    exclude: bool,
+    names: &mut HashSet<String>,
+    push: &mut impl FnMut(Node, String),
+) {
+    let Some(body) = a.body else { return };
+    let keys: &[&str] = if exclude {
+        &["name", "values", "notValues"]
+    } else {
+        &["name", "values"]
+    };
+    let mut seen = HashSet::new();
+    let mut values = HashSet::new();
+    for s in statements(body) {
+        let Some(c) = call(s, src).filter(|c| keys.contains(&c.name)) else {
+            push(
+                s,
+                format!(
+                    "`{}` is not part of an axis; an axis takes {}",
+                    head(s, src),
+                    keys.join(", ")
+                ),
+            );
+            continue;
+        };
+        if !seen.insert(c.name) {
+            push(s, format!("`{}` appears twice in this axis", c.name));
+            continue;
+        }
+        if c.name == "name" {
+            let lit = c
+                .args
+                .first()
+                .filter(|a| c.args.len() == 1 && a.kind() == "string_literal")
+                .and_then(|a| constant_value(*a, src));
+            match lit {
+                None => push(
+                    s,
+                    "An axis name must be one plain string, as in name 'OS'".into(),
+                ),
+                Some(n) if !exclude && !env_identifier(&n) => push(
+                    s,
+                    format!(
+                        "Axis name '{n}' is not a valid variable name; use letters, digits and _, not starting with a digit"
+                    ),
+                ),
+                // the validator reports a repeat only in the axes of one block
+                Some(n) if !names.insert(n.clone()) => {
+                    push(s, format!("Axis name '{n}' is used twice"))
+                }
+                Some(_) => {}
+            }
+        } else {
+            if c.args.is_empty() {
+                push(s, format!("`{}` lists no values", c.name));
+            }
+            // an exclude's values aren't validated beyond parsing
+            for &x in c.args.iter().filter(|_| !exclude) {
+                match constant_value(x, src).filter(|_| x.kind() != "identifier") {
+                    None => push(
+                        x,
+                        format!(
+                            "Axis value `{}` must be a plain string or number, not an expression or interpolated string",
+                            head(x, src)
+                        ),
+                    ),
+                    Some(val) if !values.insert((x.kind() == "string_literal", val.clone())) => {
+                        push(x, format!("Axis value '{val}' is listed twice"))
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+    }
+    if seen.contains("values") && seen.contains("notValues") {
+        push(
+            a.node,
+            "An exclude axis takes values or notValues, not both".into(),
+        );
+    }
+    if !exclude {
+        for need in ["name", "values"] {
+            if !seen.contains(need) {
+                push(
+                    a.node,
+                    format!("This axis has no `{need}`, which it requires"),
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -854,6 +1278,164 @@ mod tests {
                 ("JenkinsAgentForm", 9),
                 ("JenkinsAgentForm", 13),
             ]
+        );
+    }
+
+    /// A pipeline with `body` as its stages, starting on line 4.
+    fn in_stages(body: &str) -> String {
+        format!("pipeline {{\n agent none\n stages {{\n{body}\n }}\n}}\n")
+    }
+
+    #[test]
+    fn parallel_nesting() {
+        // the plugin's errors/parallelStagesDeepNesting, matrixStagesAgentTools and
+        // parallelStagesGroupsDeepNesting
+        let src = in_stages(
+            "stage('a') {\n parallel {\n  stage('b') {\n   parallel { stage('c') { steps { echo 1 } } }\n  }\n }\n}\nstage('d') {\n agent any\n tools { maven 'm' }\n matrix {\n  axes { axis { name 'X'; values 'a' } }\n  stages { stage('e') { stages { stage('f') { matrix {\n   axes { axis { name 'Y'; values 'b' } }\n   stages { stage('g') { steps { echo 1 } } }\n  } } } } }\n }\n}",
+        );
+        assert_eq!(
+            rules(&src),
+            vec![
+                ("JenkinsParallelNesting", 7),
+                ("JenkinsParallelNesting", 12),
+                ("JenkinsParallelNesting", 13),
+                ("JenkinsParallelNesting", 16),
+            ]
+        );
+        // one level, agent in the branches, and stages in stages are fine
+        let src = in_stages(
+            "stage('a') {\n parallel {\n  stage('b') { agent any; stages { stage('c') { steps { echo 1 } } } }\n }\n}\nstage('d') { agent any; stages { stage('e') { parallel { stage('f') { steps { echo 1 } } } } } }",
+        );
+        assert_eq!(rules(&src), vec![]);
+    }
+
+    #[test]
+    fn when_nesting() {
+        let when = |w: &str| {
+            in_stages(&format!(
+                "stage('a') {{\n when {{\n{w}\n }}\n steps {{ echo 1 }}\n}}"
+            ))
+        };
+        // errors/nestedWhenWithArgs, invalidWhenWithChildren, whenNestedChildrenInvalid,
+        // when/conditions/allOfEmpty
+        assert_eq!(
+            rules(&when(
+                "allOf(thing: 'x') { branch 'a' }\nbranch(compare: 'x') { not { branch 'b' } }\nanyOf { }\nnot { branch 'a'; branch 'b' }\nnot { }"
+            )),
+            vec![
+                ("JenkinsWhenNesting", 6),
+                ("JenkinsWhenNesting", 7),
+                ("JenkinsWhenNesting", 8),
+                ("JenkinsWhenNesting", 9),
+                ("JenkinsWhenNesting", 10),
+            ]
+        );
+        assert_eq!(
+            rules(&when(
+                "allOf { branch 'a'; anyOf { tag 'v*'; expression { return x } } }\nnot { changeRequest() }\nbeforeAgent true"
+            )),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn matrix_axes() {
+        let matrix = |m: &str| {
+            in_stages(&format!(
+                "stage('a') {{\n matrix {{\n{m}\n  stages {{ stage('b') {{ steps {{ echo 1 }} }} }}\n }}\n}}"
+            ))
+        };
+        assert_eq!(rules(&matrix("")), vec![("JenkinsMatrixAxes", 5)]);
+        assert_eq!(rules(&matrix("axes { }")), vec![("JenkinsMatrixAxes", 6)]);
+        let src = matrix(
+            "axes {\n axis { name 'OS'; values 'linux', 'mac', 'linux' }\n axis { name 'OS'; values 1, '1' }\n axis { name '1X'; values \"${v}\" }\n axis { values 'a' }\n axis { name 'Y' }\n}\nexcludes { }",
+        );
+        assert_eq!(
+            rules(&src),
+            vec![
+                ("JenkinsMatrixAxes", 7),
+                ("JenkinsMatrixAxes", 8),
+                ("JenkinsMatrixAxes", 9),
+                ("JenkinsMatrixAxes", 9),
+                ("JenkinsMatrixAxes", 10),
+                ("JenkinsMatrixAxes", 11),
+                ("JenkinsMatrixAxes", 13),
+            ]
+        );
+        let src = matrix(
+            "axes { axis { name 'OS'; values 'linux', 'mac' }; axis { name 'B'; values 'x' } }\nexcludes {\n exclude { axis { name 'OS'; values 'linux'; notValues 'mac' } }\n exclude { }\n exclude { axis { name 'OS'; values 'mac' }; axis { name 'B'; notValues 'x' } }\n}",
+        );
+        assert_eq!(
+            rules(&src),
+            vec![("JenkinsMatrixAxes", 8), ("JenkinsMatrixAxes", 9)]
+        );
+    }
+
+    #[test]
+    fn input_section() {
+        let input = |i: &str| {
+            in_stages(&format!(
+                "stage('a') {{\n input {{\n{i}\n }}\n steps {{ echo 1 }}\n}}"
+            ))
+        };
+        assert_eq!(
+            rules(&input("ok 'Go'\nbanana 'x'\nok 'Again'")),
+            vec![
+                ("JenkinsInputSection", 5),
+                ("JenkinsInputSection", 7),
+                ("JenkinsInputSection", 8),
+            ]
+        );
+        assert_eq!(
+            rules(&input(
+                "message 'Deploy?'\nid 'x'\nok 'Yes'\nsubmitter 'admin'\nsubmitterParameter 'WHO'\nparameters { string(name: 'P') }"
+            )),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn environment_entries() {
+        let env = |e: &str| {
+            format!(
+                "pipeline {{\n agent any\n environment {{\n{e}\n }}\n stages {{ stage('a') {{ steps {{ echo 1 }} }} }}\n}}\n"
+            )
+        };
+        // errors/duplicateEnvironment, envIdentifierHyphens, additionalInvalidExpressionsInEnvironment
+        let src = env(
+            "A = env.B\nC = params.D\nE = x ? 'a' : 'b'\nF = 1 + credentials('x')\nG = 'a' - 'b'\nA = 'again'\nenv.H = 'x'\necho 'hi'\nI += 'x'",
+        );
+        assert_eq!(
+            rules(&src),
+            (4..=12)
+                .map(|l| ("JenkinsEnvironmentEntry", l))
+                .collect::<Vec<_>>()
+        );
+        // environment/nonLiteralEnvironment, readFileInEnv and multilineEnvironment
+        let src = env(
+            "A = 'b'\nB = \"${env.X}\"\nC = credentials('c')\nD = currentBuild.getNumber()\nE = readFile 'Version'\nF = 'a' + \"b\" + 1\nG = 1\nH = true\nI = '''x\ny'''\n_J = ('k')\nK = -1",
+        );
+        assert_eq!(rules(&src), vec![]);
+    }
+
+    #[test]
+    fn duplicate_options_and_triggers() {
+        let src = "pipeline {\n agent any\n options {\n  timeout(time: 1, unit: 'HOURS')\n  skipDefaultCheckout()\n  timeout(time: 2, unit: 'HOURS')\n }\n triggers {\n  cron('H * * * *')\n  cron('H 2 * * *')\n  pollSCM('H * * * *')\n }\n stages { stage('a') { steps { echo 1 } } }\n}\n";
+        assert_eq!(
+            rules(src),
+            vec![
+                ("JenkinsDuplicateOption", 6),
+                ("JenkinsDuplicateOption", 10)
+            ]
+        );
+    }
+
+    #[test]
+    fn tool_versions() {
+        let src = "pipeline {\n agent any\n tools {\n  maven\n  jdk 'a', 'b'\n  gradle 'g8'\n }\n stages { stage('a') { steps { echo 1 } } }\n}\n";
+        assert_eq!(
+            rules(src),
+            vec![("JenkinsToolVersion", 4), ("JenkinsToolVersion", 5)]
         );
     }
 
