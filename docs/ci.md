@@ -4,7 +4,7 @@ Add `--strict` to `--check` or `--lint` to fail the job when a file was skipped 
 
 ## GitHub Actions
 
-The action installs the release binary for the runner (Linux or macOS, x64 or arm64, or Windows x64), checks it against its `.sha256`, puts it on `PATH` and runs it with `args`:
+The action installs the release binary for the runner (Linux or macOS, x64 or arm64, or Windows x64), checks it against its `.sha256`, puts it on `PATH` and runs it with `args`. For a release from v0.14.0 on, which is immutable, it also checks the download against GitHub's release attestation with `gh release verify-asset`, which needs gh 2.81.0 or later on the runner (GitHub's runners have it) and no token permission beyond the default:
 
 ```yaml
 - uses: actions/checkout@v5

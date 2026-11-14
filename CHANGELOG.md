@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Security
+
+- The GitHub Action checks a download from an immutable release (v0.14.0 and later) against GitHub's release attestation with `gh release verify-asset`, so a replaced archive and `.sha256` no longer pass. It still compares the `.sha256` for every release, the older mutable ones included. The check needs gh 2.81.0 or later on the runner; with an older gh an immutable release fails to install rather than install unverified.
+
 ## 0.14.1 (2026-11-13)
 
 ### Fixed
