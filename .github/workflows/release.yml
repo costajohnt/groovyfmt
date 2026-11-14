@@ -62,7 +62,7 @@ jobs:
           path: editors/vscode/groovyfmt-*.vsix
 
   release:
-    needs: [check, ci, vscode]
+    needs: [check, ci, vscode, jetbrains]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -76,22 +76,26 @@ jobs:
         run: |
           # ci.yml leaves the macOS builds out of some runs; a tag must have all five.
           shopt -s nullglob
-          set -- groovyfmt-*.tar.gz groovyfmt-*.zip
+          set -- groovyfmt-v*.tar.gz groovyfmt-v*.zip
           printf '%s\n' "$@"
           test "$#" -eq 5
-          # and the VS Code extension from the vscode job above
+          # and the VS Code extension and JetBrains plugin from the jobs above
           vsix=(groovyfmt-*.vsix)
           test "${vsix[*]}" = "groovyfmt-${GITHUB_REF_NAME#v}.vsix"
-          gh release create "$GITHUB_REF_NAME" groovyfmt-*.tar.gz* groovyfmt-*.zip* "${vsix[@]}" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+          jetbrains=(groovyfmt-jetbrains-*.zip)
+          test "${jetbrains[*]}" = "groovyfmt-jetbrains-${GITHUB_REF_NAME#v}.zip"
+          # Immutable releases: every asset goes up here, since none can be added once published.
+          gh release create "$GITHUB_REF_NAME" groovyfmt-v*.tar.gz* groovyfmt-v*.zip* "${vsix[@]}" "${jetbrains[@]}" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
 
   # The release JetBrains plugin zip, carrying the SHA-256 of this run's archives
   # (groovyfmt-checksums.properties). The plugin downloads groovyfmt only against those, never
   # against a checksum fetched from the release. ci.yml skips the plugin for a tag, so its tests
-  # run here, against this release's own Linux binary. It runs after `release`, so the release
-  # never waits on the plugin. The build runs Gradle, its plugins and dependencies and an IDE,
-  # so it gets a read-only token; attach-jetbrains, which runs none of that, writes the release.
+  # run here, against this release's own Linux binary. It runs before `release`, which attaches
+  # the zip: assets can't be added to an immutable release once it is published. The build runs
+  # Gradle, its plugins and dependencies and an IDE, so it gets a read-only token; `release`,
+  # which runs none of that, writes the release.
   jetbrains:
-    needs: [check, ci, release]
+    needs: [check, ci]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -132,26 +136,6 @@ jobs:
         with:
           name: jetbrains-plugin
           path: editors/jetbrains/build/distributions/groovyfmt-jetbrains-*.zip
-
-  # Attaches the zip the jetbrains job built and tested. No checkout and no build: the only
-  # code with the write token is gh. A rerun of this job attaches the zip again.
-  attach-jetbrains:
-    needs: jetbrains
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: jetbrains-plugin
-      - name: Attach the zip to the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          zip=groovyfmt-jetbrains-${GITHUB_REF_NAME#v}.zip
-          test -f "$zip"
-          gh release upload "$GITHUB_REF_NAME" "$zip" --repo "$GITHUB_REPOSITORY" --clobber
 
   # Off until the repository variable PUBLISH_JETBRAINS is 'true'. Publishes the exact zip
   # the jetbrains job built and tested, through the Marketplace upload API

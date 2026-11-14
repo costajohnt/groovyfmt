@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- The release workflow attaches the JetBrains plugin zip when it creates the GitHub release. Releases are now immutable, so the zip can't be added after publishing, and v0.14.0's release went out without it.
+
 ## 0.14.0 (2026-11-13)
 
 ### Added
