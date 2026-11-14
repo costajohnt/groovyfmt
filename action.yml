@@ -86,6 +86,16 @@ runs:
           echo "::error::Checksum mismatch for $archive: expected $expected, got $actual"
           exit 1
         fi
+        # The .sha256 comes from the same release, so it can't catch a replaced release. An
+        # immutable release (v0.14.0 on) has a release attestation that can: its assets and tag
+        # can't change, so neither can this answer. Older releases have only the .sha256 check.
+        immutable=$(gh api "repos/$repo/releases/tags/$tag" --jq .immutable)
+        if [ "$immutable" = true ]; then
+          if ! gh release verify-asset "$tag" "$dir/$archive" --repo "$repo"; then
+            echo "::error::gh release verify-asset could not verify $archive against the attestation of the immutable release $tag (see its output above). It needs gh 2.81.0 or later; this runner has $(gh --version | head -n 1)."
+            exit 1
+          fi
+        fi
         if [ "$ext" = zip ]; then
           # Expand-Archive is in every PowerShell; the paths go in through the environment, unquoted
           ZIP="$dir/$archive" DEST="$dir" pwsh -NoProfile -NonInteractive -Command 'Expand-Archive -LiteralPath $env:ZIP -DestinationPath $env:DEST -Force'

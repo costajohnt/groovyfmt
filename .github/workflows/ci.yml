@@ -317,6 +317,17 @@ jobs:
         if: steps.unformatted.outcome != 'failure'
         run: exit 1
       - run: groovyfmt ci-sample/A.groovy
+      # latest is immutable, so the installs above ran gh release verify-asset. v0.13.1 is from
+      # before immutable releases: no attestation, so only its .sha256 is checked.
+      - id: mutable
+        uses: ./
+        with:
+          version: v0.13.1
+          args: ""
+      - name: it installed the mutable release
+        env:
+          GOT: ${{ steps.mutable.outputs.version }}
+        run: test "$GOT" = v0.13.1
       - uses: ./
         with:
           version: ${{ steps.setup.outputs.version }}
