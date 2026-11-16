@@ -481,7 +481,8 @@ fn indent_for(
     }
     // A chain that starts its own line after `=` or `(` (`def x =` then `a ? b :` / `c ? d :`
     // / `e`): that line is already a continuation, so each link lines up with the link above,
-    // unless that link is a ternary whose middle operand has a line of its own (#183).
+    // unless that link is a ternary whose middle operand has a line of its own, or the chain
+    // is an operand of another conditional, which keeps its nesting (#183).
     let a_row = a.start_position().row;
     let head = path[j].0;
     let line_start = head.start_byte() - head.start_position().column;
@@ -489,6 +490,10 @@ fn indent_for(
         && a.child_by_field_name("consequence")
             .is_none_or(|c| c.start_position().row == a_row)
         && path[j - 1].0.start_position().row < head.start_position().row
+        && !matches!(
+            path[j - 1].0.kind(),
+            "elvis_expression" | "ternary_expression"
+        )
         && src[line_start..head.start_byte()].trim().is_empty()
         && verbatim.get(a_row) == Some(&false)
     {
