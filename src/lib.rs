@@ -40,7 +40,16 @@ pub fn parse(src: &str) -> Tree {
             p
         });
     }
-    PARSER.with_borrow_mut(|p| p.parse(src, None).expect("parse cancelled"))
+    // The grammar's lexer reads a NUL byte as the end of input, so a string holding one, which
+    // Groovy 2.4, 3 and 4 accept, didn't parse (#184). A copy with each NUL as U+0001, also one
+    // byte and taken by the same rules, is parsed instead, so every node's range is the same
+    // in `src`.
+    let src = if src.contains('\0') {
+        std::borrow::Cow::Owned(src.replace('\0', "\u{1}"))
+    } else {
+        std::borrow::Cow::Borrowed(src)
+    };
+    PARSER.with_borrow_mut(|p| p.parse(&*src, None).expect("parse cancelled"))
 }
 
 /// Visit every node in document order. Iterative, so deeply nested input can't overflow the
@@ -499,6 +508,27 @@ pub(crate) mod scaling {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn nul_byte_in_a_string_parses() {
+        // in every string kind, and in a comment, which already parsed
+        let src =
+            "def k = 'a' + '\0' + 'b'\ndef j = \"x\0y${k}\"\ndef t = '''\0'''\n// c\0\nprintln k\n";
+        let tree = super::parse(src);
+        assert!(
+            !tree.root_node().has_error(),
+            "{}",
+            tree.root_node().to_sexp()
+        );
+        let mut strings = Vec::new();
+        super::preorder(tree.root_node(), |n| {
+            if n.kind() == "string_literal" {
+                strings.push(super::text(n, src).to_string());
+            }
+            true
+        });
+        assert_eq!(strings, ["'a'", "'\0'", "'b'", "\"x\0y${k}\"", "'''\0'''"]);
+    }
+
     /// Every node kind and field name matched as a string in format.rs and lint.rs. A grammar
     /// update that renames one would otherwise silently turn a lint rule into a no-op.
     #[test]

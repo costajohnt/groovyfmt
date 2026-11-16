@@ -345,6 +345,12 @@ module.exports = grammar({
     // §3.2 — zero-width: a `{` on the line after `new X()` where a statement
     // may end, which starts a closure argument (see method_invocation).
     $._new_closure_start,
+    // §4 — `sealed` is a modifier only before `class`, `interface` or `trait`;
+    // anywhere else it is a name: `def sealed = 1`, `sealed.message`.
+    $._sealed_keyword,
+    // §5.5 — `as` or `in` as a bare receiver's one argument, when the
+    // statement ends after it: `println as` (lexed like `_command_name_argument`).
+    $._command_keyword_argument,
     // Never referenced by a rule: valid only during error recovery, when
     // the scanner must not emit context-sensitive tokens.
     $._error_sentinel,
@@ -360,9 +366,11 @@ module.exports = grammar({
     [$._modifier, $.local_variable_declaration, $.for_in_statement],
     // `for (int i, j; …)` and `for (int i, int j in …)` split at the comma.
     [$._bare_declarator, $.for_in_statement],
-    // `if (a) foo b bar c` then `else`: a chain of names, or statements.
-    [$.command_chain, $._bare_name_command, $._expression, $._type],
-    [$.command_chain, $._bare_name_command, $._type],
+    // `if (a) foo b bar c` or `if (a) render x as JSON` then `else`: a
+    // chain of names or a cast argument, or statements.
+    [$.command_chain, $._bare_name_command, $._bare_cast_command, $._expression, $._type],
+    [$.command_chain, $._bare_name_command, $._bare_cast_command, $._type],
+    [$._bare_cast_argument, $._expression],
     [$._modifier, $.multi_assignment_declaration],
     [$._modifier, $.for_in_statement],
     [$._modifier, $.local_variable_declaration, $.multi_assignment_declaration],
@@ -676,6 +684,12 @@ module.exports = grammar({
       // chains allow: `isOrIsCausedBy(e, A) or(isOrIsCausedBy(e, B))`.
       $._call_chain,
       $._lambda_command,
+      // `println as`, `println in`: a variable named `as` or `in` (Groovy 3
+      // and 4) as the one argument, with the statement ending after it.
+      seq(
+        field('receiver', $.identifier),
+        field('argument', alias($._command_keyword_argument, $.identifier)),
+      ),
       // `if (c) a.b key` then `else`: a name alone after a dotted receiver,
       // with the statement ending after it.
       seq(
@@ -696,6 +710,21 @@ module.exports = grammar({
       field('receiver', $.identifier),
       repeat(prec.dynamic(-1, seq(field('argument', $.identifier), $.identifier))),
       $._command_name,
+    ),
+
+    // `if (c) render result as JSON` then `else`, Grails' idiom: a bare
+    // receiver's one cast argument. Elsewhere the line reads as two
+    // statements, `render` and `result as JSON`; prec.dynamic keeps that
+    // reading wherever both parse, so only the `else` decides.
+    _bare_cast_command: $ => prec.dynamic(-1, seq(
+      field('receiver', $.identifier),
+      field('argument', alias($._bare_cast_argument, $.cast_expression)),
+    )),
+
+    _bare_cast_argument: $ => seq(
+      field('value', $.identifier),
+      'as',
+      field('type', $._cast_type),
     ),
 
     _command_name: $ => choice(
@@ -726,8 +755,9 @@ module.exports = grammar({
 
     // A quoted key works too, `attributes 'Main-Class': main`, where a
     // string may start an argument: after `_command_literal_start` or a comma.
+    // So does a number, `select 1: -1`, `select 1.5: 2, 3: 4`.
     _command_quoted_named_argument: $ => seq(
-      field('key', $.string_literal),
+      field('key', choice($.string_literal, $.number_literal)),
       ':',
       field('value', $._expression),
     ),
@@ -846,6 +876,7 @@ module.exports = grammar({
         $.block,
         $._statement,
         alias($._bare_name_command, $.command_chain),
+        alias($._bare_cast_command, $.command_chain),
       )),
       optional(';'),
       optional(seq(
@@ -1056,7 +1087,7 @@ module.exports = grammar({
       optional('def'),
       optional(seq(repeat1($._modifier), repeat1($.annotation))),
       repeat($._modifier),
-      optional(choice('sealed', token('non-sealed'))),
+      optional(choice(alias($._sealed_keyword, 'sealed'), token('non-sealed'))),
       'class',
       field('name', $.identifier),
       optional(field('type_parameters', $.type_parameters)),
@@ -1069,7 +1100,7 @@ module.exports = grammar({
     trait_declaration: $ => seq(
       repeat($.annotation),
       repeat($._modifier),
-      optional(choice('sealed', token('non-sealed'))),
+      optional(choice(alias($._sealed_keyword, 'sealed'), token('non-sealed'))),
       alias($._trait_keyword, 'trait'),
       field('name', $.identifier),
       optional(field('type_parameters', $.type_parameters)),
@@ -1083,7 +1114,7 @@ module.exports = grammar({
     interface_declaration: $ => seq(
       ...memberModifiers($),
       optional('def'),
-      optional(choice('sealed', token('non-sealed'))),
+      optional(choice(alias($._sealed_keyword, 'sealed'), token('non-sealed'))),
       'interface',
       field('name', $.identifier),
       optional(field('type_parameters', $.type_parameters)),
@@ -1711,9 +1742,10 @@ module.exports = grammar({
       )),
     )),
 
-    // Groovy 3 and 4 take `in` as a name: `InputStream in = null`.
+    // Groovy 3 and 4 take `in` and `as` as names: `InputStream in = null`,
+    // `AssertStatement as = s`.
     _initialized_declarator: $ => seq(
-      field('name', choice($.identifier, alias('in', $.identifier))),
+      field('name', choice($.identifier, alias('in', $.identifier), alias('as', $.identifier))),
       '=',
       field('value', $._value),
     ),
@@ -1915,7 +1947,8 @@ module.exports = grammar({
       repeat($.annotation),
       optional('final'),
       optional(choice('def', alias($._var_keyword, 'var'), field('type', $._type))),
-      field('variable', $.identifier),
+      // `as` is a name too (Groovy 3 and 4): `for (AssertStatement as : l)`
+      field('variable', choice($.identifier, alias('as', $.identifier))),
       choice('in', ':'),
       field('value', $._expression),
       ')',
@@ -2824,7 +2857,11 @@ module.exports = grammar({
     // The last closure parameter's default may end in a name before the
     // closure's `->`, `{ a, e = x + g -> e }`, as Groovy reads it: the prec on
     // the name outranks a lambda's `g -> e` (see _closure_parameter_name_default).
-    _closure_default_binary: $ => binaryOperators($, prec(PREC.ASSIGN + 1, $.identifier)),
+    _closure_default_binary: $ => binaryOperators($, choice(
+      prec(PREC.ASSIGN + 1, $.identifier),
+      // a right operand that itself ends in the name: `x + y * g -> e`
+      alias($._closure_default_binary, $.binary_expression),
+    )),
 
     // §5.8 — closure expression. `{ -> }` is the explicit no-parameter
     // form; `{ a, b -> body }` has identifier parameters;

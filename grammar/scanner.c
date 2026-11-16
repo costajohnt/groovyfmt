@@ -43,6 +43,8 @@ enum TokenType {
     CLOSURE_DECLARATION_START,
     NOT_IN_OPEN,
     NEW_CLOSURE_START,
+    SEALED_KEYWORD,
+    COMMAND_KEYWORD_ARGUMENT,
     ERROR_SENTINEL,
 };
 
@@ -134,7 +136,11 @@ static bool finish_command_named_key(TSLexer *lexer, const bool *valid_symbols,
         lexer->result_symbol = COMMAND_NAMED_KEY;
         return true;
     }
-    if (!valid_symbols[COMMAND_NAME_ARGUMENT] || !is_name_argument(word, len)) {
+    // `println as`, `println in`: a variable named `as` or `in` (Groovy 3 and
+    // 4) as a bare receiver's one argument, when the statement ends after it.
+    bool keyword = len == 2 && (memcmp(word, "as", 2) == 0 || memcmp(word, "in", 2) == 0);
+    if (!(valid_symbols[COMMAND_NAME_ARGUMENT] && is_name_argument(word, len))
+        && !(valid_symbols[COMMAND_KEYWORD_ARGUMENT] && keyword)) {
         return false;
     }
     bool ends = lexer->eof(lexer) || n == '\n' || n == '\r' || n == ';' || n == '}';
@@ -145,7 +151,7 @@ static bool finish_command_named_key(TSLexer *lexer, const bool *valid_symbols,
     if (!ends) {
         return false;
     }
-    lexer->result_symbol = COMMAND_NAME_ARGUMENT;
+    lexer->result_symbol = keyword ? COMMAND_KEYWORD_ARGUMENT : COMMAND_NAME_ARGUMENT;
     return true;
 }
 
@@ -644,10 +650,12 @@ bool tree_sitter_groovy_external_scanner_scan(
                 len++;
                 lexer->advance(lexer, false);
             }
-            // ... unless a dot follows, as in a variable named `in`: `(T) in.x`.
+            // ... unless a dot follows, as in a variable named `in`: `(T) in.x`,
+            // or a `[` follows `as`, which no type starts: `(T) as[0]`.
             if (((len == 2 && (memcmp(word, "in", 2) == 0 || memcmp(word, "as", 2) == 0))
                  || (len == 10 && memcmp(word, "instanceof", 10) == 0))
-                && lexer->lookahead != '.') {
+                && lexer->lookahead != '.'
+                && !(len == 2 && memcmp(word, "as", 2) == 0 && lexer->lookahead == '[')) {
                 return false;
             }
             lexer->result_symbol = CAST_VALUE_START;
@@ -787,6 +795,14 @@ bool tree_sitter_groovy_external_scanner_scan(
                     return false;
                 }
                 lexer->result_symbol = COMMAND_LITERAL_START;
+                return true;
+            }
+            // `println as` at the end of its line (see finish_command_named_key).
+            if (valid_symbols[COMMAND_KEYWORD_ARGUMENT] && len == 2
+                && (memcmp(word, "as", 2) == 0 || memcmp(word, "in", 2) == 0)
+                && (lexer->lookahead == '\n' || lexer->lookahead == '\r')) {
+                lexer->mark_end(lexer);
+                lexer->result_symbol = COMMAND_KEYWORD_ARGUMENT;
                 return true;
             }
             if (lexer->lookahead == '.' || lexer->lookahead == '?') {
@@ -964,12 +980,16 @@ bool tree_sitter_groovy_external_scanner_scan(
                 };
                 // `in.property`: a name before a dot starts a statement, and
                 // `in = 2` assigns to a variable named `in` (Groovy 3 and 4).
+                // So does `as = 2`, and `in` or `as` alone on its line, or
+                // `as[0]`, which no type starts.
                 bool dotted = lexer->lookahead == '.';
-                if (len == 2 && memcmp(word, "in", 2) == 0) {
+                if (len == 2 && (memcmp(word, "in", 2) == 0 || memcmp(word, "as", 2) == 0)) {
                     while (lexer->lookahead == ' ' || lexer->lookahead == '\t') {
                         advance(lexer);
                     }
-                    dotted |= lexer->lookahead == '=';
+                    int32_t n = lexer->lookahead;
+                    dotted |= n == '=' || n == '\n' || n == '\r' || n == ';' || n == '}'
+                        || lexer->eof(lexer) || (word[0] == 'a' && n == '[');
                 }
                 for (unsigned i = 0; i < sizeof(continuing) / sizeof(continuing[0]) && !dotted; i++) {
                     if (strlen(continuing[i]) == len && memcmp(word, continuing[i], len) == 0) {
@@ -984,15 +1004,17 @@ bool tree_sitter_groovy_external_scanner_scan(
 
     // SPECIFICATION.md §4 — `var` and `trait` are keywords only before a name
     // on the same line (not `in`, `as` or `instanceof`, which make them a
-    // value), and `pipeline` only before a `{` on its line. Otherwise the
-    // grammar lexes the word as an identifier: `var.set(1)`, `{ var -> }`,
-    // `def var = 1`, `trait.parentFile`, `Pipeline pipeline = p`.
+    // value), `pipeline` only before a `{` on its line, and `sealed` only
+    // before `class`, `interface` or `trait`. Otherwise the grammar lexes the
+    // word as an identifier: `var.set(1)`, `{ var -> }`, `def var = 1`,
+    // `trait.parentFile`, `Pipeline pipeline = p`, `def sealed = 1`.
     if ((valid_symbols[VAR_KEYWORD] || valid_symbols[PIPELINE_KEYWORD]
-         || valid_symbols[TRAIT_KEYWORD] || valid_symbols[YIELD_KEYWORD])
+         || valid_symbols[TRAIT_KEYWORD] || valid_symbols[YIELD_KEYWORD]
+         || valid_symbols[SEALED_KEYWORD])
         && !valid_symbols[ERROR_SENTINEL]) {
         newline |= skip_whitespace(lexer);
         int32_t c = lexer->lookahead;
-        if (c == 'v' || c == 'p' || c == 't' || c == 'y') {
+        if (c == 'v' || c == 'p' || c == 't' || c == 'y' || c == 's') {
             lexer->mark_end(lexer);
             char word[12];
             unsigned len = 0;
@@ -1015,13 +1037,17 @@ bool tree_sitter_groovy_external_scanner_scan(
             } else if (len == 5 && memcmp(word, "yield", 5) == 0
                 && valid_symbols[YIELD_KEYWORD]) {
                 sym = YIELD_KEYWORD;
+            } else if (len == 6 && memcmp(word, "sealed", 6) == 0
+                && valid_symbols[SEALED_KEYWORD]) {
+                sym = SEALED_KEYWORD;
             } else {
                 sym = ERROR_SENTINEL;
             }
             if (sym == ERROR_SENTINEL || lexer->lookahead == '.') {
                 return valid_symbols[CLOSURE_DECLARATION_START]
                     && finish_closure_declaration(lexer, c,
-                        len == 4 && memcmp(word, "this", 4) == 0);
+                        (len == 4 && memcmp(word, "this", 4) == 0)
+                        || (len == 5 && memcmp(word, "super", 5) == 0));
             }
             lexer->mark_end(lexer);
             bool spaced = lexer->lookahead == ' ' || lexer->lookahead == '\t';
@@ -1057,6 +1083,28 @@ bool tree_sitter_groovy_external_scanner_scan(
                     }
                     if ((len == 2 && (memcmp(word, "in", 2) == 0 || memcmp(word, "as", 2) == 0))
                         || (len == 10 && memcmp(word, "instanceof", 10) == 0)) {
+                        return false;
+                    }
+                }
+            } else if (sym == SEALED_KEYWORD) {
+                // Before a type's keyword, also on a later line, or before a
+                // modifier, an annotation or `non-sealed`, which Groovy rejects
+                // after it (`sealed final interface I`): those stay errors.
+                while (is_whitespace(lexer->lookahead)) {
+                    advance(lexer);
+                }
+                if (lexer->lookahead != '@') {
+                    static const char *const after[] = {
+                        "class", "interface", "trait", "record", "enum", "non",
+                        "final", "abstract", "static", "public", "private",
+                        "protected", "strictfp",
+                    };
+                    len = read_word(lexer, word, sizeof(word));
+                    bool keyword = false;
+                    for (unsigned i = 0; i < sizeof(after) / sizeof(after[0]) && !keyword; i++) {
+                        keyword = strlen(after[i]) == len && memcmp(word, after[i], len) == 0;
+                    }
+                    if (!keyword) {
                         return false;
                     }
                 }
