@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A call's trailing closure after arguments that wrap, `foo(a: 1,` then `b: 2) {`, has its body one indent past the line the call starts on and its `}` level with that line, as after arguments on one line. The body was indented from the `) {` line, two steps in, with the `}` one step in. A closure inside the parentheses keeps its indent. Both formatting modes. ([#183](https://github.com/costajohnt/groovyfmt/issues/183))
+- An elvis or ternary chain that starts on the line after `=` or `(`, `def x =` then `a ? b :` / `c ? d :` / `e`, keeps all its links level with its first line, in both formatting modes. Each link after the first was one step further in (the rest of [#174](https://github.com/costajohnt/groovyfmt/issues/174)). A ternary whose middle operand is on a line of its own, and a chain that is an operand of another conditional, keep their nesting. ([#183](https://github.com/costajohnt/groovyfmt/issues/183))
+
 ## 0.20.2 (2026-11-16)
 
 ### Fixed
