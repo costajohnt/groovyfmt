@@ -2052,6 +2052,30 @@ fn discovers_groovy_files_and_skips_build_dirs() {
 }
 
 #[test]
+fn out_and_target_packages_under_a_source_root_are_source() {
+    let d = Dir::new("outpkg");
+    d.write("pom.xml", "");
+    d.write(".git/HEAD", "");
+    // project and module output: skipped as before
+    d.write("target/T.groovy", UGLY);
+    d.write("out/O.groovy", UGLY);
+    d.write("mod/target/classes/M.groovy", UGLY);
+    d.write("mod/pom.xml", "");
+    d.write("mod/out/production/N.groovy", UGLY);
+    // packages named out or target: source
+    d.write("mod/src/test/groovy/org/acme/out/A.groovy", UGLY);
+    d.write("src/main/java/org/acme/target/B.groovy", UGLY);
+    d.write("integrationTest/groovy/out/C.groovy", UGLY);
+    d.write("vars/target/D.groovy", UGLY);
+    let o = run(&d.0, &["--check"], None);
+    assert_eq!(
+        stdout(&o),
+        "integrationTest/groovy/out/C.groovy\nmod/src/test/groovy/org/acme/out/A.groovy\n\
+         src/main/java/org/acme/target/B.groovy\nvars/target/D.groovy\n"
+    );
+}
+
+#[test]
 fn a_build_package_under_src_is_source_and_gradle_output_is_not() {
     let d = Dir::new("buildpkg");
     d.write("build.gradle", "");

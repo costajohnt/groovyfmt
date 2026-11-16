@@ -277,6 +277,9 @@ fn jenkinsfile_suffix(name: &str) -> Option<&str> {
 /// Directories skipped while walking: hidden ones and common build/vendor output.
 /// A directory named explicitly on the command line is always entered.
 ///
+/// `out` and `target` follow the rule for `build` below, except that they are output in a
+/// project with only a `.git` too: under a source root they are packages (#195).
+///
 /// `build` is Gradle's output directory, but also a fine package name
 /// (`src/main/groovy/org/acme/build`) or a plain directory (`jobs/build/x/Jenkinsfile`). Its
 /// project is the nearest directory above it holding a Gradle or Maven build file
@@ -297,14 +300,15 @@ pub fn is_skipped_dir(path: &Path) -> bool {
 /// Why `is_skipped_dir` skips `path`, for `-v`.
 pub fn skipped_dir(path: &Path) -> Option<&'static str> {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    if name == "build" {
+    if matches!(name, "build" | "out" | "target") {
         let full = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let mut in_src = false;
         let mut output = true;
         for a in full.ancestors().skip(1) {
             let build_file = BUILD_FILES.iter().any(|f| a.join(f).is_file());
             if build_file || a.join(".git").exists() {
-                output = build_file;
+                // `out` (IntelliJ) and `target` (Maven) are output in any project
+                output = build_file || name != "build";
                 break;
             }
             in_src |= a
@@ -315,8 +319,6 @@ pub fn skipped_dir(path: &Path) -> Option<&'static str> {
     }
     if name.starts_with('.') {
         Some("hidden")
-    } else if matches!(name, "out" | "target") {
-        Some("build output")
     } else if name == "node_modules" {
         Some("dependencies")
     } else {
@@ -324,7 +326,7 @@ pub fn skipped_dir(path: &Path) -> Option<&'static str> {
     }
 }
 
-/// Directories whose `build` packages are source, not output: `src`, a Jenkins shared
+/// Directories whose `build`, `out` and `target` packages are source, not output: `src`, a Jenkins shared
 /// library's `vars`, and the language directory of a source set (`test/groovy`,
 /// `integrationTest/groovy`, `src/main/groovy`), where Gradle never writes its output (#173).
 const SOURCE_ROOTS: &[&str] = &["src", "vars", "groovy"];
