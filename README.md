@@ -73,7 +73,7 @@ exclude = ["generated/**"]
 
 ```yaml
 - uses: actions/checkout@v5
-- uses: costajohnt/groovyfmt@v0.20.2      # runs groovyfmt --check --output-format github
+- uses: costajohnt/groovyfmt@v0.20.3      # runs groovyfmt --check --output-format github
 - run: groovyfmt --lint --output-format github
 ```
 
@@ -82,7 +82,7 @@ pre-commit:
 ```yaml
 repos:
   - repo: https://github.com/costajohnt/groovyfmt
-    rev: v0.20.2
+    rev: v0.20.3
     hooks:
       - id: groovyfmt        # or groovyfmt-check
       - id: groovyfmt-lint

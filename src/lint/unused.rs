@@ -229,6 +229,7 @@ pub(super) fn check(
     // the one returned. Not for Spock's feature (`def "adds"()`) and fixture methods, whose
     // value nothing reads.
     let mut returned = HashSet::new();
+    let mut parameters = HashSet::new();
     for n in nodes.iter().copied() {
         while scopes.last().is_some_and(|&end| end <= n.start_byte()) {
             scopes.pop();
@@ -255,6 +256,9 @@ pub(super) fn check(
             _ => None,
         };
         returned.extend(body.and_then(last_statement));
+        if n.kind() == "closure" {
+            parameters.extend(misparsed_parameters(n));
+        }
         match n.kind() {
             "field_declaration" | "method_declaration" => decls.push(n),
             "constructor_declaration" if is_method(src, n) => decls.push(n),
@@ -271,7 +275,7 @@ pub(super) fn check(
     // something reads it by reflection or a transform rewrites it
     decls.retain(|d| {
         (if d.kind() == "local_variable_declaration" {
-            scope_of.get(&d.id()).is_some_and(Option::is_some)
+            scope_of.get(&d.id()).is_some_and(Option::is_some) && !parameters.contains(&d.id())
         } else {
             has_modifier(*d, "private")
         }) && annotations(src, *d)
@@ -339,11 +343,10 @@ pub(super) fn check(
                     continue;
                 }
                 // `getFoo()` / `isFoo()` / `setFoo(x)` are also called as the property `foo`
-                let property_uses = property(name).map_or(0, |p| {
-                    let lower = lcfirst(p);
-                    uses(&idx, &lower, all.clone(), usize::MAX)
-                        + uses(&idx, p, all.clone(), usize::MAX)
-                });
+                let property_uses: usize = property_names(name)
+                    .iter()
+                    .map(|p| uses(&idx, p, all.clone(), usize::MAX))
+                    .sum();
                 if uses(&idx, name, all.clone(), n.start_byte()) + property_uses == 0
                     && !maybe_dynamic(name)
                 {
@@ -420,22 +423,27 @@ fn wanted(src: &str, decls: &[Node]) -> Vec<String> {
             _ => {
                 let name = d.child_by_field_name("name").map_or("", |n| text(n, src));
                 out.push(name.to_string());
-                if let Some(p) = property(name) {
-                    out.push(lcfirst(p));
-                    out.push(p.to_string());
-                }
+                out.extend(property_names(name));
             }
         }
     }
     out
 }
 
-/// `Foo` for `getFoo`, `isFoo` and `setFoo`.
-pub(super) fn property(name: &str) -> Option<&str> {
+/// `Foo` for `getFoo`, `isFoo` and `setFoo`. Any rest counts, as Groovy also reads
+/// `get_foo` as `_foo`, `getaB` as `aB` and `getÄpfel` as `äpfel` (#181).
+fn property(name: &str) -> Option<&str> {
     ["get", "is", "set"]
         .iter()
         .find_map(|p| name.strip_prefix(p))
-        .filter(|r| r.starts_with(|c: char| c.is_ascii_uppercase()))
+        .filter(|r| !r.is_empty())
+}
+
+/// The names accessor `name` is read under as a property: `foo` and `Foo` for `getFoo`,
+/// `SCOPES` for `getSCOPES` (Groovy leaves a name whose first two letters are capitals as
+/// it is, #181). Groovy accepts only some of them for a given name; extras just keep it.
+pub(crate) fn property_names(name: &str) -> Vec<String> {
+    property(name).map_or_else(Vec::new, |p| vec![lcfirst(p), p.to_string()])
 }
 
 pub(super) fn lcfirst(s: &str) -> String {
@@ -497,6 +505,19 @@ fn local(
     }
 }
 
+/// `{ List<String> a, String b -> }` parses as the local `List<String> a, String` and the
+/// lambda `b -> ...` (#182): the id of that local, which holds `closure`'s parameters.
+fn misparsed_parameters(closure: Node) -> Option<usize> {
+    let d = closure.named_child(0)?;
+    (d.kind() == "local_variable_declaration"
+        && d.next_named_sibling().is_some_and(|s| {
+            s.kind() == "expression_statement"
+                && s.named_child(0)
+                    .is_some_and(|l| l.kind() == "lambda_expression")
+        }))
+    .then(|| d.id())
+}
+
 /// The id of the last statement of a body, comments aside.
 fn last_statement(body: Node) -> Option<usize> {
     let mut c = body.walk();
@@ -537,6 +558,16 @@ mod tests {
     fn private_fields() {
         let src = "class A {\n  private int unused = 1\n  private int used\n  private static final long serialVersionUID = 1L\n  @Delegate private Map m\n  private String named\n  private String inString\n  int pub\n  private a, b\n  def f() { used + this.a + \"${inString}\" + new A(named: 1) }\n}\n@ToString(includeFields = true)\nclass B {\n  private int shown\n}\n";
         assert_eq!(rules(src, "UnusedPrivateField"), vec![2, 9]);
+    }
+
+    #[test]
+    fn closure_parameters_with_a_generic_type_are_not_locals() {
+        // #182: `{ List<String> ctx, String m -> }` parses as a local and a lambda
+        let src = "def f() {\n  def c = { List<String> ctx, String m -> m }\n  def d = { Map<String, Integer> ctx, String m, int k -> m }\n  def e = { List<String> ctx, m -> m }\n  [c, d, e]\n}\n";
+        assert_eq!(rules(src, "UnusedVariable"), vec![] as Vec<usize>);
+        // a real first local in a closure is still checked
+        let src = "def f() {\n  def c = {\n    List<String> unused = []\n    go()\n  }\n  c\n}\n";
+        assert_eq!(rules(src, "UnusedVariable"), vec![3]);
     }
 
     #[test]

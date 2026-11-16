@@ -41,6 +41,8 @@ enum TokenType {
     CLOSURE_COMMAND_ARGUMENT,
     COMMAND_LAMBDA_OPEN,
     CLOSURE_DECLARATION_START,
+    NOT_IN_OPEN,
+    NEW_CLOSURE_START,
     ERROR_SENTINEL,
 };
 
@@ -932,6 +934,13 @@ bool tree_sitter_groovy_external_scanner_scan(
         }
         if (lexer->lookahead == '\n' || lexer->lookahead == '\r') {
             newline = skip_whitespace(lexer);
+            // A `{` on the line after `new X()` where a statement may end
+            // starts a closure argument, not a class body.
+            if (lexer->lookahead == '{' && valid_symbols[NEW_CLOSURE_START]) {
+                lexer->mark_end(lexer);
+                lexer->result_symbol = NEW_CLOSURE_START;
+                return true;
+            }
             if (lexer->lookahead == '(') {
                 lexer->mark_end(lexer);
                 lexer->result_symbol = LINE_BREAK;
@@ -1166,6 +1175,29 @@ bool tree_sitter_groovy_external_scanner_scan(
             bool self = (len == 4 && memcmp(word, "this", 4) == 0)
                 || (len == 5 && memcmp(word, "super", 5) == 0);
             return finish_closure_declaration(lexer, c, self);
+        }
+    }
+
+    // SPECIFICATION.md §3.2 — `!in` right before `[`, `(` or `{`:
+    // `1 !in[2, 3]`. The grammar's own `!in` token needs a character after
+    // it and would take the bracket; this one ends before it.
+    if (valid_symbols[NOT_IN_OPEN] && !valid_symbols[ERROR_SENTINEL]) {
+        while (lexer->lookahead == ' ' || lexer->lookahead == '\t') {
+            lexer->advance(lexer, true);
+        }
+        if (lexer->lookahead == '!') {
+            for (const char *p = "!in"; *p; p++) {
+                if (lexer->lookahead != *p) {
+                    return false;
+                }
+                advance(lexer);
+            }
+            int32_t c = lexer->lookahead;
+            if (c != '[' && c != '(' && c != '{') {
+                return false;
+            }
+            lexer->result_symbol = NOT_IN_OPEN;
+            return true;
         }
     }
 

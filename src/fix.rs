@@ -244,14 +244,19 @@ fn check(
     }
     // A net under UnusedImport's own idea of a use (#165 slipped past it, and past the
     // checks below, which compare trees, not names): a removed import's name must not be
-    // left as an identifier anywhere but the name or alias of another import.
-    let gone: Vec<&str> = edits
+    // left as an identifier anywhere but the name or alias of another import, nor a static
+    // accessor import's property name (`SCOPES` for `getSCOPES`, #181).
+    let gone: Vec<String> = edits
         .iter()
         .zip(calls)
         .filter(|(_, r)| **r == "UnusedImport")
         .flat_map(|(e, _)| import_symbols(src, b, &e.range))
         .collect();
-    if !gone.is_empty() && identifiers(out, a).iter().any(|t| gone.contains(t)) {
+    if !gone.is_empty()
+        && identifiers(out, a)
+            .iter()
+            .any(|t| gone.iter().any(|g| g == t))
+    {
         return Err("a removed import's name is still used");
     }
     if leaves(src, &before, &removed) != leaves(out, &after, inserted) {
@@ -304,8 +309,9 @@ fn check(
     Ok(())
 }
 
-/// The names (alias, or the last part) of the imports inside `range`.
-fn import_symbols<'a>(src: &'a str, root: Node, range: &Range<usize>) -> Vec<&'a str> {
+/// The names (alias, or the last part, and a static accessor's property names) of the
+/// imports inside `range`.
+fn import_symbols(src: &str, root: Node, range: &Range<usize>) -> Vec<String> {
     let mut v = Vec::new();
     crate::preorder(root, |n| {
         if n.end_byte() <= range.start || n.start_byte() >= range.end {
@@ -315,7 +321,8 @@ fn import_symbols<'a>(src: &'a str, root: Node, range: &Range<usize>) -> Vec<&'a
             return true;
         }
         if range.start <= n.start_byte() && n.end_byte() <= range.end {
-            v.push(crate::lint::import_name(n, src).1);
+            v.push(crate::lint::import_name(n, src).1.to_string());
+            v.extend(crate::lint::import_property_names(n, src));
         }
         false
     });
@@ -501,6 +508,35 @@ mod tests {
                 "import static a.B. SECONDS\nprintln SECONDS\n",
                 "import static a.B. SECONDS",
             ),
+            // #181: a static accessor import's property, in each form Groovy reads
+            (
+                "import static a.B.getSCOPES\nprintln SCOPES\n",
+                "import static a.B.getSCOPES",
+            ),
+            (
+                "import static a.B.getUrl\nprintln url\n",
+                "import static a.B.getUrl",
+            ),
+            (
+                "import static a.B.getUrl\nprintln Url\n",
+                "import static a.B.getUrl",
+            ),
+            (
+                "import static a.B.isACTIVE\nprintln ACTIVE\n",
+                "import static a.B.isACTIVE",
+            ),
+            (
+                "import static a.B.setURLX\nURLX = 1\n",
+                "import static a.B.setURLX",
+            ),
+            (
+                "import static a.B.get_foo\nprintln _foo\n",
+                "import static a.B.get_foo",
+            ),
+            (
+                "import static a.B.getFoo as getBar\nprintln bar\n",
+                "import static a.B.getFoo as getBar",
+            ),
         ] {
             assert_eq!(net(src, line), gone, "{src:?}");
         }
@@ -512,6 +548,8 @@ mod tests {
         ] {
             assert_eq!(net(src, "import a.Foo"), Ok(()), "{src:?}");
         }
+        // a non-static import has no property names
+        assert_eq!(net("import a.getFoo\nfoo()\n", "import a.getFoo"), Ok(()));
     }
 
     #[test]

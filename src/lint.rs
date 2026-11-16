@@ -1014,6 +1014,16 @@ pub(crate) fn import_name<'a>(d: Node, src: &'a str) -> (String, &'a str) {
     (name.map_or_else(String::new, |n| dotted(n, src)), symbol)
 }
 
+/// The property names a static import of an accessor (`getFoo`, by its alias if it has
+/// one) is also used under: `foo` and `Foo` (#181).
+pub(crate) fn import_property_names(d: Node, src: &str) -> Vec<String> {
+    if import_has(d, "static") {
+        unused::property_names(import_name(d, src).1)
+    } else {
+        Vec::new()
+    }
+}
+
 /// Whether import `d` has the keyword or token `t` (`static`, `.*`).
 pub(crate) fn import_has(d: Node, t: &str) -> bool {
     let mut c = d.walk();
@@ -1111,8 +1121,9 @@ fn imports(src: &str, tree: &Tree, v: &mut Vec<Violation>) {
         }
         // `import static a.B.getFoo` also serves the property `foo` (Groovy's
         // StaticImportVisitor looks up getFoo / setFoo for it)
-        let property_used = import_has(d, "static")
-            && unused::property(symbol).is_some_and(|p| used.contains(unused::lcfirst(p).as_str()));
+        let property_used = import_property_names(d, src)
+            .iter()
+            .any(|p| used.contains(p.as_str()));
         if !symbol.is_empty() && !used.contains(symbol) && !property_used {
             v.push(Violation {
                 fix,
@@ -1741,6 +1752,59 @@ mod tests {
         // hoist-core ClusterTask: `traceContextService.capture()` resolves to getTraceContextService()
         let src = "import static a.U.getSvc\nimport static a.U.setOut\nimport static a.U.getGone\nimport a.getThing\nsvc.go()\nout = 1\nthing\n";
         assert_eq!(rules(src), vec![("UnusedImport", 3), ("UnusedImport", 4)]);
+    }
+
+    #[test]
+    fn static_accessor_import_used_under_each_property_name_groovy_reads() {
+        // #181 (Alipsa/matrix MatrixDbUtil): Groovy 2.4.21, 3.0.25 and 4.0.24 read each of
+        // these uses through the import; a name whose first two letters are capitals stays
+        for (import, used) in [
+            ("getSCOPES", "SCOPES"),
+            ("getDECIMAL_PRECISION", "DECIMAL_PRECISION"),
+            ("isACTIVE", "ACTIVE"),
+            ("getHTTPHost", "HTTPHost"),
+            ("getURL2", "URL2"),
+            ("getUrl", "url"),
+            ("getUrl", "Url"),
+            ("getQ", "q"),
+            ("getQ", "Q"),
+            ("isB", "b"),
+            ("isB", "B"),
+            ("getA1", "a1"),
+            ("getA1", "A1"),
+            ("get_foo", "_foo"),
+            ("get_Bar", "_Bar"),
+            ("getaB", "aB"),
+            ("get\u{c4}pfel", "\u{e4}pfel"),
+            ("get\u{c4}pfel", "\u{c4}pfel"),
+            ("get$d", "$d"),
+        ] {
+            let src = format!("import static a.U.{import}\nprintln {used}\n");
+            assert_eq!(rules(&src), vec![], "{src:?}");
+            let src =
+                format!("import static a.U.{import}\nclass W {{ def go() {{ id({used}) }} }}\n");
+            assert_eq!(rules(&src), vec![], "{src:?}");
+        }
+        for (import, used) in [
+            ("setURLX", "URLX"),
+            ("setName", "Name"),
+            ("setUrlY", "urlY"),
+        ] {
+            let src = format!("import static a.U.{import}\n{used} = 1\n");
+            assert_eq!(rules(&src), vec![], "{src:?}");
+        }
+        // still unused: no form of the property appears, the import isn't static, or there
+        // is no property (`get` alone)
+        for src in [
+            "import static a.U.getSCOPES\nprintln scopesList\n",
+            "import static a.U.getHTTPHost\nprintln host\n",
+            "import static a.U.isACTIVE\nprintln inactive\n",
+            "import static a.U.setURLX\nURL = 1\n",
+            "import a.getSCOPES\nprintln SCOPES\n",
+            "import static a.U.get\nprintln x\n",
+        ] {
+            assert_eq!(rules(src), vec![("UnusedImport", 1)], "{src:?}");
+        }
     }
 
     #[test]

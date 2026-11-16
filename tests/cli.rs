@@ -642,6 +642,24 @@ const FIXED: &str =
     "import a.Used\nimport b.C; import b.D\nimport e.F // why\n\nUsed u = new Used()\nprintln u\n";
 
 #[test]
+fn lint_fix_keeps_static_accessor_imports_used_as_properties() {
+    // #181: Alipsa/matrix MatrixDbUtil and GsheetsWriter; only the unused getter goes
+    let d = Dir::new("fix-accessor");
+    let src = "import static a.U.getSCOPES\nimport static a.U.isACTIVE\nimport static a.U.setURLX\nimport static a.U.getHTTPHost\nimport static a.U.getGone\n\nclass W {\n    def go() {\n        URLX = 'u'\n        def c = { List<String> ctx, String m -> m }\n        [SCOPES, ACTIVE, HTTPHost, c]\n    }\n}\n";
+    d.write("A.groovy", src);
+    let f = run(&d.0, &["--lint", "--fix"], None);
+    assert_eq!(f.status.code(), Some(0), "{}", stderr(&f));
+    assert_eq!(
+        d.read("A.groovy"),
+        src.replace("import static a.U.getGone\n", "")
+    );
+    assert_eq!(
+        stderr(&f),
+        "fixed 1 violations in 1 files (UnusedImport 1)\n0 violations in 1 files\n"
+    );
+}
+
+#[test]
 fn lint_fix_removes_imports_and_semicolons_and_reports_the_rest() {
     let d = Dir::new("fix");
     d.write("A.groovy", FIXABLE);

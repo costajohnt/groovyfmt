@@ -14,7 +14,7 @@
 //! unscanned files might use.
 
 use super::Violation;
-use super::unused::{lcfirst, property};
+use super::unused::{lcfirst, property_names};
 use crate::config::{self, Config, Resolver};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -96,10 +96,8 @@ impl Projects {
             };
             let mut names = vec![name.to_string()];
             // `getFoo()` is also called as the property `foo`
-            if v.rule == "UnusedPrivateMethod"
-                && let Some(p) = property(name)
-            {
-                names.extend([lcfirst(p), p.to_string()]);
+            if v.rule == "UnusedPrivateMethod" {
+                names.extend(property_names(name));
             }
             // a script's methods belong to the class named after the file
             let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("");

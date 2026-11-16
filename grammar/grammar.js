@@ -55,6 +55,68 @@ const PREC = {
 /* eslint-enable no-multi-spaces */
 
 /**
+ * The binary operators at their precedence levels, each a `binary_expression`
+ * whose right operand is `right`.
+ *
+ * @param {GrammarSymbols<string>} $ Grammar reference symbols.
+ * @param {RuleOrLiteral} right The right operand.
+ * @returns {ChoiceRule} One alternative per operator.
+ */
+function binaryOperators($, right) {
+  /* eslint-disable no-multi-spaces --
+   * Aligned columns make the precedence ladder readable.
+   */
+  const ops = [
+    // ADDITIVE — §3.1 level 5
+    ['+',   PREC.ADDITIVE],
+    ['-',   PREC.ADDITIVE],
+    // MULTIPLICATIVE — §3.1 level 4
+    ['*',   PREC.MULTIPLICATIVE],
+    ['/',   PREC.MULTIPLICATIVE],
+    ['%',   PREC.MULTIPLICATIVE],
+    // SHIFT — §3.1 level 6. Ranges (`..`, `..<`, etc.) share
+    // this precedence level but use distinct node kinds, so
+    // they live in their own rule (lands later).
+    ['<<',  PREC.SHIFT_OR_RANGE],
+    ['>>',  PREC.SHIFT_OR_RANGE],
+    ['>>>', PREC.SHIFT_OR_RANGE],
+    // RELATIONAL — §3.1 level 7. `in`, `!in`, `instanceof`,
+    // `!instanceof`, and `as` share this level but emit
+    // distinct node kinds (`membership_expression`,
+    // `instanceof_expression`, `cast_expression`), so they
+    // land in their own rules later.
+    ['<',   PREC.RELATIONAL],
+    // §5.14 — the scanner's `<` when what follows can't be type
+    // arguments, where a type's `<` could also follow the name:
+    // `i<n ? a : b`, `(i<a.size())`.
+    [alias($._less_than, '<'), PREC.RELATIONAL],
+    ['<=',  PREC.RELATIONAL],
+    ['>',   PREC.RELATIONAL],
+    ['>=',  PREC.RELATIONAL],
+    // EQUALITY — §3.1 level 8. `===`, `!==`, `<=>`, `=~`,
+    // `==~` share this level but emit distinct node kinds.
+    ['==',  PREC.EQUALITY],
+    ['!=',  PREC.EQUALITY],
+    // BITWISE — §3.1 levels 9, 10, 11 (each tighter than the
+    // next: & < ^ < | by precedence).
+    ['&',   PREC.BITWISE_AND],
+    ['^',   PREC.BITWISE_XOR],
+    ['|',   PREC.BITWISE_OR],
+    // LOGICAL — §3.1 levels 12, 13 (&& tighter than ||).
+    ['&&',  PREC.LOGICAL_AND],
+    ['||',  PREC.LOGICAL_OR],
+    // Groovy 6 null-coalescing, at the Elvis operator's level.
+    ['??',  PREC.CONDITIONAL],
+  ];
+  /* eslint-enable no-multi-spaces */
+  return choice(...ops.map(([op, p]) => prec.left(p, seq(
+    field('left', $._expression),
+    field('operator', op),
+    field('right', right),
+  ))));
+}
+
+/**
  * GString body segment choice shared between `"..."` and `"""..."""`.
  * The text rule differs (single-quoted bans newlines, triple-quoted
  * allows them) but every other alternative is identical.
@@ -278,6 +340,11 @@ module.exports = grammar({
     // Zero-width: a closure's or block's whole body is a declaration with no
     // value, `{ Foo bar }`, not a command call (see _closure_declaration).
     $._closure_declaration_start,
+    // §3.2 — `!in` right before `[`, `(` or `{`, ending before it.
+    $._not_in_open,
+    // §3.2 — zero-width: a `{` on the line after `new X()` where a statement
+    // may end, which starts a closure argument (see method_invocation).
+    $._new_closure_start,
     // Never referenced by a rule: valid only during error recovery, when
     // the scanner must not emit context-sensitive tokens.
     $._error_sentinel,
@@ -590,6 +657,15 @@ module.exports = grammar({
         field('argument', $._command_trailing_argument),
         repeat1($._command_later_argument),
       ),
+      // A parenthesized receiver: `((int) 1 / 2) 1, 2` is
+      // `((int) 1 / 2).call(1, 2)`. Where the parentheses could hold a
+      // type, `(a) 1`, the cast wins.
+      prec.dynamic(-1, seq(
+        field('receiver', $.parenthesized_expression),
+        $._command_literal_start,
+        field('argument', $._expression),
+        repeat($._command_later_argument),
+      )),
       // A quoted or interpolated name: `"${op}" p, 2`.
       seq(
         field('receiver', $.string_literal),
@@ -1446,8 +1522,31 @@ module.exports = grammar({
       field('name', $.identifier),
       field('components', $.record_components),
       optional($.super_interfaces),
-      optional(field('body', $.class_body)),
+      optional(field('body', alias($._record_body, $.class_body))),
     ))),
+
+    // A record's body may also hold a compact constructor (Groovy 4):
+    // `record Fruit(String name) { Fruit { assert name } }`.
+    _record_body: $ => seq(
+      '{',
+      repeat(choice(
+        $._class_member,
+        alias($._compact_constructor, $.constructor_declaration),
+        $.instance_initializer,
+        ';',
+        $._line_break,
+      )),
+      '}',
+    ),
+
+    // After modifiers the `{` must be on the name's line: Groovy reads
+    // `public R` then `{` on the next line as a field and an initializer.
+    _compact_constructor: $ => prec(-1, seq(
+      ...memberModifiers($),
+      field('name', $.identifier),
+      optional($._command_closure_start),
+      field('body', $.block),
+    )),
 
     record_components: $ => seq(
       choice('(', alias($._call_open, '(')),
@@ -2048,6 +2147,7 @@ module.exports = grammar({
       const ops = [
         'in',
         token(prec(1, seq('!in', /[ \t\r\n\[({]/))),
+        alias($._not_in_open, '!in'),
       ];
       return choice(...ops.map(op => prec.left(PREC.RELATIONAL, seq(
         field('element', $._expression),
@@ -2087,9 +2187,9 @@ module.exports = grammar({
     // Groovy 2.4, 3 and 4 read it. Both stay alive until one fails; where both
     // parse, the class body wins. Its dynamic precedence outweighs the +1 that
     // each declaration in the closure's body adds: `{ int x = 1 }` in a call's
-    // parentheses is a class body to Groovy.
-    // ponytail: at a statement's end Groovy reads a `{ }` or `{ int x = 1 }` on the
-    // next line as a closure; here it stays a class body, as it was.
+    // parentheses is a class body to Groovy. Where a statement may end, a `{` on
+    // the next line is always a closure (`_new_closure_start`, see
+    // method_invocation): `def a = new Object()` then `{ }`.
     object_creation_expression: $ => {
       const head = [
         'new',
@@ -2117,7 +2217,7 @@ module.exports = grammar({
         $.generic_type,
       )),
       choice(
-        seq(repeat1($.dimension_expression), repeat($.dimension)),
+        seq(repeat1($.dimension_expression), optional($._trailing_dimensions)),
         seq(repeat1($.dimension), field('value', $.array_initializer)),
       ),
     )),
@@ -2126,6 +2226,10 @@ module.exports = grammar({
     dimension_expression: $ => seq(alias($._subscript_open, '['), $._expression, ']'),
 
     dimension: $ => seq(alias($._subscript_open, '['), ']'),
+
+    // Right-recursive so each `[]` after the first stays a dimension:
+    // `new int[10][][]`.
+    _trailing_dimensions: $ => prec.right(PREC.PRIMARY, seq($.dimension, optional($._trailing_dimensions))),
 
     // Elements are expressions, or nested initializers with a comma
     // (`{{1, 2}, {3, 4}}`); a nested `{x}` is a closure.
@@ -2362,7 +2466,9 @@ module.exports = grammar({
     // `?.@` and `*.@` are the null-safe and spread forms.
     direct_field_access_expression: $ => prec.left(PREC.ACCESS, seq(
       field('object', $._expression),
-      choice('.@', '?.@', '*.@'),
+      // Groovy also takes a line break or spaces before the `@`:
+      // `a*.` then `@child` on the next line.
+      choice('.@', '?.@', '*.@', seq(choice('.', '?.', '*.'), '@')),
       field('field', $._property_name),
     )),
 
@@ -2441,6 +2547,19 @@ module.exports = grammar({
         field('function', $._expression),
         field('closure', $.closure),
       )),
+      // `new X()` then a closure: on the next line where a statement may end,
+      // `def a = new Object()` then `{ }`; or on its line when it can't be a
+      // class body, `new Object() { -> 3 }`. Groovy calls the new object with it.
+      prec.left(PREC.POSTFIX, seq(
+        field('function', $.object_creation_expression),
+        $._new_closure_start,
+        field('closure', $.closure),
+      )),
+      prec.left(PREC.POSTFIX, prec.dynamic(-1000, seq(
+        field('function', $.object_creation_expression),
+        $._command_closure_start,
+        field('closure', $.closure),
+      ))),
     ),
 
     // §3.2 / §5.11 — argument list. Positional args are `_expression`;
@@ -2700,59 +2819,12 @@ module.exports = grammar({
     // Currently covers ADDITIVE and MULTIPLICATIVE. Shift/range,
     // relational, equality, bitwise, and logical levels join this
     // rule in later iterations — each is a single line addition.
-    binary_expression: $ => {
-      /* eslint-disable no-multi-spaces --
-       * Aligned columns make the precedence ladder readable.
-       */
-      const ops = [
-        // ADDITIVE — §3.1 level 5
-        ['+',   PREC.ADDITIVE],
-        ['-',   PREC.ADDITIVE],
-        // MULTIPLICATIVE — §3.1 level 4
-        ['*',   PREC.MULTIPLICATIVE],
-        ['/',   PREC.MULTIPLICATIVE],
-        ['%',   PREC.MULTIPLICATIVE],
-        // SHIFT — §3.1 level 6. Ranges (`..`, `..<`, etc.) share
-        // this precedence level but use distinct node kinds, so
-        // they live in their own rule (lands later).
-        ['<<',  PREC.SHIFT_OR_RANGE],
-        ['>>',  PREC.SHIFT_OR_RANGE],
-        ['>>>', PREC.SHIFT_OR_RANGE],
-        // RELATIONAL — §3.1 level 7. `in`, `!in`, `instanceof`,
-        // `!instanceof`, and `as` share this level but emit
-        // distinct node kinds (`membership_expression`,
-        // `instanceof_expression`, `cast_expression`), so they
-        // land in their own rules later.
-        ['<',   PREC.RELATIONAL],
-        // §5.14 — the scanner's `<` when what follows can't be type
-        // arguments, where a type's `<` could also follow the name:
-        // `i<n ? a : b`, `(i<a.size())`.
-        [alias($._less_than, '<'), PREC.RELATIONAL],
-        ['<=',  PREC.RELATIONAL],
-        ['>',   PREC.RELATIONAL],
-        ['>=',  PREC.RELATIONAL],
-        // EQUALITY — §3.1 level 8. `===`, `!==`, `<=>`, `=~`,
-        // `==~` share this level but emit distinct node kinds.
-        ['==',  PREC.EQUALITY],
-        ['!=',  PREC.EQUALITY],
-        // BITWISE — §3.1 levels 9, 10, 11 (each tighter than the
-        // next: & < ^ < | by precedence).
-        ['&',   PREC.BITWISE_AND],
-        ['^',   PREC.BITWISE_XOR],
-        ['|',   PREC.BITWISE_OR],
-        // LOGICAL — §3.1 levels 12, 13 (&& tighter than ||).
-        ['&&',  PREC.LOGICAL_AND],
-        ['||',  PREC.LOGICAL_OR],
-        // Groovy 6 null-coalescing, at the Elvis operator's level.
-        ['??',  PREC.CONDITIONAL],
-      ];
-      /* eslint-enable no-multi-spaces */
-      return choice(...ops.map(([op, p]) => prec.left(p, seq(
-        field('left', $._expression),
-        field('operator', op),
-        field('right', $._expression),
-      ))));
-    },
+    binary_expression: $ => binaryOperators($, $._expression),
+
+    // The last closure parameter's default may end in a name before the
+    // closure's `->`, `{ a, e = x + g -> e }`, as Groovy reads it: the prec on
+    // the name outranks a lambda's `g -> e` (see _closure_parameter_name_default).
+    _closure_default_binary: $ => binaryOperators($, prec(PREC.ASSIGN + 1, $.identifier)),
 
     // §5.8 — closure expression. `{ -> }` is the explicit no-parameter
     // form; `{ a, b -> body }` has identifier parameters;
@@ -2814,7 +2886,10 @@ module.exports = grammar({
       optional(choice('def', field('type', choice($._type, $.varargs_type)))),
       field('name', $.identifier),
       '=',
-      field('default', prec(PREC.ASSIGN + 1, $.identifier)),
+      field('default', choice(
+        prec(PREC.ASSIGN + 1, $.identifier),
+        alias($._closure_default_binary, $.binary_expression),
+      )),
     ),
 
     // prec: in `{ x -> x }` the `x` is the closure's parameter, not the
@@ -2956,8 +3031,12 @@ module.exports = grammar({
         field('argument', alias($._name_call, $.method_invocation)),
       ),
       repeat($._command_later_argument),
-      // `(page.optionList 0 isEmpty())`: a call chained after the argument.
-      repeat(field('argument', alias($._name_call, $.method_invocation))),
+      // `(page.optionList 0 isEmpty())`: a call chained after the argument,
+      // or a command chained after it, `(1.plus 2 plus 3)` (`1.plus(2).plus(3)`).
+      repeat(choice(
+        field('argument', alias($._name_call, $.method_invocation)),
+        seq($.identifier, field('argument', $._expression), repeat($._command_later_argument)),
+      )),
     ),
 
     // The last call may take a closure: `or (b) or (c) { }`.
