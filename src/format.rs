@@ -465,12 +465,14 @@ fn indent_for(
         // A call's trailing closure opened after its arguments' `)` (`foo(a: 1,\n    b: 2) {`):
         // indent its body from the line of the `(`, as when the arguments fit on one line.
         // A `{` on a line of its own keeps its own line (#183).
-        "closure" if above.child_by_field_name("closure") == Some(a) => above
-            .child_by_field_name("arguments")
-            .filter(|args| args.end_position().row == a.start_position().row)
-            .unwrap_or(a)
-            .start_position()
-            .row,
+        "closure" if above.child_by_field_name("closure") == Some(a) => {
+            above
+                .child_by_field_name("arguments")
+                .filter(|args| args.end_position().row == a.start_position().row)
+                .unwrap_or(a)
+                .start_position()
+                .row
+        }
         _ => a.start_position().row,
     };
     // Elvis and ternary are right-associative, so each link of a chain (`a ?:` / `b ?:` /
