@@ -462,6 +462,17 @@ fn indent_for(
         {
             above.start_position().row
         }
+        // A call's trailing closure opened after its arguments' `)` (`foo(a: 1,\n    b: 2) {`):
+        // indent its body from the line of the `(`, as when the arguments fit on one line.
+        // A `{` on a line of its own keeps its own line (#183).
+        "closure" if above.child_by_field_name("closure") == Some(a) => {
+            above
+                .child_by_field_name("arguments")
+                .filter(|args| args.end_position().row == a.start_position().row)
+                .unwrap_or(a)
+                .start_position()
+                .row
+        }
         _ => a.start_position().row,
     };
     // Elvis and ternary are right-associative, so each link of a chain (`a ?:` / `b ?:` /
@@ -471,6 +482,26 @@ fn indent_for(
     while j > 0 && chain_link(path[j].0, path[j - 1].0) {
         j -= 1;
         anchor_row = path[j].0.start_position().row;
+    }
+    // A chain that starts its own line after `=` or `(` (`def x =` then `a ? b :` / `c ? d :`
+    // / `e`): that line is already a continuation, so each link lines up with the link above,
+    // unless that link is a ternary whose middle operand has a line of its own, or the chain
+    // is an operand of another conditional, which keeps its nesting (#183).
+    let a_row = a.start_position().row;
+    let head = path[j].0;
+    let line_start = head.start_byte() - head.start_position().column;
+    if last_operand(child, a)
+        && a.child_by_field_name("consequence")
+            .is_none_or(|c| c.start_position().row == a_row)
+        && path[j - 1].0.start_position().row < head.start_position().row
+        && !matches!(
+            path[j - 1].0.kind(),
+            "elvis_expression" | "ternary_expression"
+        )
+        && src[line_start..head.start_byte()].trim().is_empty()
+        && verbatim.get(a_row) == Some(&false)
+    {
+        return row_indent[a_row];
     }
     // A `{` opened on the line where a multi-line string ends (`foo(x: '''` ... `''') {`):
     // that line's indent is the string's text, so indent from the statement around it (#144).
@@ -532,12 +563,15 @@ fn indent_for(
     }
 }
 
-/// Whether `n` is the last operand (`?:`'s default, `? :`'s alternative) of elvis or
-/// ternary `parent`, itself an elvis or ternary: the next link of a chain.
+/// Whether `n`, an elvis or ternary, is the last operand of `parent`: the next link of a chain.
 fn chain_link(n: Node, parent: Node) -> bool {
-    let conditional = |k: &str| matches!(k, "elvis_expression" | "ternary_expression");
-    conditional(n.kind())
-        && conditional(parent.kind())
+    matches!(n.kind(), "elvis_expression" | "ternary_expression") && last_operand(n, parent)
+}
+
+/// Whether `n` is the last operand (`?:`'s default, `? :`'s alternative) of elvis or ternary
+/// `parent`.
+fn last_operand(n: Node, parent: Node) -> bool {
+    matches!(parent.kind(), "elvis_expression" | "ternary_expression")
         && ["default", "alternative"]
             .iter()
             .any(|f| parent.child_by_field_name(f) == Some(n))
@@ -674,6 +708,37 @@ mod tests {
         // a nested conditional that isn't the last operand is not a link
         let src = "def v = a ?\nb ?:\nc :\nd\n";
         assert_eq!(fmt(src), "def v = a ?\n    b ?:\n        c :\n    d\n");
+    }
+
+    #[test]
+    fn trailing_closure_after_wrapped_args_indents_from_the_call() {
+        // #183: the body was indented from the `) {` line, two steps in, `}` one step in
+        let spaced = Style {
+            normalize_spacing: true,
+            ..Style::default()
+        };
+        let src = "foo(a: 1,\nb: 2) {\nbar()\n}\nf.entry(title: 'x') {\ng.optionalBlock(title: 'y',\nname: 'z',\nchecked: c()) {\nf.entry(field: 'h') {\nf.textbox(name: 'h')\n}\n}\n}\nx.y(1,\n2) { z }\n.each {\nw\n}\nfoo(\na\n) {\nb\n}\nbar(1) {\nc\n}\nbaz(1, {\nd\n})\nq(1,\n2)\n{\ne\n}\n";
+        let want = "foo(a: 1,\n    b: 2) {\n    bar()\n}\nf.entry(title: 'x') {\n    g.optionalBlock(title: 'y',\n        name: 'z',\n        checked: c()) {\n        f.entry(field: 'h') {\n            f.textbox(name: 'h')\n        }\n    }\n}\nx.y(1,\n    2) { z }\n    .each {\n        w\n    }\nfoo(\n    a\n) {\n    b\n}\nbar(1) {\n    c\n}\nbaz(1, {\n    d\n})\nq(1,\n    2)\n    {\n        e\n    }\n";
+        assert_eq!(fmt(src), want);
+        assert_eq!(fmt(want), want, "idempotent");
+        assert_eq!(format(src, &spaced), Outcome::Formatted(want.to_string()));
+        assert_eq!(format(want, &spaced), Outcome::Unchanged);
+    }
+
+    #[test]
+    fn chain_on_its_own_line_keeps_its_links_level() {
+        // #183, the rest of #174: a chain starting on the line after `=` had every link after
+        // the first one step further in
+        let spaced = Style {
+            normalize_spacing: true,
+            ..Style::default()
+        };
+        let src = "def x =\na ? b :\nc ? d :\ne\nn[k] =\n(v instanceof Map) ? f(v) :\n(v instanceof List) ? v.collect {\ng(it)\n} :\nv\nfoo(\na ?: b ?:\nc ?:\nd,\ne)\ndef r =\nf(1,\n2) ?:\nz\ndef y =\na ?\nb :\nc\nq ?:\nr\n";
+        let want = "def x =\n    a ? b :\n    c ? d :\n    e\nn[k] =\n    (v instanceof Map) ? f(v) :\n    (v instanceof List) ? v.collect {\n        g(it)\n    } :\n    v\nfoo(\n    a ?: b ?:\n    c ?:\n    d,\n    e)\ndef r =\n    f(1,\n        2) ?:\n    z\ndef y =\n    a ?\n        b :\n        c\nq ?:\n    r\n";
+        assert_eq!(fmt(src), want);
+        assert_eq!(fmt(want), want, "idempotent");
+        assert_eq!(format(src, &spaced), Outcome::Formatted(want.to_string()));
+        assert_eq!(format(want, &spaced), Outcome::Unchanged);
     }
 
     #[test]
