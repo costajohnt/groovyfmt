@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- More constructs parse, as Groovy 3 and 4 read them; files with one were skipped ([#188](https://github.com/costajohnt/groovyfmt/issues/188)). A typed closure parameter named `as`, `{ List<AnnotationNode> as, String n -> as.any { it } }`, `{ String as -> as }`, also with a default, `{ String as = 1 -> as }`. `as` with a subscript as a bare or dotted receiver's argument, `println as[0]`, `foo.bar as[0], 2`. The grammar pin moves to tree-sitter-groovy 4c083d2.
+
 ## 0.20.3 (2026-11-16)
 
 ### Fixed

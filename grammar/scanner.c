@@ -805,6 +805,12 @@ bool tree_sitter_groovy_external_scanner_scan(
                 lexer->result_symbol = COMMAND_KEYWORD_ARGUMENT;
                 return true;
             }
+            // `println as[0]`: a variable named `as` (Groovy 3 and 4), since
+            // no type starts with `[`.
+            if (len == 2 && memcmp(word, "as", 2) == 0 && lexer->lookahead == '[') {
+                lexer->result_symbol = COMMAND_LITERAL_START;
+                return true;
+            }
             if (lexer->lookahead == '.' || lexer->lookahead == '?') {
                 bool safe = lexer->lookahead == '?';
                 advance(lexer);
