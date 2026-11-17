@@ -274,7 +274,8 @@ fn jenkinsfile_suffix(name: &str) -> Option<&str> {
         .filter(|rest| rest.starts_with(['.', '_', '-']))
 }
 
-/// Directories skipped while walking: hidden ones and common build/vendor output.
+/// Directories skipped while walking: hidden ones (except the CI ones in `CI_DIRS`) and common
+/// build/vendor output.
 /// A directory named explicitly on the command line is always entered.
 ///
 /// `out` and `target` follow the rule for `build` below, except that they are output in a
@@ -317,7 +318,7 @@ pub fn skipped_dir(path: &Path) -> Option<&'static str> {
         }
         return (output && !in_src).then_some("build output");
     }
-    if name.starts_with('.') {
+    if name.starts_with('.') && !CI_DIRS.contains(&name) {
         Some("hidden")
     } else if name == "node_modules" {
         Some("dependencies")
@@ -325,6 +326,21 @@ pub fn skipped_dir(path: &Path) -> Option<&'static str> {
         None
     }
 }
+
+/// Hidden directories a walk enters anyway: where projects keep their CI pipelines and
+/// scripts (`.jenkins/ci.jenkins`, `.ci/jenkins/*.groovy`, `.github/scripts/*.groovy`), which
+/// are the project's own code (#202). Every other hidden directory is a VCS's, a tool's or a
+/// cache (`.git`, `.gradle`, `.idea`, `.m2`), so it stays skipped.
+const CI_DIRS: &[&str] = &[
+    ".ci",
+    ".jenkins",
+    ".github",
+    ".gitlab",
+    ".circleci",
+    ".buildkite",
+    ".pipelines",
+    ".azure-pipelines",
+];
 
 /// Directories whose `build`, `out` and `target` packages are source, not output: `src`, a Jenkins shared
 /// library's `vars`, and the language directory of a source set (`test/groovy`,

@@ -31,7 +31,7 @@ groovyfmt [OPTIONS] [PATH]...
 | `--indent <n>` | override the indent of whichever config applies |
 | `--stdin-filepath <path>` | with `--stdin`, find the config as if formatting this path ([editors](editors.md#formatting-through-stdin)) |
 | `--output-format text\|github\|json\|sarif` | see [output formats](output-formats.md) |
-| `--strict` | list skipped files and exit 1 if there are any, with `--check`, `--lint` or in place |
+| `--strict` | list skipped files and exit 1 if there are any or no Groovy file was found, with `--check`, `--lint` or in place |
 | `--force` | read every file named on the command line as Groovy, whatever its name |
 | `--diff` | with `--check` or `--lint --fix`, print a diff and write nothing ([below](#diffs)) |
 | `--lines <start>-<end>` | change only these lines ([below](#formatting-some-lines)) |
@@ -45,7 +45,7 @@ groovyfmt [OPTIONS] [PATH]...
 | Status | Meaning |
 |---|---|
 | 0 | clean |
-| 1 | files need formatting, lint found something, a file doesn't parse (`--syntax`), or, with `--strict`, files were skipped |
+| 1 | files need formatting, lint found something, a file doesn't parse (`--syntax`), or, with `--strict`, files were skipped or none were found |
 | 2 | an error: bad arguments, a bad config, an unreadable file, or `--stdin` input that can't be formatted |
 
 ## Which files
@@ -54,7 +54,7 @@ With no paths, groovyfmt works on the current directory.
 
 Directories are searched for `*.groovy`, `*.gradle`, `*.gvy`, `*.gy`, `*.gsh`, and pipelines named `Jenkinsfile`, `Jenkinsfile.*`, `Jenkinsfile_*`, `Jenkinsfile-*` (`Jenkinsfile_k8s`), `*-Jenkinsfile`, `*_Jenkinsfile` (`jenkins/rstan-Jenkinsfile`), `*.jenkinsfile` or `*.jenkins` (those two in any case, so `ci/release.Jenkinsfile` too), the names the [editor plugins](editors.md) treat as Groovy. A `Jenkinsfile.*`, `Jenkinsfile_*`, `Jenkinsfile-*`, `*-Jenkinsfile`, `*_Jenkinsfile` or `*.jenkins` not ending in `.groovy` is taken only if it parses as Groovy, so a template or a disabled copy that doesn't is left out without a word; one whose suffix says it is something else (`Jenkinsfile.md`, `Jenkinsfile_k8s.md`, `.txt`, `.bak`, `.yml`, `.json`, `.j2`, `.tpl`, `.patch`, `.ini` and a few more) or ending in `~` isn't even read. A file with no extension (`bin/release`, but not one ending in `~`) is taken when its first line is a `#!` that runs groovy: `#!groovy`, `#!/usr/bin/groovy` or `#!/usr/bin/env groovy`, with or without arguments. Only its first 256 bytes are read for that; a file with any other extension is never opened. The search skips:
 
-- hidden directories
+- hidden directories, except the ones projects keep CI pipelines and scripts in: `.ci`, `.jenkins`, `.github`, `.gitlab`, `.circleci`, `.buildkite`, `.pipelines` and `.azure-pipelines` (so `.git`, `.gradle`, `.idea` and the like stay skipped)
 - `out`, `target` and `node_modules`
 - `build`, Gradle's output directory, when its project has a build file and no `src` directory lies between them. The project is the nearest directory above the `build` directory holding a `build.gradle`, `build.gradle.kts`, `settings.gradle`, `settings.gradle.kts`, `pom.xml` or `.git`, so `sub/build` is skipped even when `sub` has no build file of its own. Under `src` it is a package (`src/main/groovy/org/acme/build`) and is searched; a `src` above the project (a checkout under `~/src`) doesn't count. In a repository with a `.git` but no build file (a Jenkins job repository's `jobs/build/`) it is an ordinary directory and is searched. With none of those above it, a `src` anywhere in its path makes it a package
 - anything matching the config's [`exclude`](configuration.md#exclude) patterns

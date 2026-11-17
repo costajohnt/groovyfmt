@@ -1,6 +1,6 @@
 # CI and pre-commit
 
-Add `--strict` to `--check` or `--lint` to fail the job when a file was skipped (it doesn't parse, isn't UTF-8 or is over 10 MB). Otherwise such a file passes unchecked.
+Add `--strict` to `--check` or `--lint` to fail the job when a file was skipped (it doesn't parse, isn't UTF-8 or is over 10 MB). It also fails when no Groovy file was found at all, so a job pointed at the wrong directory can't pass. Otherwise such a file passes unchecked.
 
 ## GitHub Actions
 

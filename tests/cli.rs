@@ -140,6 +140,60 @@ fn skips_build_and_hidden_dirs_but_not_explicit_files() {
     assert_eq!(explicit.status.code(), Some(1));
 }
 
+/// #202: pipelines in hidden CI directories are walked; VCS, tool and cache dirs are not.
+#[test]
+fn walks_hidden_ci_dirs_but_not_tool_dirs() {
+    let d = Dir::new("cidirs");
+    for f in [
+        ".jenkins/ci.jenkins",
+        ".ci/jenkins/Pipeline.groovy",
+        ".github/scripts/release.groovy",
+        ".git/hooks/H.groovy",
+        ".gradle/8.5/init.gradle",
+        ".idea/X.groovy",
+        ".m2/repository/Y.groovy",
+    ] {
+        d.write(f, UGLY);
+    }
+    let o = run(&d.0, &["--check", "-v"], None);
+    assert_eq!(
+        stdout(&o),
+        ".ci/jenkins/Pipeline.groovy\n.github/scripts/release.groovy\n.jenkins/ci.jenkins\n"
+    );
+    for skipped in [".git", ".gradle", ".idea", ".m2"] {
+        assert!(
+            stderr(&o).contains(&format!("skipped dir {skipped}: hidden\n")),
+            "{}",
+            stderr(&o)
+        );
+    }
+}
+
+/// #202: --strict fails when nothing was checked, so a CI job can't pass on no files.
+#[test]
+fn strict_fails_when_no_groovy_file_is_found() {
+    let d = Dir::new("strict-none");
+    d.write(".idea/X.groovy", UGLY);
+    d.write("notes.txt", "x");
+    for mode in [&["--check"][..], &["--lint"], &["--syntax"], &[]] {
+        let plain = run(&d.0, mode, None);
+        assert_eq!(plain.status.code(), Some(0), "{mode:?}");
+        let args: Vec<&str> = mode.iter().copied().chain(["--strict"]).collect();
+        let strict = run(&d.0, &args, None);
+        assert_eq!(strict.status.code(), Some(1), "{mode:?}");
+        assert!(
+            stderr(&strict).contains("no Groovy files found"),
+            "{mode:?}: {}",
+            stderr(&strict)
+        );
+    }
+    d.write("A.groovy", PRETTY);
+    assert_eq!(
+        run(&d.0, &["--check", "--strict"], None).status.code(),
+        Some(0)
+    );
+}
+
 #[test]
 fn named_files_that_are_not_groovy_are_skipped() {
     let d = Dir::new("named");
@@ -1135,6 +1189,11 @@ fn changed_since_limits_the_run_to_files_git_sees_as_changed() {
     assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
     assert_eq!(d.read("Edited.groovy"), format!("{PRETTY}// more\n"));
     assert_eq!(d.read("Same.groovy"), UGLY);
+    // nothing changed: a clean change set, not a --strict failure (#202)
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "y"]);
+    let o = run(&d.0, &["--check", "--strict", "--changed-since", "HEAD"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
 
     for (rev, msg) in [
         (
