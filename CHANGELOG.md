@@ -6,6 +6,10 @@
 
 - SpockUnassertedCondition also reports a predicate call nested the same way, alone or under `!`, `&&` and `||`: `contains`, `containsAll`, `containsKey`, `containsValue`, `endsWith`, `equals`, `equalsIgnoreCase`, `hasErrors`, `hasNext`, `isAssignableFrom`, `isEmpty`, `isPresent`, `matches` or `startsWith` on a receiver, as in `if (valid) { r.items.contains(42) }` or `xs.each { !it.isEmpty() }`. Spock 2.4 drops these like a nested comparison. Only these side-effect-free names are reported, not a bare call (`contains(x)` may be a spec helper that asserts) or a call in an assertion chain such as `assertThat(s).contains(x)`. ([#207](https://github.com/costajohnt/groovyfmt/issues/207))
 
+### Fixed
+
+- More constructs parse, as Groovy reads them; files with one were skipped ([#209](https://github.com/costajohnt/groovyfmt/issues/209)). A command call in parentheses on a call, `(f(a) intersect b).isEmpty()` (`f(a).intersect(b)`), or with a name after its last argument, `(a intersect b)` (`a(intersect).b`), in Groovy 3 and 4. A slashy string starting with a space at the start of a line, `a | b` then `/ x / | c` as in a Spock `where:` row (Groovy 2.4, 3 and 4); without a closing `/` on that line the `/` is still division. A method reference to `class`, `foo(x, A::class)` (Groovy 3 and 4). Modifiers and annotations after `sealed` or `non-sealed`, `sealed abstract class W`, `sealed @Deprecated class W` (Groovy 4). The grammar pin moves to tree-sitter-groovy 0987c45.
+
 ## 0.22.0 (2026-11-17)
 
 ### Added

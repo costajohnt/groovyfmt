@@ -1192,8 +1192,9 @@ bool tree_sitter_groovy_external_scanner_scan(
                 }
             } else if (sym == SEALED_KEYWORD) {
                 // Before a type's keyword, also on a later line, or before a
-                // modifier, an annotation or `non-sealed`, which Groovy rejects
-                // after it (`sealed final interface I`): those stay errors.
+                // modifier or an annotation, which Groovy 4 takes after it
+                // (`sealed abstract class W`, `sealed @Deprecated class W`).
+                // Before `final` or `non-sealed` it stays an error.
                 while (is_whitespace(lexer->lookahead)) {
                     advance(lexer);
                 }
@@ -1506,7 +1507,13 @@ bool tree_sitter_groovy_external_scanner_scan(
     //       closing `/` on the same line. Without this, `a / b\nc`
     //       at end of file would emit a slashy opener and leave
     //       the body unterminated.
-    if (lexer->lookahead == '/' || (is_whitespace(lexer->lookahead) && !lenient)) {
+    //       At the start of a line where a statement may start, Groovy
+    //       reads a `/` and a closing `/` on that line as a slashy
+    //       string whatever follows the `/`: `a | b` then `/ x / | c`
+    //       (a Spock where: row). Without the closing `/` it is division:
+    //       `x = 4` then `/ 2`.
+    bool line_start = newline && valid_symbols[LINE_BREAK] && !valid_symbols[ERROR_SENTINEL];
+    if (lexer->lookahead == '/' || (is_whitespace(lexer->lookahead) && !lenient && !line_start)) {
         return false;
     }
     // Look ahead (without consuming) to confirm a closing `/` exists

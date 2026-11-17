@@ -1079,7 +1079,8 @@ module.exports = grammar({
     // §4 — class declaration with optional Groovy 4 sealed modifier
     // and `permits` clause. The `non-sealed` form is a single
     // anonymous token (token('non-sealed')) so the dash doesn't
-    // get lexed as subtraction.
+    // get lexed as subtraction. Modifiers and annotations may follow it
+    // (Groovy 4): `sealed abstract class W`, `sealed @Deprecated class W`.
     // `def` may lead the modifiers: `def class X`, `def static class X`.
     // Annotations may also follow modifiers: `static @Immutable class X`.
     class_declaration: $ => seq(
@@ -1087,7 +1088,10 @@ module.exports = grammar({
       optional('def'),
       optional(seq(repeat1($._modifier), repeat1($.annotation))),
       repeat($._modifier),
-      optional(choice(alias($._sealed_keyword, 'sealed'), token('non-sealed'))),
+      optional(seq(
+        choice(alias($._sealed_keyword, 'sealed'), token('non-sealed')),
+        repeat(choice($._sealed_modifier, $.annotation)),
+      )),
       'class',
       field('name', $.identifier),
       optional(field('type_parameters', $.type_parameters)),
@@ -1100,7 +1104,10 @@ module.exports = grammar({
     trait_declaration: $ => seq(
       repeat($.annotation),
       repeat($._modifier),
-      optional(choice(alias($._sealed_keyword, 'sealed'), token('non-sealed'))),
+      optional(seq(
+        choice(alias($._sealed_keyword, 'sealed'), token('non-sealed')),
+        repeat(choice($._sealed_modifier, $.annotation)),
+      )),
       alias($._trait_keyword, 'trait'),
       field('name', $.identifier),
       optional(field('type_parameters', $.type_parameters)),
@@ -1114,7 +1121,10 @@ module.exports = grammar({
     interface_declaration: $ => seq(
       ...memberModifiers($),
       optional('def'),
-      optional(choice(alias($._sealed_keyword, 'sealed'), token('non-sealed'))),
+      optional(seq(
+        choice(alias($._sealed_keyword, 'sealed'), token('non-sealed')),
+        repeat(choice($._sealed_modifier, $.annotation)),
+      )),
       'interface',
       field('name', $.identifier),
       optional(field('type_parameters', $.type_parameters)),
@@ -1191,6 +1201,21 @@ module.exports = grammar({
       'protected',
       'static',
       'final',
+      'abstract',
+      'synchronized',
+      'native',
+      'transient',
+      'volatile',
+      'strictfp',
+    ),
+
+    // Not `final`, which Groovy rejects after `sealed` or `non-sealed`
+    // (`sealed final interface I`).
+    _sealed_modifier: _ => choice(
+      'public',
+      'private',
+      'protected',
+      'static',
       'abstract',
       'synchronized',
       'native',
@@ -2525,11 +2550,11 @@ module.exports = grammar({
 
     // §5.14 — method reference. Groovy 3+. The RHS is either an
     // identifier (`String::length`) or the `new` keyword
-    // (`Foo::new`).
+    // (`Foo::new`), also `class` (Groovy 3 and 4): `foo(x, A::class)`.
     method_reference_expression: $ => prec.left(PREC.ACCESS, seq(
       field('target', $._expression),
       '::',
-      field('name', choice($.identifier, alias($.string_literal, $.quoted_identifier), 'new')),
+      field('name', choice($.identifier, alias($.string_literal, $.quoted_identifier), 'new', 'class')),
     )),
 
     // §3.2 — postfix `++` / `--`. Distinct node kind from the
@@ -3056,25 +3081,39 @@ module.exports = grammar({
     // `(el searchBy).click()`, `(go LoginPage).login(u, p)`,
     // `return (run service: 'x', with: m)`. Inside `( … )` a name after the
     // receiver can't start a declaration, so it is the argument.
+    // A call needs no argument of its own (Groovy 3 and 4):
+    // `(f(a) intersect b)` is `f(a).intersect(b)`. A name left over at the
+    // end is a property: `(a intersect b)` is `a(intersect).b`.
     _parenthesized_command: $ => seq(
-      field('receiver', choice($.identifier, $.field_access)),
       choice(
-        seq($._command_literal_start, field('argument', choice(
-          $._expression,
-          alias($._command_quoted_named_argument, $.named_argument),
-        ))),
-        field('argument', alias($._command_named_argument, $.named_argument)),
-        field('argument', $.identifier),
-        // `if (valueOf findProperty(s, 'x'))`
-        field('argument', alias($._name_call, $.method_invocation)),
+        seq(
+          field('receiver', choice($.identifier, $.field_access)),
+          choice(
+            seq($._command_literal_start, field('argument', choice(
+              $._expression,
+              alias($._command_quoted_named_argument, $.named_argument),
+            ))),
+            field('argument', alias($._command_named_argument, $.named_argument)),
+            field('argument', $.identifier),
+            // `if (valueOf findProperty(s, 'x'))`
+            field('argument', alias($._name_call, $.method_invocation)),
+          ),
+          repeat($._command_later_argument),
+          // `(page.optionList 0 isEmpty())`: a call chained after the argument,
+          // or a command chained after it, `(1.plus 2 plus 3)` (`1.plus(2).plus(3)`).
+          repeat($._parenthesized_command_link),
+        ),
+        seq(
+          field('receiver', $.method_invocation),
+          repeat1($._parenthesized_command_link),
+        ),
       ),
-      repeat($._command_later_argument),
-      // `(page.optionList 0 isEmpty())`: a call chained after the argument,
-      // or a command chained after it, `(1.plus 2 plus 3)` (`1.plus(2).plus(3)`).
-      repeat(choice(
-        field('argument', alias($._name_call, $.method_invocation)),
-        seq($.identifier, field('argument', $._expression), repeat($._command_later_argument)),
-      )),
+      optional($.identifier),
+    ),
+
+    _parenthesized_command_link: $ => choice(
+      field('argument', alias($._name_call, $.method_invocation)),
+      seq($.identifier, field('argument', $._expression), repeat($._command_later_argument)),
     ),
 
     // The last call may take a closure: `or (b) or (c) { }`.
