@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- GradleRemovedApi reports setting a project property that Gradle 9.0 removed with the plugin conventions, under a wrapper pinning Gradle 9 or later: `sourceCompatibility = 11` or `mainClassName = 'a.B'` at the top level fails there with "Could not set unknown property". Covered: `sourceCompatibility`, `targetCompatibility`, `docsDirName`, `testResultsDirName` and `testReportDirName` (use `java { }`), `archivesBaseName`, `distsDirName` and `libsDirName` (use `base { }`), `mainClassName` (use `application { mainClass = ... }`), `applicationName`, `applicationDefaultJvmArgs` and `executableDir` (use `application { }`), `webAppDirName`, `appDirName`, `libDirName` and `projectReportDirName`. Reported at the top level, in `allprojects`, `subprojects`, `project`, `configure` and `afterEvaluate`, and for `mainClassName` in `application { }` and `archivesBaseName` in `base { }`, which fall through to the project too; not in `java { }`, `application { }` or a task's block where the new forms live, nor when the script makes the name an extra property or a `gradle.properties` sets it. Each was checked to work under Gradle 8.14.4 and fail under 9.0.0 and 9.9.1. Report only. ([#218](https://github.com/costajohnt/groovyfmt/issues/218))
+- SpockUnassertedCondition reports a condition in a `.each { }` (or another closure that drops its value) inside a `with { }` or `verifyAll { }`, a condition in Groovy's `it.with { }` inside a `.each { }` or an `if`, and a predicate called without parentheses (`it.startsWith "y"`) where a nested one is reported. Spock 2.4 asserts none of these. It still asserts, and the rule leaves alone, an `if` or loop inside `with { }` or `verifyAll { }`, a top-level `x.with { }`, and Spock's own `with(it) { }` or `verifyAll { }` inside a `.each { }`. ([#218](https://github.com/costajohnt/groovyfmt/issues/218))
+
 ## 0.23.0 (2026-11-17)
 
 ### Changed
