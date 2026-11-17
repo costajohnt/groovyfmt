@@ -385,6 +385,59 @@ static bool bracket_then_colon(TSLexer *lexer) {
     return false;
 }
 
+// At a `<` right after a name: true when a balanced, type-shaped `<…>` with
+// no space just inside its outer `<` and `>` (names, dots, commas, `?`, `[]`
+// and nested `<…>`) ends its argument: `,`, `;`, `}` or the line's end follow.
+// So does `.` and a name: `tag List<String>.class`. No comparison ends in `>`
+// there: `tag List<String>` is `tag(List<String>)`.
+static bool type_arguments_end_argument(TSLexer *lexer) {
+    advance(lexer);
+    if (lexer->lookahead == ' ' || lexer->lookahead == '\t') {
+        return false;
+    }
+    unsigned depth = 1;
+    bool prev_space = false;
+    for (unsigned steps = 0; depth > 0; steps++) {
+        int32_t c = lexer->lookahead;
+        if (steps > 400 || lexer->eof(lexer)) {
+            return false;
+        }
+        bool space = c == ' ' || c == '\t';
+        if (is_ident_start(c)) {
+            while (is_ident_part(lexer->lookahead)) {
+                advance(lexer);
+            }
+            prev_space = false;
+            continue;
+        }
+        if (c == '<') {
+            depth++;
+        } else if (c == '>') {
+            if (--depth == 0 && prev_space) {
+                return false;
+            }
+        } else if (c == '[') {
+            advance(lexer);
+            if (lexer->lookahead != ']') {
+                return false;
+            }
+        } else if (!space && c != '.' && c != ',' && c != '?') {
+            return false;
+        }
+        advance(lexer);
+        prev_space = space;
+    }
+    while (lexer->lookahead == ' ' || lexer->lookahead == '\t') {
+        advance(lexer);
+    }
+    int32_t c = lexer->lookahead;
+    if (c == '.') {
+        advance(lexer);
+        return is_ident_start(lexer->lookahead);
+    }
+    return c == ',' || c == ';' || c == '}' || c == '\n' || c == '\r' || lexer->eof(lexer);
+}
+
 void *tree_sitter_groovy_external_scanner_create(void) {
     return NULL;
 }
@@ -547,6 +600,21 @@ bool tree_sitter_groovy_external_scanner_scan(
                 if (c == '=') {
                     advance(lexer);
                     ok = lexer->lookahead != '=' && lexer->lookahead != '~';
+                } else if ((c == '-' && !valid_symbols[CASE_ARROW])
+                    || (c == ':' && !valid_symbols[EXPRESSION_COLON])) {
+                    // A closure parameter `{ Map <K, V> e -> }` or a for
+                    // variable `for (Map <K, V> e : xs)`. Outside a case
+                    // label (`case a < b, c > d:`) no comparison ends in a
+                    // name and `->` or `:`.
+                    advance(lexer);
+                    ok = c == '-' ? lexer->lookahead == '>' : lexer->lookahead != ':';
+                } else if (c == 'i') {
+                    // `for (Map <K, V> e in xs)`.
+                    advance(lexer);
+                    if (lexer->lookahead == 'n') {
+                        advance(lexer);
+                        ok = lexer->lookahead == ' ' || lexer->lookahead == '\t';
+                    }
                 }
             }
             // Where no comparison may stand (a parameter's type, a type
@@ -562,7 +630,13 @@ bool tree_sitter_groovy_external_scanner_scan(
             // `case List<String> -> …`: `>` then `->` ends no comparison.
             advance(lexer);
             ok = lexer->lookahead == '>';
-        } else if (c == '.' || c == '\n' || c == '\r') {
+        } else if (c == ';' || c == '}') {
+            ok = tight;
+        } else if (c == '.' || c == '\n' || c == '\r' || lexer->eof(lexer)) {
+            // A type at the end of its line is a command call's last
+            // argument, `tag List<String>` (Groovy 3 and 4), unless a `.`
+            // on the next line continues it. No comparison ends in `>`.
+            ok = c != '.' && tight;
             while (is_whitespace(lexer->lookahead)) {
                 advance(lexer);
             }
@@ -803,6 +877,15 @@ bool tree_sitter_groovy_external_scanner_scan(
                 && (lexer->lookahead == '\n' || lexer->lookahead == '\r')) {
                 lexer->mark_end(lexer);
                 lexer->result_symbol = COMMAND_KEYWORD_ARGUMENT;
+                return true;
+            }
+            // `tag List<String>`: a generic type as the argument (Groovy 3
+            // and 4), since a declared name takes no type arguments.
+            if (lexer->lookahead == '<') {
+                if (!type_arguments_end_argument(lexer)) {
+                    return false;
+                }
+                lexer->result_symbol = COMMAND_LITERAL_START;
                 return true;
             }
             // `println as[0]`: a variable named `as` (Groovy 3 and 4), since
