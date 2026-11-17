@@ -109,58 +109,16 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
         }
         if let Some(c) = call(n, src)
             && let Some(b) = c.body
+            && c.name == "dependencies"
         {
-            match c.name {
-                "dependencies" => deps.push(b),
-                "configurations" => {
-                    for s in statements(b) {
-                        // create('runtime'), register('runtime') { }, ...
-                        if let Some(c) = call(s, src)
-                            && DECLARING.contains(&c.name)
-                            && let Some(name) = c.args.first().and_then(|a| constant_value(*a, src))
-                        {
-                            declared.insert(name);
-                        }
-                        let t = text(s, src);
-                        let end = t
-                            .find(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
-                            .unwrap_or(t.len());
-                        declared.insert(t[..end].to_string());
-                    }
-                    // a name the block reads makes it too, as Gradle runs it:
-                    // `integrationTestRuntime.extendsFrom testRuntime` (#145)
-                    crate::preorder(b, |x| {
-                        if x.kind() == "identifier"
-                            && x.parent()
-                                .is_none_or(|p| p.child_by_field_name("field") != Some(x))
-                        {
-                            declared.insert(text(x, src).to_string());
-                        }
-                        true
-                    });
-                }
-                _ => {}
-            }
+            deps.push(b);
         }
-        // configurations.create('compile'), maybeCreate, register, getByName, named
-        if n.kind() == "method_invocation"
-            && n.child_by_field_name("function").is_some_and(|f| {
-                let t = text(f, src);
-                DECLARING
-                    .iter()
-                    .any(|d| t.strip_suffix(d).is_some_and(|r| r.ends_with('.')))
-            })
-            && let Some(a) = n
-                .child_by_field_name("arguments")
-                .and_then(|a| a.named_child(0))
-            && let Some(name) = constant_value(a, src)
-        {
-            declared.insert(name);
-        }
+        declares(src, n, &mut declared);
         true
     });
     // read only for a file that would get a report
     let old_gradle = std::cell::OnceCell::new();
+    let applier = std::cell::OnceCell::new();
     let jvm = plugins.iter().any(|p| JVM_PLUGINS.contains(&p.as_str()));
     for b in deps {
         for s in statements(b) {
@@ -175,6 +133,9 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
                 && !methods.contains(c.name)
                 && !owners(s, src).any(|o| o == "buildscript")
                 && !*old_gradle.get_or_init(|| wrapper_major(path).is_some_and(|m| m < 7))
+                && !applier
+                    .get_or_init(|| applier_declared(path))
+                    .contains(c.name)
             {
                 // the name starts the statement: `testCompile 'a'`, `testCompile('a') { }`
                 let fix =
@@ -235,6 +196,106 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
             v.push(at(n, "GradleRemovedApi", msg));
         }
     }
+}
+
+/// Adds to `declared` the configurations `n` makes: the names a `configurations { }` block
+/// (`n`) makes or reads, or `configurations.create('compile')` and the like.
+fn declares(src: &str, n: Node, declared: &mut HashSet<String>) {
+    if let Some(c) = call(n, src)
+        && let Some(b) = c.body
+        && c.name == "configurations"
+    {
+        for s in statements(b) {
+            // create('runtime'), register('runtime') { }, ...
+            if let Some(c) = call(s, src)
+                && DECLARING.contains(&c.name)
+                && let Some(name) = c.args.first().and_then(|a| constant_value(*a, src))
+            {
+                declared.insert(name);
+            }
+            let t = text(s, src);
+            let end = t
+                .find(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
+                .unwrap_or(t.len());
+            declared.insert(t[..end].to_string());
+        }
+        // a name the block reads makes it too, as Gradle runs it:
+        // `integrationTestRuntime.extendsFrom testRuntime` (#145)
+        crate::preorder(b, |x| {
+            if x.kind() == "identifier"
+                && x.parent()
+                    .is_none_or(|p| p.child_by_field_name("field") != Some(x))
+            {
+                declared.insert(text(x, src).to_string());
+            }
+            true
+        });
+    }
+    // configurations.create('compile'), maybeCreate, register, getByName, named
+    if n.kind() == "method_invocation"
+        && n.child_by_field_name("function").is_some_and(|f| {
+            let t = text(f, src);
+            DECLARING
+                .iter()
+                .any(|d| t.strip_suffix(d).is_some_and(|r| r.ends_with('.')))
+        })
+        && let Some(a) = n
+            .child_by_field_name("arguments")
+            .and_then(|a| a.named_child(0))
+        && let Some(name) = constant_value(a, src)
+    {
+        declared.insert(name);
+    }
+}
+
+/// The most bytes read of a script that may apply the one linted (`applier_declared`).
+const MAX_SCRIPT_BYTES: u64 = 4 * 1024 * 1024;
+
+/// The configurations made by the `.gradle` scripts that apply `path` with
+/// `apply from: 'deps.gradle'`, as a build script declares `testCompile` and the
+/// `dependencies.gradle` it applies uses it (#217). The scripts looked at are those in the
+/// script's directory and the ones above it, up to the build's root (the nearest directory
+/// with `settings.gradle`, `settings.gradle.kts` or `.git`; without one, only the script's
+/// own directory). The target must be a plain path to `path` relative to the applying
+/// script's directory: a URL, an interpolated name or a missing file applies nothing here.
+fn applier_declared(path: &Path) -> HashSet<String> {
+    let mut declared = HashSet::new();
+    let Ok(me) = path.canonicalize() else {
+        return declared;
+    };
+    let root = me.ancestors().skip(1).find(|d| {
+        ["settings.gradle", "settings.gradle.kts", ".git"]
+            .iter()
+            .any(|f| d.join(f).exists())
+    });
+    for dir in me.ancestors().skip(1) {
+        let scripts = std::fs::read_dir(dir).into_iter().flatten().flatten();
+        for p in scripts.map(|e| e.path()) {
+            if p.extension().is_none_or(|e| e != "gradle") || p == me {
+                continue;
+            }
+            let Some(src) = read_small(&p, MAX_SCRIPT_BYTES) else {
+                continue;
+            };
+            let tree = crate::parse(&src);
+            let mut applies = false;
+            crate::preorder(tree.root_node(), |n| {
+                applies |= apply_argument(&src, n, "from")
+                    .is_some_and(|t| dir.join(t).canonicalize().is_ok_and(|t| t == me));
+                !applies
+            });
+            if applies {
+                crate::preorder(tree.root_node(), |n| {
+                    declares(&src, n, &mut declared);
+                    true
+                });
+            }
+        }
+        if root.is_none_or(|r| r == dir) {
+            break;
+        }
+    }
+    declared
 }
 
 /// Core plugins removed from Gradle: id, the major that removed it, the replacement. From
@@ -416,25 +477,7 @@ fn removed_api<'a>(
 /// `version` after the id is allowed).
 fn applied_plugin(src: &str, n: Node) -> Option<String> {
     if n.kind() == "named_argument" {
-        let val = n.child_by_field_name("value")?;
-        let applies = n
-            .child_by_field_name("key")
-            .is_some_and(|k| text(k, src) == "plugin")
-            && val.kind() == "string_literal"
-            && n.parent()
-                .and_then(|p| {
-                    if p.kind() == "argument_list" {
-                        p.parent()
-                    } else {
-                        Some(p)
-                    }
-                })
-                .and_then(|p| {
-                    p.child_by_field_name("receiver")
-                        .or_else(|| p.child_by_field_name("function"))
-                })
-                .is_some_and(|f| text(f, src) == "apply");
-        return applies.then(|| constant_value(val, src)).flatten();
+        return apply_argument(src, n, "plugin");
     }
     let c = call(n, src)?;
     let a = c.args.first().filter(|a| {
@@ -446,6 +489,33 @@ fn applied_plugin(src: &str, n: Node) -> Option<String> {
         return None;
     }
     constant_value(*a, src)
+}
+
+/// The string the named argument `n` passes to `apply` as `key`: `apply plugin: 'java'`,
+/// `apply(from: 'deps.gradle')`.
+fn apply_argument(src: &str, n: Node, key: &str) -> Option<String> {
+    if n.kind() != "named_argument" {
+        return None;
+    }
+    let val = n.child_by_field_name("value")?;
+    let applies = n
+        .child_by_field_name("key")
+        .is_some_and(|k| text(k, src) == key)
+        && val.kind() == "string_literal"
+        && n.parent()
+            .and_then(|p| {
+                if p.kind() == "argument_list" {
+                    p.parent()
+                } else {
+                    Some(p)
+                }
+            })
+            .and_then(|p| {
+                p.child_by_field_name("receiver")
+                    .or_else(|| p.child_by_field_name("function"))
+            })
+            .is_some_and(|f| text(f, src) == "apply");
+    applies.then(|| constant_value(val, src)).flatten()
 }
 
 /// Calls in a `configurations { }` block (or on `configurations.`) that make or name a
@@ -550,18 +620,18 @@ fn wrapper_version(path: &Path) -> Option<(u32, u32)> {
         .ancestors()
         .map(|d| d.join("gradle/wrapper/gradle-wrapper.properties"))
         .find(|p| p.is_file())?;
-    version(&read_small(&props)?)
+    version(&read_small(&props, MAX_WRAPPER_BYTES)?)
 }
 
 /// The real file is a few hundred bytes.
 const MAX_WRAPPER_BYTES: u64 = 64 * 1024;
 
-/// `p` if it is a regular file of at most `MAX_WRAPPER_BYTES`, in UTF-8. A FIFO or device
+/// `p` if it is a regular file of at most `max` bytes, in UTF-8. A FIFO or device
 /// is never opened (opening a FIFO waits for a writer); one swapped in between the check and
 /// the open is the race the source reads accept too (see `write_in_place`).
-fn read_small(p: &Path) -> Option<String> {
+fn read_small(p: &Path, max: u64) -> Option<String> {
     use std::io::Read;
-    let ok = |m: std::fs::Metadata| m.is_file() && m.len() <= MAX_WRAPPER_BYTES;
+    let ok = |m: std::fs::Metadata| m.is_file() && m.len() <= max;
     if !std::fs::metadata(p).is_ok_and(ok) {
         return None;
     }
@@ -570,8 +640,8 @@ fn read_small(p: &Path) -> Option<String> {
         return None;
     }
     let mut bytes = Vec::new();
-    f.take(MAX_WRAPPER_BYTES + 1).read_to_end(&mut bytes).ok()?;
-    if bytes.len() as u64 > MAX_WRAPPER_BYTES {
+    f.take(max + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > max {
         return None;
     }
     String::from_utf8(bytes).ok()
@@ -1212,6 +1282,42 @@ mod tests {
             assert!(made.is_ok_and(|s| s.success()), "mkfifo");
             assert_eq!(run(&sub), 1);
         }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn removed_configurations_declared_by_an_applying_script() {
+        // build.gradle declares testCompile and applies deps.gradle, which uses it (#217)
+        let root = std::env::temp_dir().join(format!("groovyfmt-applied-{}", std::process::id()));
+        let sub = root.join("gradle");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(root.join("settings.gradle"), "").unwrap();
+        let uses = "dependencies {\n    testCompile 'a:b:1'\n}\n";
+        let run = |p: &Path| {
+            std::fs::write(p, uses).unwrap();
+            rules(p.to_str().unwrap(), uses).len()
+        };
+        let build = |s: &str| std::fs::write(root.join("build.gradle"), s).unwrap();
+        build(
+            "configurations { testCompile }\napply from: 'deps.gradle'\napply(from: 'gradle/sub.gradle')\n",
+        );
+        // declared in the applying script, also one directory up
+        assert_eq!(
+            (run(&root.join("deps.gradle")), run(&sub.join("sub.gradle"))),
+            (0, 0)
+        );
+        // a script nothing applies, a URL, an interpolated name: reported as before
+        assert_eq!(run(&root.join("other.gradle")), 1);
+        build(
+            "configurations { testCompile }\napply from: 'https://x/deps.gradle'\napply from: \"${d}.gradle\"\n",
+        );
+        assert_eq!(run(&root.join("deps.gradle")), 1);
+        // applied but declared nowhere
+        build("apply from: 'deps.gradle'\n");
+        assert_eq!(run(&root.join("deps.gradle")), 1);
+        // the applying script names a missing file
+        build("configurations { testCompile }\napply from: 'gone.gradle'\n");
+        assert_eq!(run(&root.join("deps.gradle")), 1);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

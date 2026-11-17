@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- More constructs parse, as Groovy reads them; files with one were skipped ([#217](https://github.com/costajohnt/groovyfmt/issues/217)). A command call on a quoted name in an argument list or parentheses, `f("foo" 1)` (`f(foo(1))`), `("foo" 1).bar`, and a name or quoted name after the last argument of a command call in an argument list, `f(a 1 b)` or `f("a" 1 "b")` (`f(a(1).b)`), as in parentheses (Groovy 3 and 4). A slashy string at the start of a file or line with a backslash line continuation, `/abc \` then ` x/` (Groovy 2.4, 3 and 4); after a statement, `def y = 1` then such a slashy had been read as division across the lines and is now the string. JSR 308 type annotations on a wildcard and its bound, `List<@A ? extends @B Object>`, a catch parameter, `catch (@A Exception e)`, a `throws` type, `throws @A IOException`, a cast type, `(@A String) e`, and array dimensions, `String @A [] s`, `new String @A [1]` (Groovy 3 and 4); `throws @A IOException` had been read as several statements and is now the method. `def final` on closure parameters, `{ def final int x, def final idx -> }` (Groovy 2.4, 3 and 4). A call whose parentheses are a lambda's parameters with no space before them, `foo.bar(String s) -> { s }` (Groovy 3 and 4), as with a space. Explicit type arguments after `*.` and `?.`, `l*.<String>m()`, `l?.<String>m()` (Groovy 2.4, 3 and 4). The grammar pin moves to tree-sitter-groovy 787ed6e.
+- GradleRemovedConfiguration no longer reports a configuration that a script applying the file declares: `build.gradle` declares `configurations { testCompile }` and runs `apply from: 'dependencies.gradle'`, which uses `testCompile` (opencms-core). The applying scripts are the `.gradle` files in the file's directory and those above it up to the build's root (`settings.gradle` or `.git`), with the target a plain path relative to the applying script; a URL, an interpolated name or a missing file changes nothing. ([#217](https://github.com/costajohnt/groovyfmt/issues/217))
+
 ## 0.23.0 (2026-11-17)
 
 ### Changed
