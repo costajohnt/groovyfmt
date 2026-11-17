@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A call's trailing closure whose `{` is on the line after the call (SwingBuilder style, `def f = frame(title: 1)` then `{`) has its `{` and `}` level with the line the call starts on and its body one indent in, in both formatting modes. The `{` and `}` were indented as a continuation, one step in, and the body two. This also covers the `{` after wrapped arguments that #183 left in place. A closure inside the parentheses or a list, and a block's `{` on its own line, keep their indent. ([#198](https://github.com/costajohnt/groovyfmt/issues/198))
+
 ## 0.21.1 (2026-11-16)
 
 ### Fixed

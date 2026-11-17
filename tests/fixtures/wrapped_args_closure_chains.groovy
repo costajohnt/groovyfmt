@@ -38,3 +38,16 @@ def canonicalise(Map schema) {
         d)
     normalised
 }
+
+// #198: a closure's `{` on the line after its call lines up with the call
+def f = frame(title: 'x',
+    size: [1, 2])
+{
+    panel {
+        label 'a'
+    }
+    button(text: 'b')
+    {
+        action()
+    }
+}

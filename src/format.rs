@@ -728,6 +728,22 @@ mod tests {
     }
 
     #[test]
+    fn closure_brace_on_the_line_after_a_call_lines_up_with_the_call() {
+        // #198: `{` and `}` were a continuation step in, the body two. A closure inside the
+        // parentheses or a list, and a block's `{`, keep their indent.
+        let spaced = Style {
+            normalize_spacing: true,
+            ..Style::default()
+        };
+        let src = "def f = frame(title: 1, size: 2)\n{\npanel()\n}\nclass V {\ndef build() {\nswing.edt {\nframe(title: 'x',\nsize: [1, 2])\n{\npanel {\nlabel 'a'\n}\nbutton(text: 'b')\n{\naction()\n}\n}\n}\n}\n}\ndef x = new X()\n{\nprintln 1\n}\nfoo 1\n{\nprintln 1\n}\nfoo(bar(1)\n{\nprintln 1\n})\nframe() {\npanel()\n}\nif (x)\n{\ny()\n}\nvoid g()\n{\nz()\n}\nfoo(\n{\nw()\n})\ndef l = [\n{\nv()\n}\n]\n";
+        let want = "def f = frame(title: 1, size: 2)\n{\n    panel()\n}\nclass V {\n    def build() {\n        swing.edt {\n            frame(title: 'x',\n                size: [1, 2])\n            {\n                panel {\n                    label 'a'\n                }\n                button(text: 'b')\n                {\n                    action()\n                }\n            }\n        }\n    }\n}\ndef x = new X()\n{\n    println 1\n}\nfoo 1\n{\n    println 1\n}\nfoo(bar(1)\n{\n    println 1\n})\nframe() {\n    panel()\n}\nif (x)\n{\n    y()\n}\nvoid g()\n{\n    z()\n}\nfoo(\n    {\n        w()\n    })\ndef l = [\n    {\n        v()\n    }\n]\n";
+        assert_eq!(fmt(src), want);
+        assert_eq!(fmt(want), want, "idempotent");
+        assert_eq!(format(src, &spaced), Outcome::Formatted(want.to_string()));
+        assert_eq!(format(want, &spaced), Outcome::Unchanged);
+    }
+
+    #[test]
     fn chain_on_its_own_line_keeps_its_links_level() {
         // #183, the rest of #174: a chain starting on the line after `=` had every link after
         // the first one step further in
