@@ -285,7 +285,8 @@ fn unasserted<'a>(src: &'a str, n: Node, inside: Option<&'a str>, v: &mut Vec<Vi
     }
 }
 
-/// A comparison, an instanceof or `in` test, or `!`, `&&` or `||` over them: an expression
+/// A comparison, an instanceof or `in` test, a predicate call (`xs.contains(x)`, see
+/// PREDICATES), or `!`, `&&` or `||` over them: an expression
 /// statement made only of checks, with nothing it could be run for (`x != null && x.close()`
 /// is not one).
 fn is_condition(e: Node, src: &str) -> bool {
@@ -306,8 +307,72 @@ fn is_condition(e: Node, src: &str) -> bool {
             }),
             _ => false,
         },
+        "method_invocation" => is_predicate(e, src),
         _ => false,
     }
+}
+
+/// Calls that only answer a question, so a nested one is as unasserted as a nested
+/// comparison: well-known side-effect-free JDK, Groovy and Grails names only. Not a bare
+/// `contains(x)`, which may be a spec helper that asserts, nor a call in an assertion chain,
+/// `assertThat(s).contains(x)`, which checks by throwing.
+const PREDICATES: &[&str] = &[
+    "contains",
+    "containsAll",
+    "containsKey",
+    "containsValue",
+    "endsWith",
+    "equals",
+    "equalsIgnoreCase",
+    "hasErrors",
+    "hasNext",
+    "isAssignableFrom",
+    "isEmpty",
+    "isPresent",
+    "matches",
+    "startsWith",
+];
+
+/// A call named in PREDICATES on a receiver, with no closure, and no assertion call
+/// (`assertThat`, `expect`, `verify`, `that`, ...) anywhere in the receiver chain.
+fn is_predicate<'a>(e: Node<'a>, src: &'a str) -> bool {
+    // `x.m` or `x?.m`
+    let member = |f: Node<'a>| {
+        f.child_by_field_name("field")
+            .or_else(|| f.child_by_field_name("property"))
+    };
+    let name = |call: Node<'a>| {
+        call.child_by_field_name("function")
+            .map(|f| (text(member(f).unwrap_or(f), src), f))
+    };
+    let Some((m, f)) =
+        name(e).filter(|(_, f)| matches!(f.kind(), "field_access" | "safe_navigation_expression"))
+    else {
+        return false;
+    };
+    if !PREDICATES.contains(&m) || e.child_by_field_name("closure").is_some() {
+        return false;
+    }
+    let mut r = f.child_by_field_name("object");
+    while let Some(n) = r {
+        r = match n.kind() {
+            "method_invocation" => {
+                let Some((m, f)) = name(n) else { break };
+                if m == "that"
+                    || ["assert", "assume", "check", "expect", "verify"]
+                        .iter()
+                        .any(|p| m.starts_with(p))
+                {
+                    return false;
+                }
+                f.child_by_field_name("object")
+            }
+            "field_access" | "safe_navigation_expression" => n.child_by_field_name("object"),
+            "parenthesized_expression" => n.named_child(0),
+            _ => None,
+        };
+    }
+    true
 }
 
 /// Rows of the current data table: the cell count of the last row, if the table is going.
@@ -498,6 +563,39 @@ mod tests {
             ),
             ("expect:\nif (a) {\n1 == 2\n}", 5),
             ("when:\nf()\nthen:\nx == 1\nand:\nif (a) {\n(x == 2)\n}", 9),
+            // #207: an and: after a then: holding a command chain
+            (
+                "when:\nf()\nthen:\ndef t = x\nt M.dependsOn('a')\n\nand:\nxs.each { c ->\nc.a == 1\n}",
+                11,
+            ),
+            // #207: predicate calls
+            ("when:\nf()\nthen:\nif (a) {\nxs.contains(5)\n}", 7),
+            ("when:\nf()\nthen:\nxs.each {\n!it.isEmpty()\n}", 7),
+            (
+                "when:\nf()\nthen:\nif (a) {\n} else {\nm?.containsKey('k')\n}",
+                8,
+            ),
+            (
+                "when:\nf()\nthen:\nfor (x in xs) {\nx.startsWith('a') && x.endsWith('z')\n}",
+                7,
+            ),
+            (
+                "when:\nf()\nthen:\nswitch (x) {\ncase 1:\nx.text.matches(/a+/)\n}",
+                8,
+            ),
+            (
+                "when:\nf()\nthen:\ntry {\nArrays.equals(a, b)\n} catch (e) {\n}",
+                7,
+            ),
+            ("when:\nf()\nthen:\nif (a) {\n!errors.hasErrors(true)\n}", 7),
+            (
+                "when:\nf()\nthen:\nn.times {\n(x as String).equalsIgnoreCase(cells[1].text()[0])\n}",
+                7,
+            ),
+            (
+                "expect:\nif (a) {\n$('body').text().contains('x') || o.isPresent()\n}",
+                5,
+            ),
         ] {
             assert_eq!(unasserted(body), vec![line], "{body}");
         }
@@ -522,7 +620,13 @@ mod tests {
             // closures whose value the call returns, and are asserted at the top level
             "when:\nf()\nthen:\nxs.every { it == 2 }\nxs.find { it == 2 }\nxs.any {\nif (c) {\nit == 2\n}\n}",
             // an explicit assert, a thrown() check, a call, a conditional call
-            "when:\nf()\nthen:\nif (c) {\nassert x == 2\nthrown(E)\nx.contains(1)\nx != null && x.close()\ny = x == 2\n}",
+            "when:\nf()\nthen:\nif (c) {\nassert x == 2\nthrown(E)\nx.size()\nx != null && x.close()\ny = x == 2\n}",
+            // calls run for what they do, or that may assert themselves
+            "when:\nf()\nthen:\nxs.each {\nlist.add(it)\nmap.put(it, 1)\nset.remove(it)\nit.contains(1) && it.close()\n}",
+            "when:\nf()\nthen:\nif (c) {\ncontains(x)\nhasBaseEnvironment(env)\nx.isValid()\nx.contains { it }\n}",
+            "when:\nf()\nthen:\nif (c) {\nassertThat(r).output().contains('x')\nassertAbout(t).that(r).isEmpty()\nexpect(s).startsWith('a')\nverify(m).equals(x)\n}",
+            // predicates Spock asserts: top level, with, verifyAll, every, an argument constraint
+            "when:\nf()\nthen:\nxs.contains(1)\n!m.isEmpty()\nwith(xs) {\nif (c) {\nit.contains(1)\n}\n}\nverifyAll {\nif (c) {\nxs.contains(1)\n}\n}\nxs.every { it.startsWith('a') }\n1 * m.foo({ it.contains('a') })",
             // not then: or expect:
             "given:\nif (c) {\nx == 2\n}\nexpect:\ntrue\ncleanup:\nif (c) {\nx == 2\n}",
             "when:\nif (c) {\nx == 2\n}\nthen:\ntrue\nwhere:\nx << [1]",

@@ -368,6 +368,56 @@ fn groovy24_empty_elements_are_kept_as_written_and_linted() {
     assert!(stdout(&e).contains("Groovy 2.4"), "{}", stdout(&e));
 }
 
+/// #207: a predicate call nested in a then: block is reported like a comparison; calls run
+/// for what they do, assertion chains and checks Spock asserts are not.
+#[test]
+fn spock_unasserted_predicate_calls() {
+    let d = Dir::new("spock-predicate");
+    d.write(
+        "ResultSpec.groovy",
+        "class ResultSpec extends Specification {
+    def 'parses'() {
+        when:
+        def r = parse(input)
+
+        then:
+        if (valid) {
+            r.items.contains(42)
+        }
+        r.items.each {
+            !it.isEmpty()
+            seen.add(it)
+            cache.put(it, 1)
+            assertThat(it).startsWith('a')
+        }
+        with(r) {
+            if (valid) {
+                items.contains(42)
+            }
+        }
+        verifyAll {
+            if (valid) {
+                r.items.contains(42)
+            }
+        }
+    }
+}
+",
+    );
+    let l = run(&d.0, &["--lint"], None);
+    let text = stdout(&l);
+    let found: Vec<&str> = text
+        .lines()
+        .filter(|s| s.contains("SpockUnassertedCondition"))
+        .map(|s| s.split(": ").next().unwrap_or(""))
+        .collect();
+    assert_eq!(
+        found,
+        ["ResultSpec.groovy:8:13", "ResultSpec.groovy:11:13"],
+        "{text}"
+    );
+}
+
 const BROKEN_AT: &str =
     "Broken.groovy:1:10: could not parse: expected `}` to close the `{` on line 1\n";
 

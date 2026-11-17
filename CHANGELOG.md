@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- SpockUnassertedCondition also reports a predicate call nested the same way, alone or under `!`, `&&` and `||`: `contains`, `containsAll`, `containsKey`, `containsValue`, `endsWith`, `equals`, `equalsIgnoreCase`, `hasErrors`, `hasNext`, `isAssignableFrom`, `isEmpty`, `isPresent`, `matches` or `startsWith` on a receiver, as in `if (valid) { r.items.contains(42) }` or `xs.each { !it.isEmpty() }`. Spock 2.4 drops these like a nested comparison. Only these side-effect-free names are reported, not a bare call (`contains(x)` may be a spec helper that asserts) or a call in an assertion chain such as `assertThat(s).contains(x)`. ([#207](https://github.com/costajohnt/groovyfmt/issues/207))
+
 ## 0.22.0 (2026-11-17)
 
 ### Added
