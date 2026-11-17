@@ -901,6 +901,8 @@ fn method(src: &str, m: Node, v: &mut Vec<Violation>) {
         && p.len() == 1
         && !object_param(src, p[0])
         && m.child_by_field_name("body").is_some()
+        // implements a base class's own typed hook (jjwt's `equals(Jwk)`, #212)
+        && !annotations(src, m).contains(&"Override")
         && !m
             .parent()
             .and_then(|b| b.parent())
@@ -1525,6 +1527,9 @@ mod tests {
         let src = "class A {\n  boolean equals(Object o) { true }\n}\nclass B {\n  int hashCode() { 1 }\n}\nclass C {\n  boolean equals(o) { true }\n  int hashCode() { 1 }\n}\n@EqualsAndHashCode\nclass D {\n  boolean equals(Object o) { true }\n}\nclass E {\n  boolean equals(String s) { true }\n  static int hashCode() { 1 }\n}\nclass F extends A {\n  boolean equals(Object o) { true }\n}\n";
         assert_eq!(rules(src, "EqualsAndHashCode"), vec![1]);
         assert_eq!(rules(src, "EqualsOverloaded"), vec![16]);
+        // #212: an @Override of a base class's typed equals is not an overload by mistake
+        let src = "class A extends B {\n  @Override\n  protected boolean equals(Jwk o) { true }\n  @java.lang.Override boolean equals(A o) { true }\n  @Deprecated boolean equals(C o) { true }\n}\n";
+        assert_eq!(rules(src, "EqualsOverloaded"), vec![5]);
         // hoist-core's Filter: equals(Object) delegates to a typed overload, abstract in the
         // base; a superclass in another file can't be seen, so Lone stays reported
         let src = "abstract class Filter {\n  abstract boolean equals(Filter o)\n  boolean equals(Object o) { o instanceof Filter && equals((Filter) o) }\n}\nclass Field extends Filter {\n  boolean equals(Filter o) { true }\n  int hashCode() { 1 }\n}\nclass Other {\n  boolean equals(Other o) { true }\n  boolean equals(Object o) { o instanceof Other && equals((Other) o) }\n  int hashCode() { 1 }\n}\nclass Lone extends Remote {\n  boolean equals(Lone o) { true }\n}\nabstract class Base {\n  int x\n  abstract int size()\n  boolean equals(Object o) { o.x == x }\n}\n";

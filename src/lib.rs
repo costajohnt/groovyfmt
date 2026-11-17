@@ -125,7 +125,8 @@ pub fn printable(s: &str) -> String {
 }
 
 /// Groovy sources, Gradle build scripts, and Jenkinsfiles: the names a directory walk takes.
-/// The same names the editor plugins treat as Groovy, except a backup (`Jenkinsfile~`) or a
+/// The same names the editor plugins treat as Groovy, and an extensionless `Jenkinsfile<Name>`
+/// (`JenkinsfileBase`), except a backup (`Jenkinsfile~`) or a
 /// `Jenkinsfile.*`, `Jenkinsfile_*` or `Jenkinsfile-*` with a suffix that says it is something
 /// else (`Jenkinsfile.md`, `Jenkinsfile_k8s.j2`). A walk also reads the pipeline names other
 /// than `Jenkinsfile` and `*.jenkinsfile` first, and takes an extensionless script by its
@@ -137,21 +138,15 @@ pub fn is_groovy_file(path: &Path) -> bool {
         .any(|ext| name.ends_with(ext))
         || (is_jenkinsfile(name)
             && !name.ends_with('~')
-            && !jenkinsfile_suffix(name).is_some_and(|ext| {
-                NOT_GROOVY.contains(
-                    &ext.rsplit('.')
-                        .next()
-                        .unwrap_or("")
-                        .to_ascii_lowercase()
-                        .as_str(),
-                )
-            }))
+            && !jenkinsfile_suffix(name)
+                .and_then(|s| s.rsplit_once('.'))
+                .is_some_and(|(_, ext)| NOT_GROOVY.contains(&ext.to_ascii_lowercase().as_str())))
 }
 
 /// Whether a directory walk takes the file at `path`: a name `is_groovy_file` takes, and for
-/// a `Jenkinsfile.*`, `Jenkinsfile_*`, `Jenkinsfile-*`, `*-Jenkinsfile`, `*_Jenkinsfile` or
-/// `*.jenkins` not ending in `.groovy`, contents that parse as Groovy. Such a name may be a
-/// template or a note (`Jenkinsfile.disabled`, `Jenkinsfile_template`) that would
+/// a `Jenkinsfile.*`, `Jenkinsfile_*`, `Jenkinsfile-*`, `Jenkinsfile<Name>`, `*-Jenkinsfile`,
+/// `*_Jenkinsfile` or `*.jenkins` not ending in `.groovy`, contents that parse as Groovy.
+/// Such a name may be a template or a note (`Jenkinsfile.disabled`, `Jenkinsfile_template`) that would
 /// only fail the run; one that doesn't parse is left out without a word, as a `.txt` file is.
 /// Any other file with no extension (and not ending in `~`) is taken when its first line is a
 /// groovy shebang (`is_groovy_shebang`); only its first 256 bytes are read, and files with
@@ -249,8 +244,8 @@ const NOT_GROOVY: &[&str] = &[
 ];
 
 /// A pipeline by its name: `Jenkinsfile`, `Jenkinsfile.*`, `Jenkinsfile_*`, `Jenkinsfile-*`
-/// (`Jenkinsfile_k8s`), `*-Jenkinsfile`, `*_Jenkinsfile` (`rstan-Jenkinsfile`), `*.jenkinsfile`
-/// or `*.jenkins` (those two in any case: `ci/release.Jenkinsfile`).
+/// (`Jenkinsfile_k8s`), an extensionless `Jenkinsfile<Name>` (`JenkinsfileBase`),
+/// `*-Jenkinsfile`, `*_Jenkinsfile` (`rstan-Jenkinsfile`), `*.jenkinsfile` or `*.jenkins` (those two in any case: `ci/release.Jenkinsfile`).
 pub fn is_jenkinsfile(name: &str) -> bool {
     name == "Jenkinsfile"
         || jenkinsfile_suffix(name).is_some()
@@ -268,10 +263,13 @@ fn ends_with_ignore_case(name: &str, end: &str) -> bool {
 }
 
 /// What follows `Jenkinsfile` in `Jenkinsfile.*`, `Jenkinsfile_*` or `Jenkinsfile-*`,
-/// separator included (`.release`, `_k8s`).
+/// separator included (`.release`, `_k8s`), or in an extensionless `Jenkinsfile*` going on
+/// with a capital (`JenkinsfileSnykScan`, #212; not `Jenkinsfiles`).
 fn jenkinsfile_suffix(name: &str) -> Option<&str> {
-    name.strip_prefix("Jenkinsfile")
-        .filter(|rest| rest.starts_with(['.', '_', '-']))
+    name.strip_prefix("Jenkinsfile").filter(|rest| {
+        rest.starts_with(['.', '_', '-'])
+            || (rest.starts_with(|c: char| c.is_ascii_uppercase()) && !rest.contains('.'))
+    })
 }
 
 /// Directories skipped while walking: hidden ones (except the CI ones in `CI_DIRS`) and common

@@ -2445,6 +2445,65 @@ fn jenkinsfile_underscore_and_dash_names_are_pipelines() {
 }
 
 #[test]
+fn extensionless_jenkinsfile_names_are_pipelines() {
+    // #212: corda's JenkinsfileSnykScan, aqa-tests' JenkinsfileBase
+    let d = Dir::new("jfnosep");
+    for f in [
+        "JenkinsfileSnykScan",
+        "JenkinsfileBase",
+        "Jenkinsfile.foo",
+        "Jenkinsfile-foo",
+    ] {
+        d.write(f, UGLY);
+    }
+    // not a pipeline name, a backup, a suffix that says it's something else, or not Groovy
+    for f in [
+        "JenkinsfileBase~",
+        "JenkinsfileFoo.md",
+        "JenkinsfileFoo.bak",
+        "MyJenkinsfileFoo",
+        "jenkinsfileFoo",
+        "Jenkinsfiles",
+    ] {
+        d.write(f, UGLY);
+    }
+    let template = "pipeline {\n{% for s in stages %}\n  stage('{{ s }}') { }\n{% endfor %}\n}\n";
+    d.write("JenkinsfileTemplate", template);
+    let o = run(&d.0, &["--check", "."], None);
+    assert_eq!(
+        stdout(&o),
+        "Jenkinsfile-foo\nJenkinsfile.foo\nJenkinsfileBase\nJenkinsfileSnykScan\n"
+    );
+    // named on the command line, taken; it used to be skipped with exit 0
+    let o = run(&d.0, &["--check", "JenkinsfileBase"], None);
+    assert_eq!(o.status.code(), Some(1), "{}", stderr(&o));
+    assert_eq!(stdout(&o), "JenkinsfileBase\n");
+    // the Jenkins rules apply to it
+    d.write("JenkinsfileCi", "def x = 1\npipeline {\n    stages {}\n}\n");
+    let o = run(&d.0, &["--lint", "JenkinsfileCi"], None);
+    assert!(
+        stdout(&o).contains("JenkinsMissingSection"),
+        "{}",
+        stdout(&o)
+    );
+}
+
+#[test]
+fn lint_fix_keeps_a_semicolon_groovy_3_needs() {
+    // #211: groovy-eclipse RenameMethod testStaticImport; without the `;` Groovy 3 and 4
+    // read `FOO bar()`, a method declaration without a body
+    let d = Dir::new("fix-211");
+    let src = "import static p.A.FOO;\nFOO;\nbar()\nx = 1;\n";
+    d.write("A.groovy", src);
+    let f = run(&d.0, &["--lint", "--fix"], None);
+    assert_eq!(f.status.code(), Some(0), "{}", stderr(&f));
+    assert_eq!(
+        d.read("A.groovy"),
+        "import static p.A.FOO\nFOO;\nbar()\nx = 1\n"
+    );
+}
+
+#[test]
 fn discovers_pipelines_named_like_the_editors_do() {
     let d = Dir::new("pipelines");
     for f in [
@@ -3901,4 +3960,49 @@ fn gradle_compile_is_fixed_only_with_its_replacement_configured() {
     );
     run(&d.0, &["--lint", "--fix", "build.gradle"], None);
     assert_eq!(d.read("build.gradle"), src);
+}
+
+#[test]
+fn specs_whose_base_is_in_another_file_are_checked() {
+    let feature = "    def \"f\"() {\n        expect:\n        if (c) {\n            x == 1\n        }\n    }\n";
+    let spec = |decl: &str| format!("{decl} {{\n{feature}}}\n");
+    let d = project(
+        "spockbase",
+        &[
+            (
+                "src/Base.groovy",
+                "abstract class Base extends Specification { }\n",
+            ),
+            ("src/Mid.groovy", "abstract class Mid<T> extends Base { }\n"),
+            (
+                "src/Deep.groovy",
+                "abstract class Deep extends com.x.Mid<String> { }\n",
+            ),
+            ("src/ASpec.groovy", &spec("class ASpec extends Base")),
+            ("src/BTest.groovy", &spec("class BTest extends Deep")),
+            // not specs: a base that extends nothing, named like a spec or not, and a base
+            // no file declares in a file that doesn't import from Spock
+            ("src/Plain.groovy", "class Plain { }\n"),
+            ("src/CSpec.groovy", &spec("class CSpec extends Plain")),
+            (
+                "src/DTest.groovy",
+                &spec("class DTest extends AbstractIntegrationTest"),
+            ),
+        ],
+    );
+    let o = run(&d.0, &["--lint"], None);
+    let out = stdout(&o);
+    let hits: Vec<&str> = out
+        .lines()
+        .filter(|l| l.contains("SpockUnassertedCondition"))
+        .map(|l| l.split(':').next().unwrap())
+        .collect();
+    assert_eq!(hits, ["src/ASpec.groovy", "src/BTest.groovy"], "{out}");
+    // one file named alone is resolved through its project the same way
+    let o = run(&d.0, &["--lint", "src/BTest.groovy"], None);
+    assert!(
+        stdout(&o).contains("SpockUnassertedCondition"),
+        "{}",
+        stdout(&o)
+    );
 }

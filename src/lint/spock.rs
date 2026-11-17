@@ -73,29 +73,128 @@ fn name(b: B) -> &'static str {
     }
 }
 
-/// Feature methods of a spec: every method with a block label, other than the fixture
-/// methods, in a class whose superclass is `Specification` or a name ending in `Spec` or
-/// `Specification` (a project's base spec). Labels in other classes are plain Groovy: Gradle's
-/// JUnit integration tests use `when:` and `then:` as comments.
-pub(super) fn class(src: &str, class: Node, v: &mut Vec<Violation>) {
-    let spec = class
+/// The simple name of `class`'s superclass: `Base` for `extends com.x.Base<T>`.
+pub(super) fn superclass<'a>(class: Node, src: &'a str) -> Option<&'a str> {
+    let t = class
         .children(&mut class.walk())
-        .find(|c| c.kind() == "superclass")
-        .and_then(|s| s.named_child(0))
-        .is_some_and(|t| {
-            let t = text(t, src);
-            let name = t
-                .split('<')
-                .next()
-                .unwrap_or("")
-                .rsplit('.')
-                .next()
-                .unwrap_or("");
-            name.ends_with("Spec") || name.ends_with("Specification")
+        .find(|c| c.kind() == "superclass")?
+        .named_child(0)?;
+    let name = text(t, src).split('<').next()?.rsplit('.').next()?.trim();
+    (!name.is_empty()).then_some(name)
+}
+
+/// Classes by simple name, with each declaration's superclass (see `superclass`).
+pub(super) type Classes = std::collections::HashMap<Box<str>, Vec<Option<Box<str>>>>;
+
+/// Adds the classes declared under `root` to `classes`.
+pub(super) fn classes(root: Node, src: &str, classes: &mut Classes) {
+    crate::preorder(root, |n| {
+        if n.kind() == "class_declaration"
+            && let Some(name) = n.child_by_field_name("name")
+        {
+            let sup = superclass(n, src).map(Box::from);
+            classes.entry(text(name, src).into()).or_default().push(sup);
+        }
+        true
+    });
+}
+
+/// Whether the class `name` is a spec: named like one, or every declaration of it in
+/// `classes` extends one (`Some(true)`) or ends at a class extending nothing (`Some(false)`).
+/// A name `classes` doesn't declare is asked of `outside`; declarations that disagree, a
+/// cycle, or a chain over 32 classes long, are `None`.
+pub(super) fn spec(
+    classes: &Classes,
+    name: &str,
+    outside: &dyn Fn(&str) -> Option<bool>,
+) -> Option<bool> {
+    // each name's verdict, worked out once: many declarations of one name at each level
+    // would otherwise be walked once per path to them, exponentially. `None` while it is
+    // being worked out, so a cycle is unknown.
+    type Memo<'a> = std::collections::HashMap<&'a str, Option<Option<bool>>>;
+    fn go<'a>(
+        classes: &'a Classes,
+        name: &'a str,
+        outside: &dyn Fn(&str) -> Option<bool>,
+        memo: &mut Memo<'a>,
+        depth: usize,
+    ) -> Option<bool> {
+        if spec_named(name) {
+            return Some(true);
+        }
+        let Some(decls) = classes.get(name) else {
+            return outside(name);
+        };
+        if let Some(known) = memo.get(name) {
+            return known.flatten();
+        }
+        // ponytail: past this depth a chain is unknown, so the recursion can't overflow
+        if depth > 32 {
+            return None;
+        }
+        memo.insert(name, None);
+        let mut verdicts = decls.iter().map(|sup| match sup {
+            None => Some(false),
+            Some(s) => go(classes, s, outside, memo, depth + 1),
         });
-    let Some(body) = class.child_by_field_name("body").filter(|_| spec) else {
+        let verdict = verdicts
+            .next()
+            .flatten()
+            .filter(|&first| verdicts.all(|v| v == Some(first)));
+        memo.insert(name, Some(verdict));
+        verdict
+    }
+    go(classes, name, outside, &mut Memo::new(), 0)
+}
+
+/// A name Spock's own bases and a project's base specs end with.
+pub(super) fn spec_named(name: &str) -> bool {
+    name.ends_with("Spec") || name.ends_with("Specification")
+}
+
+/// Feature methods of a spec: every method with a block label, other than the fixture
+/// methods, in a class that extends a spec. That is a superclass named like one (`Specification`,
+/// `GebSpec`, a project's `BaseSpec`); else one whose chain, through this file's classes
+/// (`local`) and then the project's (`base`), reaches a spec; else, when neither can tell
+/// (no project, or a base from a library), a file importing from `spock.`. Labels in
+/// other classes are plain Groovy: Gradle's JUnit integration tests use `when:` and `then:` as
+/// comments.
+pub(super) fn class(
+    src: &str,
+    class: Node,
+    local: &std::cell::OnceCell<Classes>,
+    base: &dyn Fn(&str) -> Option<bool>,
+    v: &mut Vec<Violation>,
+) {
+    let Some(sup) = superclass(class, src) else {
         return;
     };
+    let Some(body) = class.child_by_field_name("body") else {
+        return;
+    };
+    let labeled = |m: Node| {
+        m.child_by_field_name("body").is_some_and(|b| {
+            b.named_children(&mut b.walk())
+                .any(|s| s.kind() == "labeled_statement")
+        })
+    };
+    // asked only for a class with labels, so a project is read only when it may matter
+    let spec = spec_named(sup)
+        || body
+            .named_children(&mut body.walk())
+            .any(|m| m.kind() == "method_declaration" && labeled(m))
+            && {
+                let local = local.get_or_init(|| {
+                    let root = std::iter::successors(Some(class), |n| n.parent()).last();
+                    let mut c = Classes::new();
+                    classes(root.unwrap_or(class), src, &mut c);
+                    c
+                });
+                spec(local, sup, base).unwrap_or_else(|| imports_spock(src))
+            };
+    if !spec {
+        return;
+    }
     for m in body
         .named_children(&mut body.walk())
         .filter(|m| m.kind() == "method_declaration")
@@ -111,6 +210,18 @@ pub(super) fn class(src: &str, class: Node, v: &mut Vec<Violation>) {
             feature(src, b, v);
         }
     }
+}
+
+/// Whether `src` imports from Spock (`import spock.lang.Unroll`): a test class extending a
+/// base no file at hand declares is taken for a spec only then.
+fn imports_spock(src: &str) -> bool {
+    src.lines().any(|l| {
+        let l = l.trim_start();
+        let l = l.strip_prefix("import").unwrap_or("");
+        let l = l.trim_start();
+        let l = l.strip_prefix("static").map_or(l, str::trim_start);
+        l.starts_with("spock.")
+    })
 }
 
 fn feature(src: &str, body: Node, v: &mut Vec<Violation>) {
@@ -501,6 +612,88 @@ mod tests {
         let src = "class T extends BaseSpec {\n  def setup() {\n    then:\n    x\n  }\n  def \"cleanup\"() {\n    when:\n    x\n  }\n  def f() {\n    when:\n    x\n  }\n}\n";
         let v: Vec<_> = lint(src).unwrap().into_iter().map(|v| v.line).collect();
         assert_eq!(v, vec![11]);
+    }
+
+    #[test]
+    fn specs_by_their_base_class() {
+        let unasserted = |src: &str| -> Vec<usize> {
+            lint(src)
+                .unwrap()
+                .into_iter()
+                .filter(|v| v.rule == "SpockUnassertedCondition")
+                .map(|v| v.line)
+                .collect()
+        };
+        let feature = "  def \"f\"() {\n    expect:\n    if (c) { x == 1 }\n  }\n";
+        // a base in the same file, directly or through a chain, generic or qualified
+        for decls in [
+            "abstract class Base extends Specification { }\n",
+            "class Mid<T> extends spock.lang.Specification { }\nclass Base extends Mid<String> { }\n",
+            "class A extends Specification { }\nclass B extends A { }\nclass C extends B { }\nclass Base extends C { }\n",
+        ] {
+            let src = format!("{decls}class T extends Base {{\n{feature}}}\n");
+            assert_eq!(unasserted(&src).len(), 1, "{src}");
+        }
+        // a base this file declares that isn't a spec, also when the file imports Spock or
+        // the class is named like a spec
+        for src in [
+            format!("class Base {{ }}\nclass T extends Base {{\n{feature}}}\n"),
+            format!(
+                "import spock.lang.Unroll\nclass Base {{ }}\nclass Base2 extends Base {{ }}\nclass FooSpec extends Base2 {{\n{feature}}}\n"
+            ),
+            // two declarations that disagree, and a cycle: unknown, and no Spock import
+            format!(
+                "class Base extends Specification {{ }}\nclass Base {{ }}\nclass T extends Base {{\n{feature}}}\n"
+            ),
+            format!(
+                "class A extends B {{ }}\nclass B extends A {{ }}\nclass T extends A {{\n{feature}}}\n"
+            ),
+        ] {
+            assert_eq!(unasserted(&src), Vec::<usize>::new(), "{src}");
+        }
+        // a base declared nowhere: a spec only in a file importing from Spock
+        let src = format!("class T extends AbstractIntegrationTest {{\n{feature}}}\n");
+        assert_eq!(unasserted(&src), Vec::<usize>::new());
+        for import in [
+            "import spock.lang.Unroll",
+            "import static spock.util.matcher.HamcrestSupport.that",
+        ] {
+            let src = format!("{import}\n{src}");
+            assert_eq!(unasserted(&src), vec![5], "{src}");
+        }
+        // a base in another file: as the project tells (`Projects::spec_base`)
+        let src = format!("class T extends Base {{\n{feature}}}\n");
+        for (verdict, want) in [(Some(true), vec![4]), (Some(false), vec![]), (None, vec![])] {
+            let vs = crate::lint::lint_with(std::path::Path::new(""), &src, &|n| {
+                assert_eq!(n, "Base");
+                verdict
+            });
+            let got: Vec<_> = vs.unwrap().into_iter().map(|v| v.line).collect();
+            assert_eq!(got, want, "{verdict:?}");
+        }
+    }
+
+    #[test]
+    fn base_class_resolution_is_linear() {
+        use super::{Classes, spec};
+        // `width` declarations of each of 30 names, each extending every one of the next
+        // name's: walked per path, that is width^30 visits. Then a cycle beside it.
+        let run = |width: usize| {
+            let mut classes = Classes::new();
+            for level in 0..30 {
+                let sup: Box<str> = if level == 29 {
+                    "Specification".into()
+                } else {
+                    format!("L{}", level + 1).into()
+                };
+                classes.insert(format!("L{level}").into(), vec![Some(sup); width]);
+            }
+            classes.insert("A".into(), vec![Some("B".into()); width]);
+            classes.insert("B".into(), vec![Some("A".into()); width]);
+            assert_eq!(spec(&classes, "L0", &|_| None), Some(true));
+            assert_eq!(spec(&classes, "A", &|_| None), None);
+        };
+        crate::scaling::assert_scales("base class resolution", run, 64, 4, 8);
     }
 
     #[test]

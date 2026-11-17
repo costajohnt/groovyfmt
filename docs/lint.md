@@ -192,7 +192,7 @@ These rules apply to Groovy DSL build scripts (`*.gradle`). Kotlin DSL scripts (
 
 ### Spock specifications
 
-These apply in classes whose superclass is `Specification` or ends in `Spec` or `Specification` (a project's base spec). The fixture methods `setup`, `cleanup`, `setupSpec` and `cleanupSpec` are skipped, as Spock ignores labels there.
+These apply in classes whose superclass is `Specification` or ends in `Spec` or `Specification` (a project's base spec), and in a class with block labels whose superclass chain, through its own file and then the other files of its project (the nearest directory holding `.git` or a config file), reaches one. A class whose chain ends at a class extending nothing is not a spec. When neither can tell (a base from a library, or no project), a class with block labels is taken for a spec only in a file that imports from `spock.`. The fixture methods `setup`, `cleanup`, `setupSpec` and `cleanupSpec` are skipped, as Spock ignores labels there.
 
 | Rule | Default | Flags |
 |---|---|---|

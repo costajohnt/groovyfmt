@@ -1429,7 +1429,7 @@ fn lint_files(
             Err(why) => return Ok(Err((why, Diag::default()))),
         };
         let compile = cfgs[p].gradle_compile_replacement.as_deref();
-        let violations = match lint::lint_file(p, &src) {
+        let violations = match lint::lint_with(p, &src, &projects.spec_base(real)) {
             Ok(mut vs) => {
                 lint::opt_in_fixes(&mut vs, &src, compile);
                 vs
@@ -1467,7 +1467,8 @@ fn lint_files(
                     }
                     if r.written.is_ok() {
                         // the fix checked that the fixed text lints
-                        r.violations = lint::lint_file(p, &text).unwrap_or_default();
+                        r.violations = lint::lint_with(p, &text, &projects.spec_base(real))
+                            .unwrap_or_default();
                         lint::opt_in_fixes(&mut r.violations, &text, compile);
                         r.fixed = fixed;
                         new_text = Some(text);
