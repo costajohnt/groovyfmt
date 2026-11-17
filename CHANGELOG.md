@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- SpockUnassertedCondition (on by default): a comparison (`==`, `<`, `instanceof`, `in`, and `!`, `&&`, `||` over them) in a feature's `then:` or `expect:` block nested in `if`/`else`, a loop, a `switch` case, `try`, `synchronized` or a closure passed to `each`, `eachWithIndex`, `reverseEach`, `forEach` or `times`. Spock asserts only top-level statements, so such a check is evaluated and dropped and can never fail (checked with Spock 2.4). Conditions inside `with { }`, `verifyAll { }`, `verifyEach`, `interaction { }`, argument constraints and `@Verify` / `@VerifyAll` helpers, which Spock asserts, are not reported. ([#203](https://github.com/costajohnt/groovyfmt/issues/203))
+
+### Fixed
+
+- A directory walk enters the hidden directories projects keep CI pipelines and scripts in: `.ci`, `.jenkins`, `.github`, `.gitlab`, `.circleci`, `.buildkite`, `.pipelines` and `.azure-pipelines`. Pipelines such as eclipse-leshan/leshan's `.jenkins/*.jenkins` and checkstyle's `.ci/` scripts were never checked. Other hidden directories (`.git`, `.gradle`, `.idea`, ...) are still skipped. `--strict` now exits 1 when no Groovy file was found (unless `--changed-since` narrowed the run), so a CI job can't pass having checked nothing; it printed `would reformat 0 of 0 files` and exited 0. ([#202](https://github.com/costajohnt/groovyfmt/issues/202))
+
 ## 0.21.2 (2026-11-17)
 
 ### Fixed
