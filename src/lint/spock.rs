@@ -101,17 +101,22 @@ pub(super) fn classes(root: Node, src: &str, classes: &mut Classes) {
 
 /// Whether the class `name` is a spec: named like one, or every declaration of it in
 /// `classes` extends one (`Some(true)`) or ends at a class extending nothing (`Some(false)`).
-/// A name `classes` doesn't declare is asked of `outside`; declarations that disagree, or
-/// a cycle, are `None`.
+/// A name `classes` doesn't declare is asked of `outside`; declarations that disagree, a
+/// cycle, or a chain over 32 classes long, are `None`.
 pub(super) fn spec(
     classes: &Classes,
     name: &str,
     outside: &dyn Fn(&str) -> Option<bool>,
 ) -> Option<bool> {
-    fn go(
-        classes: &Classes,
-        name: &str,
+    // each name's verdict, worked out once: many declarations of one name at each level
+    // would otherwise be walked once per path to them, exponentially. `None` while it is
+    // being worked out, so a cycle is unknown.
+    type Memo<'a> = std::collections::HashMap<&'a str, Option<Option<bool>>>;
+    fn go<'a>(
+        classes: &'a Classes,
+        name: &'a str,
         outside: &dyn Fn(&str) -> Option<bool>,
+        memo: &mut Memo<'a>,
         depth: usize,
     ) -> Option<bool> {
         if spec_named(name) {
@@ -120,18 +125,26 @@ pub(super) fn spec(
         let Some(decls) = classes.get(name) else {
             return outside(name);
         };
-        // ponytail: a chain this long is a cycle (`A extends B`, `B extends A`)
+        if let Some(known) = memo.get(name) {
+            return known.flatten();
+        }
+        // ponytail: past this depth a chain is unknown, so the recursion can't overflow
         if depth > 32 {
             return None;
         }
+        memo.insert(name, None);
         let mut verdicts = decls.iter().map(|sup| match sup {
             None => Some(false),
-            Some(s) => go(classes, s, outside, depth + 1),
+            Some(s) => go(classes, s, outside, memo, depth + 1),
         });
-        let first = verdicts.next()??;
-        verdicts.all(|v| v == Some(first)).then_some(first)
+        let verdict = verdicts
+            .next()
+            .flatten()
+            .filter(|&first| verdicts.all(|v| v == Some(first)));
+        memo.insert(name, Some(verdict));
+        verdict
     }
-    go(classes, name, outside, 0)
+    go(classes, name, outside, &mut Memo::new(), 0)
 }
 
 /// A name Spock's own bases and a project's base specs end with.
@@ -658,6 +671,29 @@ mod tests {
             let got: Vec<_> = vs.unwrap().into_iter().map(|v| v.line).collect();
             assert_eq!(got, want, "{verdict:?}");
         }
+    }
+
+    #[test]
+    fn base_class_resolution_is_linear() {
+        use super::{Classes, spec};
+        // `width` declarations of each of 30 names, each extending every one of the next
+        // name's: walked per path, that is width^30 visits. Then a cycle beside it.
+        let run = |width: usize| {
+            let mut classes = Classes::new();
+            for level in 0..30 {
+                let sup: Box<str> = if level == 29 {
+                    "Specification".into()
+                } else {
+                    format!("L{}", level + 1).into()
+                };
+                classes.insert(format!("L{level}").into(), vec![Some(sup); width]);
+            }
+            classes.insert("A".into(), vec![Some("B".into()); width]);
+            classes.insert("B".into(), vec![Some("A".into()); width]);
+            assert_eq!(spec(&classes, "L0", &|_| None), Some(true));
+            assert_eq!(spec(&classes, "A", &|_| None), None);
+        };
+        crate::scaling::assert_scales("base class resolution", run, 64, 4, 8);
     }
 
     #[test]
