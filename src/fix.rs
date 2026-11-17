@@ -273,6 +273,11 @@ fn check(
     if shape(&before, &removed) != shape(&after, inserted) {
         return Err("the parse tree would change shape");
     }
+    // the grammar reads `FOO` then `bar()` as two statements, as Groovy 2 does, but Groovy 3+
+    // reads one method declaration (#211); the trees above can't see that
+    if joined(src, b) < joined(out, a) {
+        return Err("two statements would join into a method declaration on Groovy 3+");
+    }
     // the other violations stay, except one inside an edited range (a `;` whose rule is off,
     // an unused import that is also unnecessary, a dynamic version in a rewritten
     // dependency), whose counterpart in the new text isn't compared either; new fixable ones
@@ -366,6 +371,20 @@ fn identifiers<'a>(src: &'a str, root: Node) -> Vec<&'a str> {
         true
     });
     v
+}
+
+/// Adjacent top-level statements with no `;` between that Groovy 3+ joins into a method
+/// declaration (`crate::lint::joins_declaration`).
+fn joined(src: &str, root: Node) -> usize {
+    let mut c = root.walk();
+    let stmts: Vec<Node> = root
+        .children(&mut c)
+        .filter(|n| !n.kind().contains("comment"))
+        .collect();
+    stmts
+        .windows(2)
+        .filter(|w| crate::lint::joins_declaration(src, w[0], w[1]))
+        .count()
 }
 
 /// Leaf tokens outside `removed`, as (kind, text).
@@ -748,6 +767,18 @@ def d = ''
         );
         // removing one exposes the next
         assert_eq!(text("a();;\n"), "a()\n");
+        // #211: Groovy 3+ would read `FOO bar()`, a method declaration
+        assert_eq!(fixed("FOO;\nbar()\n"), Fix::Nothing);
+        assert_eq!(fixed("FOO;;\nbar()\n"), Fix::Nothing);
+        // nor may removing an import line join them
+        assert_eq!(
+            fixed("FOO\nimport a.B\nbar()\n"),
+            Fix::Refused("two statements would join into a method declaration on Groovy 3+")
+        );
+        assert_eq!(
+            text("FOO;\nbar();\nfoo;\nbaz()\n"),
+            "FOO;\nbar()\nfoo\nbaz()\n"
+        );
     }
 
     #[test]
@@ -846,6 +877,36 @@ def d = ''
                 &|_| true
             ),
             Err("the fixed file would not parse")
+        );
+        // #211: same tokens and tree, but Groovy 3+ reads one method declaration
+        assert_eq!(
+            check(
+                Path::new("A.groovy"),
+                "FOO;\nbar()\n",
+                "FOO\nbar()\n",
+                &[del(3..4)],
+                &[3..3],
+                &[],
+                &[],
+                None,
+                &|_| true
+            ),
+            Err("two statements would join into a method declaration on Groovy 3+")
+        );
+        // a join already in the input is not the fix's doing
+        assert!(
+            check(
+                Path::new("A.groovy"),
+                "FOO\nbar()\nx = 1;\n",
+                "FOO\nbar()\nx = 1\n",
+                &[del(15..16)],
+                &[15..15],
+                &[],
+                &[],
+                None,
+                &|_| true
+            )
+            .is_ok()
         );
     }
 

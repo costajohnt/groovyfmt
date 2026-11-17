@@ -2445,6 +2445,65 @@ fn jenkinsfile_underscore_and_dash_names_are_pipelines() {
 }
 
 #[test]
+fn extensionless_jenkinsfile_names_are_pipelines() {
+    // #212: corda's JenkinsfileSnykScan, aqa-tests' JenkinsfileBase
+    let d = Dir::new("jfnosep");
+    for f in [
+        "JenkinsfileSnykScan",
+        "JenkinsfileBase",
+        "Jenkinsfile.foo",
+        "Jenkinsfile-foo",
+    ] {
+        d.write(f, UGLY);
+    }
+    // not a pipeline name, a backup, a suffix that says it's something else, or not Groovy
+    for f in [
+        "JenkinsfileBase~",
+        "JenkinsfileFoo.md",
+        "JenkinsfileFoo.bak",
+        "MyJenkinsfileFoo",
+        "jenkinsfileFoo",
+        "Jenkinsfiles",
+    ] {
+        d.write(f, UGLY);
+    }
+    let template = "pipeline {\n{% for s in stages %}\n  stage('{{ s }}') { }\n{% endfor %}\n}\n";
+    d.write("JenkinsfileTemplate", template);
+    let o = run(&d.0, &["--check", "."], None);
+    assert_eq!(
+        stdout(&o),
+        "Jenkinsfile-foo\nJenkinsfile.foo\nJenkinsfileBase\nJenkinsfileSnykScan\n"
+    );
+    // named on the command line, taken; it used to be skipped with exit 0
+    let o = run(&d.0, &["--check", "JenkinsfileBase"], None);
+    assert_eq!(o.status.code(), Some(1), "{}", stderr(&o));
+    assert_eq!(stdout(&o), "JenkinsfileBase\n");
+    // the Jenkins rules apply to it
+    d.write("JenkinsfileCi", "def x = 1\npipeline {\n    stages {}\n}\n");
+    let o = run(&d.0, &["--lint", "JenkinsfileCi"], None);
+    assert!(
+        stdout(&o).contains("JenkinsMissingSection"),
+        "{}",
+        stdout(&o)
+    );
+}
+
+#[test]
+fn lint_fix_keeps_a_semicolon_groovy_3_needs() {
+    // #211: groovy-eclipse RenameMethod testStaticImport; without the `;` Groovy 3 and 4
+    // read `FOO bar()`, a method declaration without a body
+    let d = Dir::new("fix-211");
+    let src = "import static p.A.FOO;\nFOO;\nbar()\nx = 1;\n";
+    d.write("A.groovy", src);
+    let f = run(&d.0, &["--lint", "--fix"], None);
+    assert_eq!(f.status.code(), Some(0), "{}", stderr(&f));
+    assert_eq!(
+        d.read("A.groovy"),
+        "import static p.A.FOO\nFOO;\nbar()\nx = 1\n"
+    );
+}
+
+#[test]
 fn discovers_pipelines_named_like_the_editors_do() {
     let d = Dir::new("pipelines");
     for f in [
