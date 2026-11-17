@@ -464,7 +464,8 @@ fn indent_for(
         }
         // A call's trailing closure opened after its arguments' `)` (`foo(a: 1,\n    b: 2) {`):
         // indent its body from the line of the `(`, as when the arguments fit on one line.
-        // A `{` on a line of its own keeps its own line (#183).
+        // A `{` on a line of its own is indented from its own line, which lines up with the
+        // call (#198).
         "closure" if above.child_by_field_name("closure") == Some(a) => {
             above
                 .child_by_field_name("arguments")
@@ -522,12 +523,13 @@ fn indent_for(
     // the keyword, not a map key or named argument spelled the same (`[else: 1]`)
     let continues = !leaf.is_named() && matches!(first, "else" | "catch" | "finally");
     // A body's `{` on its own line (`void f()` then `{`) lines up with its declaration or
-    // statement, as its `}` does.
+    // statement, as its `}` does; so does a call's trailing closure (`frame(a: 1)` then `{`),
+    // which Groovy reads as the call's last argument (#198).
     let opens_body = first == "{"
-        && matches!(
+        && (matches!(
             child.kind(),
             "block" | "class_body" | "enum_body" | "switch_block"
-        );
+        ) || a.child_by_field_name("closure") == Some(child));
     if closes_anchor || opens_body || after_annotation || continues {
         return base;
     }
@@ -718,7 +720,7 @@ mod tests {
             ..Style::default()
         };
         let src = "foo(a: 1,\nb: 2) {\nbar()\n}\nf.entry(title: 'x') {\ng.optionalBlock(title: 'y',\nname: 'z',\nchecked: c()) {\nf.entry(field: 'h') {\nf.textbox(name: 'h')\n}\n}\n}\nx.y(1,\n2) { z }\n.each {\nw\n}\nfoo(\na\n) {\nb\n}\nbar(1) {\nc\n}\nbaz(1, {\nd\n})\nq(1,\n2)\n{\ne\n}\n";
-        let want = "foo(a: 1,\n    b: 2) {\n    bar()\n}\nf.entry(title: 'x') {\n    g.optionalBlock(title: 'y',\n        name: 'z',\n        checked: c()) {\n        f.entry(field: 'h') {\n            f.textbox(name: 'h')\n        }\n    }\n}\nx.y(1,\n    2) { z }\n    .each {\n        w\n    }\nfoo(\n    a\n) {\n    b\n}\nbar(1) {\n    c\n}\nbaz(1, {\n    d\n})\nq(1,\n    2)\n    {\n        e\n    }\n";
+        let want = "foo(a: 1,\n    b: 2) {\n    bar()\n}\nf.entry(title: 'x') {\n    g.optionalBlock(title: 'y',\n        name: 'z',\n        checked: c()) {\n        f.entry(field: 'h') {\n            f.textbox(name: 'h')\n        }\n    }\n}\nx.y(1,\n    2) { z }\n    .each {\n        w\n    }\nfoo(\n    a\n) {\n    b\n}\nbar(1) {\n    c\n}\nbaz(1, {\n    d\n})\nq(1,\n    2)\n{\n    e\n}\n";
         assert_eq!(fmt(src), want);
         assert_eq!(fmt(want), want, "idempotent");
         assert_eq!(format(src, &spaced), Outcome::Formatted(want.to_string()));
