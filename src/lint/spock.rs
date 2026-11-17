@@ -469,18 +469,33 @@ mod tests {
             ("when:\nf()\nthen:\nif (a) {\ntrue\n} else {\nx != 2\n}", 9),
             ("when:\nf()\nthen:\nif (a) {\n} else if (b) {\nx < 2\n}", 8),
             ("when:\nf()\nthen:\nif (a)\nx >= 2", 7),
-            ("when:\nf()\nthen:\nfor (int i = 0; i < n; i++) {\nxs[i] == 2\n}", 7),
-            ("when:\nf()\nthen:\nfor (x in xs) {\nx instanceof String\n}", 7),
+            (
+                "when:\nf()\nthen:\nfor (int i = 0; i < n; i++) {\nxs[i] == 2\n}",
+                7,
+            ),
+            (
+                "when:\nf()\nthen:\nfor (x in xs) {\nx instanceof String\n}",
+                7,
+            ),
             ("when:\nf()\nthen:\nwhile (n-- > 0) {\nn == 5\n}", 7),
-            ("when:\nf()\nthen:\nswitch (x) {\ncase 1:\nx == 2\nbreak\n}", 8),
+            (
+                "when:\nf()\nthen:\nswitch (x) {\ncase 1:\nx == 2\nbreak\n}",
+                8,
+            ),
             ("when:\nf()\nthen:\ntry {\nx == 2\n} finally {\n}", 7),
             ("when:\nf()\nthen:\nsynchronized (this) {\nx === y\n}", 7),
             ("when:\nf()\nthen:\nxs.each {\nit == 2\n}", 7),
-            ("when:\nf()\nthen:\nxs.eachWithIndex { v, i ->\nv == 2\n}", 7),
+            (
+                "when:\nf()\nthen:\nxs.eachWithIndex { v, i ->\nv == 2\n}",
+                7,
+            ),
             ("when:\nf()\nthen:\nxs.forEach({\nit in ys\n})", 7),
             ("when:\nf()\nthen:\nn.times {\n!(it == 5)\n}", 7),
             ("when:\nf()\nthen:\nxs.each {\nif (it) {\nit == 2\n}\n}", 8),
-            ("when:\nf()\nthen:\nif (a) {\nxs.each {\nit == 2 && it > 0\n}\n}", 8),
+            (
+                "when:\nf()\nthen:\nif (a) {\nxs.each {\nit == 2 && it > 0\n}\n}",
+                8,
+            ),
             ("expect:\nif (a) {\n1 == 2\n}", 5),
             ("when:\nf()\nthen:\nx == 1\nand:\nif (a) {\n(x == 2)\n}", 9),
         ] {
@@ -521,7 +536,7 @@ mod tests {
     /// `@Verify` / `@VerifyAll` helpers and other methods without blocks are not features.
     #[test]
     fn verify_helpers_are_not_reported() {
-        let src = "class S extends Specification {\n  @Verify\n  void check(x) {\n    if (true) {\n      x == 2\n    }\n    [x].each { it == 2 }\n  }\n  @VerifyAll\n  void all(x) {\n    if (true) { x == 2 }\n  }\n}\n";
+        let src = "class S extends Specification {\n  @Verify\n  void check(x) {\n    if (c) {\n      x == 2\n    }\n    [x].each { it == 2 }\n  }\n  @VerifyAll\n  void all(x) {\n    if (c) { x == 2 }\n  }\n}\n";
         assert_eq!(lint(src).unwrap(), vec![]);
         // and a class that is not a spec
         let src = "class T {\n  void t() {\n    when:\n    f()\n    then:\n    if (c) {\n      x == 2\n    }\n  }\n}\n";

@@ -1192,7 +1192,11 @@ fn changed_since_limits_the_run_to_files_git_sees_as_changed() {
     // nothing changed: a clean change set, not a --strict failure (#202)
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "y"]);
-    let o = run(&d.0, &["--check", "--strict", "--changed-since", "HEAD"], None);
+    let o = run(
+        &d.0,
+        &["--check", "--strict", "--changed-since", "HEAD"],
+        None,
+    );
     assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
 
     for (rev, msg) in [
