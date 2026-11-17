@@ -148,6 +148,12 @@ static bool finish_command_named_key(TSLexer *lexer, const bool *valid_symbols,
         lexer->advance(lexer, false);
         ends = lexer->lookahead == '/' || lexer->lookahead == '*';
     }
+    // `if (a) warn line else info line`: `else` ends a braceless if body
+    // on its line, since it is reserved and continues no expression.
+    if (n == 'e') {
+        char next[5];
+        ends = read_word(lexer, next, sizeof(next)) == 4 && memcmp(next, "else", 4) == 0;
+    }
     if (!ends) {
         return false;
     }
@@ -918,7 +924,16 @@ bool tree_sitter_groovy_external_scanner_scan(
                 while (is_whitespace(lexer->lookahead)) {
                     advance(lexer);
                 }
-                if (lexer->lookahead == '?' || lexer->lookahead == '*') {
+                // `x.url isSnapshot` then `? "a"` then `: "b"`, or then `?: 2`:
+                // a line can't start with `?`, so a ternary or elvis there
+                // continues the argument, as Groovy reads it.
+                if (lexer->lookahead == '?') {
+                    advance(lexer);
+                    if (lexer->lookahead != '.') {
+                        lexer->result_symbol = COMMAND_LITERAL_START;
+                        return true;
+                    }
+                } else if (lexer->lookahead == '*') {
                     advance(lexer);
                 }
                 if (lexer->lookahead == '.') {

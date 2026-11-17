@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- More constructs parse, as Groovy 2.4, 3 and 4 read them; files with one were skipped ([#201](https://github.com/costajohnt/groovyfmt/issues/201)). A braceless if body that is a command call with a name argument, with `else` on the same line, `if (a) warn line else info line`, `if (a) log.warn line else log.info line`. A command call's argument continued by `?` or `?:` on the next line, `x.url isSnapshot` then `? "a"` then `: "b"`, or then `?: 2` (a sibling of [#90](https://github.com/costajohnt/groovyfmt/issues/90)); the same on a bare or safe-navigation receiver, `foo x` or `x?.url a` then `? 1 : 2`, had been read as two statements and is now the call, without changing its formatting. The grammar pin moves to tree-sitter-groovy 6b610b8.
+
 ## 0.21.2 (2026-11-17)
 
 ### Fixed
