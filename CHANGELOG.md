@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- More constructs parse, as Groovy reads them; files with one were skipped ([#195](https://github.com/costajohnt/groovyfmt/issues/195)). A generic type as a command call's argument, `tag List<String>`, `tag List<String>, 1`, `tag 1, List<String>`, `x.tag List<String>`, `"input" List<String>` (a Spock `tags { }` DSL), `tag List<String>.class` (Groovy 3 and 4). A space before the type arguments of a closure's only parameter or of a for variable with two or more type arguments, `{ Map <String, String> e -> e }`, `for (Map <String, Integer> e : xs)` and the `in` form (Groovy 2.4, 3 and 4); with one type argument, `{ Map <String> e -> e }` had parsed as comparisons and is now the parameter too. The grammar pin moves to tree-sitter-groovy 9aa8dd1.
+- A directory walk enters a source package named `out` or `target` under `src` or a `groovy` or `vars` directory, as it does for `build` (#83, #173): `src/test/groovy/org/acme/out` was skipped as build output, so its files were never checked. A project's or module's own `out/` and `target/` are still skipped, also in a repository with no build file. ([#195](https://github.com/costajohnt/groovyfmt/issues/195))
+
 ## 0.21.0 (2026-11-16)
 
 ### Fixed
