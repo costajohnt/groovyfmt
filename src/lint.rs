@@ -760,6 +760,15 @@ pub const RULES: &[Rule] = &[
         good: "class MathSpec extends Specification {\n    def 'max'() {\n        expect:\n        Math.max(a, b) == c\n        where:\n        a | b | c\n        1 | 2 | 2\n    }\n}",
         fixable: false,
     },
+    Rule {
+        name: "SpockUnassertedCondition",
+        default: true,
+        description: "a comparison in a then: or expect: block nested in an if, loop, switch, try or a .each { } (eachWithIndex, reverseEach, forEach, times) closure, which Spock never asserts",
+        why: "Spock turns only the top-level expression statements of a then: or expect: block into conditions. A comparison inside `if`/`else`, a loop, a `switch` case, `try` or a closure passed to `each` is evaluated and thrown away, so the check can never fail. Write `assert` in front of it, or check a collection with `verifyEach` or `verifyAll { }` (Spock asserts conditions nested in `with { }`, `verifyAll { }`, `verifyEach` and `@Verify` helpers, so those aren't reported). Checked against Spock 2.4.",
+        bad: "class ResultSpec extends Specification {\n    def 'parses'() {\n        when:\n        def r = parse(input)\n\n        then:\n        if (valid) {\n            r.value == 42\n        }\n        r.items.each { it.size() > 0 }\n    }\n}",
+        good: "class ResultSpec extends Specification {\n    def 'parses'() {\n        when:\n        def r = parse(input)\n\n        then:\n        if (valid) {\n            assert r.value == 42\n        }\n        r.items.every { it.size() > 0 }\n    }\n}",
+        fixable: false,
+    },
 ];
 
 mod basic;

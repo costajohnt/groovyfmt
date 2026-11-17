@@ -1,4 +1,5 @@
-//! Spock feature methods: block order, empty `then:` / `expect:` blocks, data table rows.
+//! Spock feature methods: block order, empty `then:` / `expect:` blocks, data table rows,
+//! conditions Spock never asserts.
 //!
 //! The legal block sequences are Spock's own (`BlockParseInfo.getSuccessors` in
 //! spock-core's compiler, and https://spockframework.org/spock/docs/2.4/spock_primer.html#_blocks);
@@ -169,6 +170,9 @@ fn feature(src: &str, body: Node, v: &mut Vec<Violation>) {
         if matches!(last, B::Where) {
             table.row(src, stmt, v);
         }
+        if matches!(last, B::Then | B::Expect) {
+            unasserted(src, stmt, None, v);
+        }
     }
     if !successors(last).contains(&B::End) {
         v.push(at(
@@ -218,6 +222,91 @@ fn empty_check(b: B, label: Option<Node>, content: usize, v: &mut Vec<Violation>
                 name(b)
             ),
         ));
+    }
+}
+
+/// Closures whose result their method throws away, so a condition in them checks nothing.
+/// Others are left alone: `every { }` and `find { }` return their closure's value, which
+/// Spock asserts at the top level, and Spock reads `with { }`, `verifyAll { }`, `verifyEach`,
+/// `interaction { }` and argument constraints as conditions of their own.
+const DISCARDING: &[&str] = &["each", "eachWithIndex", "reverseEach", "forEach", "times"];
+
+/// SpockUnassertedCondition: in a then: or expect: block Spock asserts only top-level
+/// expression statements. A comparison nested in `if`, a loop, `switch`, `try` or a
+/// `.each { }` closure is evaluated and dropped (checked with Spock 2.4). `inside` names
+/// the construct around `n` once it is no longer at the top level (for a closure, its
+/// method's name).
+fn unasserted<'a>(src: &'a str, n: Node, inside: Option<&'a str>, v: &mut Vec<Violation>) {
+    let inside = match n.kind() {
+        "if_statement" => Some("an if"),
+        "for_statement" | "for_in_statement" | "while_statement" | "do_while_statement" => {
+            Some("a loop")
+        }
+        "switch_case" | "switch_default" => Some("a switch"),
+        "try_statement" => Some("a try"),
+        "synchronized_statement" => Some("a synchronized block"),
+        // anything a closure's method may run, or not, as it likes; and classes and lambdas
+        "closure" => {
+            let call = n
+                .parent()
+                .filter(|p| p.kind() == "argument_list")
+                .map_or(n.parent(), |a| a.parent())
+                .filter(|c| c.kind() == "method_invocation");
+            let name = call
+                .and_then(|c| c.child_by_field_name("function"))
+                .map(|f| f.child_by_field_name("field").unwrap_or(f));
+            match name.map(|f| text(f, src)) {
+                Some(m) if DISCARDING.contains(&m) => Some(m),
+                _ => return,
+            }
+        }
+        "lambda_expression" | "class_body" | "switch_arrow_case" => return,
+        _ => inside,
+    };
+    if let Some(ctx) = inside
+        && n.kind() == "expression_statement"
+        && let Some(e) = n.named_child(0)
+        && is_condition(e, src)
+    {
+        let ctx = if DISCARDING.contains(&ctx) {
+            format!("a .{ctx} {{ }} closure")
+        } else {
+            ctx.to_string()
+        };
+        v.push(at(
+            n,
+            "SpockUnassertedCondition",
+            format!("This condition is inside {ctx} in a Spock then: or expect: block, so Spock never asserts it; add `assert`, or check it with verifyAll {{ }} or verifyEach"),
+        ));
+        return;
+    }
+    for c in n.named_children(&mut n.walk()) {
+        unasserted(src, c, inside, v);
+    }
+}
+
+/// A comparison, an instanceof or `in` test, or `!`, `&&` or `||` over them: an expression
+/// statement made only of checks, with nothing it could be run for (`x != null && x.close()`
+/// is not one).
+fn is_condition(e: Node, src: &str) -> bool {
+    let op = || e.child_by_field_name("operator").map(|o| text(o, src));
+    match e.kind() {
+        "parenthesized_expression" => e.named_child(0).is_some_and(|x| is_condition(x, src)),
+        "instanceof_expression" | "identity_expression" | "membership_expression" => true,
+        "unary_expression" => {
+            op() == Some("!")
+                && e.child_by_field_name("operand")
+                    .is_some_and(|x| is_condition(x, src))
+        }
+        "binary_expression" => match op() {
+            Some("==" | "!=" | "<" | "<=" | ">" | ">=") => true,
+            Some("&&" | "||") => ["left", "right"].iter().all(|f| {
+                e.child_by_field_name(f)
+                    .is_some_and(|x| is_condition(x, src))
+            }),
+            _ => false,
+        },
+        _ => false,
     }
 }
 
@@ -360,6 +449,83 @@ mod tests {
         assert_eq!(rules("when:\nf()\nthen: 'desc'\nand:\nx == 1"), vec![]);
         // a GString is a condition, not a description
         assert_eq!(rules("expect: \"${x}\""), vec![]);
+    }
+
+    fn unasserted(body: &str) -> Vec<usize> {
+        rules(body)
+            .into_iter()
+            .filter(|(r, _)| *r == "SpockUnassertedCondition")
+            .map(|(_, l)| l)
+            .collect()
+    }
+
+    /// Each nesting Spock 2.4 was seen to drop: a feature whose only check sits there passes
+    /// whatever the values.
+    #[test]
+    fn unasserted_conditions() {
+        // (body, the reported line: the body starts on line 3)
+        for (body, line) in [
+            ("when:\nf()\nthen:\nif (a) {\nx == 2\n}", 7),
+            ("when:\nf()\nthen:\nif (a) {\ntrue\n} else {\nx != 2\n}", 9),
+            ("when:\nf()\nthen:\nif (a) {\n} else if (b) {\nx < 2\n}", 8),
+            ("when:\nf()\nthen:\nif (a)\nx >= 2", 7),
+            ("when:\nf()\nthen:\nfor (int i = 0; i < n; i++) {\nxs[i] == 2\n}", 7),
+            ("when:\nf()\nthen:\nfor (x in xs) {\nx instanceof String\n}", 7),
+            ("when:\nf()\nthen:\nwhile (n-- > 0) {\nn == 5\n}", 7),
+            ("when:\nf()\nthen:\nswitch (x) {\ncase 1:\nx == 2\nbreak\n}", 8),
+            ("when:\nf()\nthen:\ntry {\nx == 2\n} finally {\n}", 7),
+            ("when:\nf()\nthen:\nsynchronized (this) {\nx === y\n}", 7),
+            ("when:\nf()\nthen:\nxs.each {\nit == 2\n}", 7),
+            ("when:\nf()\nthen:\nxs.eachWithIndex { v, i ->\nv == 2\n}", 7),
+            ("when:\nf()\nthen:\nxs.forEach({\nit in ys\n})", 7),
+            ("when:\nf()\nthen:\nn.times {\n!(it == 5)\n}", 7),
+            ("when:\nf()\nthen:\nxs.each {\nif (it) {\nit == 2\n}\n}", 8),
+            ("when:\nf()\nthen:\nif (a) {\nxs.each {\nit == 2 && it > 0\n}\n}", 8),
+            ("expect:\nif (a) {\n1 == 2\n}", 5),
+            ("when:\nf()\nthen:\nx == 1\nand:\nif (a) {\n(x == 2)\n}", 9),
+        ] {
+            assert_eq!(unasserted(body), vec![line], "{body}");
+        }
+    }
+
+    /// What Spock 2.4 does assert, or what isn't a check: never reported.
+    #[test]
+    fn asserted_or_not_conditions() {
+        for body in [
+            // top level
+            "when:\nf()\nthen:\nx == 2\n!(x < 1)\nx instanceof String",
+            // with, verifyAll and verifyEach assert what's nested in them, even in an if
+            "when:\nf()\nthen:\nwith(x) {\nif (c) {\na == 2\n}\n}",
+            "when:\nf()\nthen:\nverifyAll {\nif (c) {\nx == 2\n}\n}",
+            "when:\nf()\nthen:\nverifyAll(x) {\na == 2\n}",
+            "when:\nf()\nthen:\nverifyEach(xs) {\nif (c) {\nit == 2\n}\n}",
+            "when:\nf()\nthen:\nif (c) {\nwith(x) {\na == 2\n}\n}",
+            "when:\nf()\nthen:\nxs.each {\nverifyAll {\nit == 2\n}\n}",
+            // interactions, argument constraints, interaction blocks, response closures
+            "when:\nf()\nthen:\n1 * m.foo({ it == 2 })\ninteraction {\n1 * m.foo({ it == 2 })\n}",
+            "when:\nf()\nthen:\nif (c) {\n1 * m.foo(2)\n}\n1 * m.foo(_) >> { args -> args[0] == 2 }",
+            // closures whose value the call returns, and are asserted at the top level
+            "when:\nf()\nthen:\nxs.every { it == 2 }\nxs.find { it == 2 }\nxs.any {\nif (c) {\nit == 2\n}\n}",
+            // an explicit assert, a thrown() check, a call, a conditional call
+            "when:\nf()\nthen:\nif (c) {\nassert x == 2\nthrown(E)\nx.contains(1)\nx != null && x.close()\ny = x == 2\n}",
+            // not then: or expect:
+            "given:\nif (c) {\nx == 2\n}\nexpect:\ntrue\ncleanup:\nif (c) {\nx == 2\n}",
+            "when:\nif (c) {\nx == 2\n}\nthen:\ntrue\nwhere:\nx << [1]",
+            // a lambda or an anonymous class body is code of its own
+            "when:\nf()\nthen:\nif (c) {\nxs.forEach(x -> x == 2)\n}",
+        ] {
+            assert_eq!(unasserted(body), Vec::<usize>::new(), "{body}");
+        }
+    }
+
+    /// `@Verify` / `@VerifyAll` helpers and other methods without blocks are not features.
+    #[test]
+    fn verify_helpers_are_not_reported() {
+        let src = "class S extends Specification {\n  @Verify\n  void check(x) {\n    if (true) {\n      x == 2\n    }\n    [x].each { it == 2 }\n  }\n  @VerifyAll\n  void all(x) {\n    if (true) { x == 2 }\n  }\n}\n";
+        assert_eq!(lint(src).unwrap(), vec![]);
+        // and a class that is not a spec
+        let src = "class T {\n  void t() {\n    when:\n    f()\n    then:\n    if (c) {\n      x == 2\n    }\n  }\n}\n";
+        assert_eq!(lint(src).unwrap(), vec![]);
     }
 
     #[test]
