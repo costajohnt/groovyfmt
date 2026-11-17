@@ -3902,3 +3902,48 @@ fn gradle_compile_is_fixed_only_with_its_replacement_configured() {
     run(&d.0, &["--lint", "--fix", "build.gradle"], None);
     assert_eq!(d.read("build.gradle"), src);
 }
+
+#[test]
+fn specs_whose_base_is_in_another_file_are_checked() {
+    let feature = "    def \"f\"() {\n        expect:\n        if (c) {\n            x == 1\n        }\n    }\n";
+    let spec = |decl: &str| format!("{decl} {{\n{feature}}}\n");
+    let d = project(
+        "spockbase",
+        &[
+            (
+                "src/Base.groovy",
+                "abstract class Base extends Specification { }\n",
+            ),
+            ("src/Mid.groovy", "abstract class Mid<T> extends Base { }\n"),
+            (
+                "src/Deep.groovy",
+                "abstract class Deep extends com.x.Mid<String> { }\n",
+            ),
+            ("src/ASpec.groovy", &spec("class ASpec extends Base")),
+            ("src/BTest.groovy", &spec("class BTest extends Deep")),
+            // not specs: a base that extends nothing, named like a spec or not, and a base
+            // no file declares in a file that doesn't import from Spock
+            ("src/Plain.groovy", "class Plain { }\n"),
+            ("src/CSpec.groovy", &spec("class CSpec extends Plain")),
+            (
+                "src/DTest.groovy",
+                &spec("class DTest extends AbstractIntegrationTest"),
+            ),
+        ],
+    );
+    let o = run(&d.0, &["--lint"], None);
+    let out = stdout(&o);
+    let hits: Vec<&str> = out
+        .lines()
+        .filter(|l| l.contains("SpockUnassertedCondition"))
+        .map(|l| l.split(':').next().unwrap())
+        .collect();
+    assert_eq!(hits, ["src/ASpec.groovy", "src/BTest.groovy"], "{out}");
+    // one file named alone is resolved through its project the same way
+    let o = run(&d.0, &["--lint", "src/BTest.groovy"], None);
+    assert!(
+        stdout(&o).contains("SpockUnassertedCondition"),
+        "{}",
+        stdout(&o)
+    );
+}

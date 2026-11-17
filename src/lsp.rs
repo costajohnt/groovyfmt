@@ -388,7 +388,7 @@ impl Server {
             Setup::Off => Vec::new(),
             Setup::Broken(e) => vec![diag(0, 0, 1, "config", &e)],
             Setup::Cfg(cfg) => match (
-                lint::lint_file(&doc.path, &doc.text),
+                lint::lint_with(&doc.path, &doc.text, &self.projects.spec_base(&doc.path)),
                 baseline_of(doc, &cfg),
             ) {
                 (_, Err(e)) => vec![diag(0, 0, 1, "baseline", &e)],

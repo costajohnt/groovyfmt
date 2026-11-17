@@ -6,6 +6,10 @@
 
 - SpockUnassertedCondition also reports a predicate call nested the same way, alone or under `!`, `&&` and `||`: `contains`, `containsAll`, `containsKey`, `containsValue`, `endsWith`, `equals`, `equalsIgnoreCase`, `hasErrors`, `hasNext`, `isAssignableFrom`, `isEmpty`, `isPresent`, `matches` or `startsWith` on a receiver, as in `if (valid) { r.items.contains(42) }` or `xs.each { !it.isEmpty() }`. Spock 2.4 drops these like a nested comparison. Only these side-effect-free names are reported, not a bare call (`contains(x)` may be a spec helper that asserts) or a call in an assertion chain such as `assertThat(s).contains(x)`. ([#207](https://github.com/costajohnt/groovyfmt/issues/207))
 
+### Fixed
+
+- The Spock rules (SpockBlockOrder, SpockEmptyBlock, SpockDataTableColumns and SpockUnassertedCondition) check a spec whose base class is named like anything, not only `Specification` or a name ending in `Spec`. A class with block labels extending `BaseIntegrationTest` is a spec when the chain of superclasses, through the same file and then the rest of its project (as UnusedPrivateMethod reads it), reaches one; one whose chain ends at a class extending nothing is not. When neither can tell (a base from a library, no project), the class is a spec only in a file that imports from `spock.`. Specs whose base lived in another file were never checked. ([#210](https://github.com/costajohnt/groovyfmt/issues/210))
+
 ## 0.22.0 (2026-11-17)
 
 ### Added

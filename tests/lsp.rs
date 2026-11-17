@@ -896,3 +896,24 @@ fn the_config_baseline_holds_back_diagnostics_and_fixes() {
     assert_eq!(ds.len(), 1);
     assert_eq!(ds[0].get("code").str(), Some("config"));
 }
+
+#[test]
+fn specs_whose_base_is_in_another_file_are_checked() {
+    let d = Dir::new("spockbase");
+    d.write(".git/HEAD", "");
+    d.write(
+        "src/Base.groovy",
+        "abstract class Base extends Specification { }\n",
+    );
+    let text = "class ATest extends Base {\n    def \"f\"() {\n        expect:\n        if (c) {\n            x == 1\n        }\n    }\n}\n";
+    let path = d.write("src/ATest.groovy", text);
+    let mut srv = Server::start(&d.0);
+    srv.initialize("[]");
+    let codes: Vec<String> = summary(&srv.open(&uri(&path), text))
+        .into_iter()
+        .map(|d| d.0)
+        .collect();
+    assert_eq!(codes, ["SpockUnassertedCondition"]);
+    srv.notify("exit", "null");
+    srv.finish();
+}

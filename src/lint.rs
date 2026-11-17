@@ -825,11 +825,23 @@ pub fn opt_in_fixes(vs: &mut [Violation], src: &str, compile: Option<&str>) {
 
 /// Lint `src` as the file at `path`, whose name decides the Jenkinsfile and Gradle rules.
 pub fn lint_file(path: &Path, src: &str) -> Result<Vec<Violation>, &'static str> {
+    lint_with(path, src, &|_| None)
+}
+
+/// `lint_file`, with `base` telling whether a superclass declared elsewhere is a Spock spec
+/// (`Projects::spec_base`).
+pub fn lint_with(
+    path: &Path,
+    src: &str,
+    base: &dyn Fn(&str) -> Option<bool>,
+) -> Result<Vec<Violation>, &'static str> {
     let tree = crate::parse(src);
     if tree.root_node().has_error() {
         return Err("parse error");
     }
     let mut v = Vec::new();
+    // this file's classes, for the Spock rules, read the first time a class needs them
+    let local = std::cell::OnceCell::new();
     imports(src, &tree, &mut v);
     jenkins::check(path, src, tree.root_node(), &mut v);
     gradle::check(path, src, tree.root_node(), &mut v);
@@ -897,7 +909,7 @@ pub fn lint_file(path: &Path, src: &str) -> Result<Vec<Violation>, &'static str>
             "map_literal" => duplicate_map_key(src, n, &mut v),
             "switch_block" => duplicate_case(src, n, &mut v),
             "binary_expression" => comparison_with_self(src, n, &mut v),
-            "class_declaration" => spock::class(src, n, &mut v),
+            "class_declaration" => spock::class(src, n, &local, base, &mut v),
             _ => {}
         }
     }

@@ -42,6 +42,20 @@ pub struct Projects {
     /// `--config`: its `exclude` decides for every file, as in a directory walk
     fixed: Option<Config>,
     cache: Mutex<HashMap<PathBuf, Arc<OnceLock<Index>>>>,
+    /// Each project's classes, by simple name, with each declaration's superclass
+    classes: Mutex<HashMap<PathBuf, Arc<OnceLock<Classes>>>>,
+}
+
+use super::spock::Classes;
+
+/// The project's cell for `root` in `cache`, made the first time.
+fn cell<T>(cache: &Mutex<HashMap<PathBuf, Arc<OnceLock<T>>>>, root: &Path) -> Arc<OnceLock<T>> {
+    cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(root.to_path_buf())
+        .or_default()
+        .clone()
 }
 
 #[derive(Default)]
@@ -59,12 +73,38 @@ impl Projects {
         Projects {
             fixed,
             cache: Mutex::default(),
+            classes: Mutex::default(),
         }
     }
 
     /// Forget every index, for when files may have changed (the LSP, on save).
     pub fn clear(&self) {
         self.cache.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.classes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+    }
+
+    /// For SpockUnassertedCondition and the other Spock rules (see `spock::class`): whether
+    /// the class named `name`, a superclass in the file at `path`, is a Spock spec, by the
+    /// classes of the file's project. `Some(true)` when every declaration of it extends a
+    /// spec, through any chain of the project's classes; `Some(false)` when every one ends
+    /// at a class extending nothing; `None` (unknown) otherwise, as for a base from a
+    /// library, two declarations that disagree, or no project.
+    pub fn spec_base<'a>(&'a self, path: &'a Path) -> impl Fn(&str) -> Option<bool> + 'a {
+        let classes = OnceLock::new();
+        move |name: &str| {
+            let classes = classes.get_or_init(|| {
+                let file =
+                    config::normalize(&std::env::current_dir().unwrap_or_default().join(path));
+                let root = root_of(&file)?;
+                let cell = cell(&self.classes, &root);
+                cell.get_or_init(|| classes_of(&root, self.fixed.clone()));
+                Some(cell)
+            });
+            super::spock::spec(classes.as_ref()?.get()?, name, &|_| None)
+        }
     }
 
     /// Drop the UnusedPrivateMethod and UnusedPrivateField reports in `vs` (of `src`, the
@@ -77,13 +117,7 @@ impl Projects {
         let Some(root) = root_of(&file) else {
             return;
         };
-        let cell = self
-            .cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(root.clone())
-            .or_default()
-            .clone();
+        let cell = cell(&self.cache, &root);
         let idx = cell.get_or_init(|| Index::build(&root, self.fixed.clone()));
         let me = idx.position(&root, &file);
         vs.retain(|v| {
@@ -114,6 +148,32 @@ impl Projects {
                     .any(|n| idx.used_elsewhere(n, kinds, owner, me))
         });
     }
+}
+
+/// Every class of the project at `root` (as `Index::build` walks it), with its superclass.
+/// A file that doesn't parse adds nothing; past the walk's caps there are none.
+fn classes_of(root: &Path, fixed: Option<Config>) -> Classes {
+    let mut res = Resolver::new(fixed, None);
+    let (mut files, mut bytes, mut capped) = (Vec::new(), 0, false);
+    walk(root, &mut res, &mut files, &mut bytes, &mut capped);
+    let mut classes = Classes::new();
+    if capped {
+        return classes;
+    }
+    for f in files {
+        let Ok(src) = std::fs::read_to_string(&f) else {
+            continue;
+        };
+        if !src.contains("class") {
+            continue;
+        }
+        let tree = crate::parse(&src);
+        if tree.root_node().has_error() {
+            continue;
+        }
+        super::spock::classes(tree.root_node(), &src, &mut classes);
+    }
+    classes
 }
 
 /// The nearest directory above `file` holding `.git` or a config file.
