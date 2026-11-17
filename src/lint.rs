@@ -855,7 +855,7 @@ pub fn lint_file(path: &Path, src: &str) -> Result<Vec<Violation>, &'static str>
         }
         match kind {
             "string_literal" => unnecessary_gstring(src, n, &mut v),
-            ";" => unnecessary_semicolon(n, nodes.get(i + 1..).unwrap_or(&[]), &mut v),
+            ";" => unnecessary_semicolon(src, n, nodes.get(i + 1..).unwrap_or(&[]), &mut v),
             "catch_clause" => empty_catch(src, n, &mut v),
             "if_statement" => if_statement(n, &mut v),
             "while_statement" if !condition_works(n) => {
@@ -1256,12 +1256,17 @@ fn unnecessary_gstring(src: &str, n: Node, v: &mut Vec<Violation>) {
 /// empty body (`while (it.next());`), or one before a line starting with `{`
 /// (`foo();` then `{ -> x }.call()`) or `++` / `--` (`a[0];` then `++n`): either way
 /// removing it would change the program, here by making the closure an argument of the
-/// statement before, or the `++` a postfix increment of it.
-fn unnecessary_semicolon(n: Node, rest: &[Node], v: &mut Vec<Violation>) {
+/// statement before, or the `++` a postfix increment of it. Nor one between top-level
+/// statements that Groovy 3+ would join into a method declaration (`joins_declaration`).
+fn unnecessary_semicolon(src: &str, n: Node, rest: &[Node], v: &mut Vec<Violation>) {
     if n.parent().is_some_and(|p| {
         p.kind().contains("enum")
             || p.kind() == "for_statement"
             || (p.kind() == "while_statement" && p.child_by_field_name("body") == Some(n))
+            || (p.kind() == "source_file"
+                && statement_beside(n, Node::prev_sibling)
+                    .zip(statement_beside(n, Node::next_sibling))
+                    .is_some_and(|(a, b)| joins_declaration(src, a, b)))
     }) {
         return;
     }
@@ -1283,6 +1288,53 @@ fn unnecessary_semicolon(n: Node, rest: &[Node], v: &mut Vec<Violation>) {
             )
         });
     }
+}
+
+/// The statement next to `n` in the direction of `step`, past comments and other `;`s.
+fn statement_beside<'t>(n: Node<'t>, step: fn(&Node<'t>) -> Option<Node<'t>>) -> Option<Node<'t>> {
+    let mut x = step(&n)?;
+    while x.kind().contains("comment") || x.kind() == ";" {
+        x = step(&x)?;
+    }
+    x.is_named().then_some(x)
+}
+
+/// Whether Groovy 3 and 4 read the top-level statements `a` and `b`, on separate lines with
+/// no `;` between them, as one method declaration (#211): `a` a type (a name whose last part
+/// is capitalized: `FOO`, `a.B`, `List<String>`, `String[]`) and `b` a call
+/// (`bar()`, `'bar'(x)`), so `FOO` then `bar()` declares `FOO bar()`, an error without a
+/// body, and `FOO` then `bar(x) { x }` silently declares a method. Groovy 2 reads two
+/// statements. Any call is taken, though only one whose arguments read as parameters
+/// (`bar(x)`, `bar(Foo)`, not `bar(1)`) joins.
+pub(crate) fn joins_declaration(src: &str, a: Node, b: Node) -> bool {
+    if a.kind() != "expression_statement" || b.kind() != "expression_statement" {
+        return false;
+    }
+    let mut t = text(a, src).trim_end();
+    while let Some(r) = t.strip_suffix("[]") {
+        t = r.trim_end();
+    }
+    if t.ends_with('>') {
+        t = t.split('<').next().unwrap_or(t);
+    }
+    let ident = |c: char| java_part(c) || c == '$';
+    let typed = !matches!(t.split('.').next().map(str::trim), Some("this" | "super"))
+        && t.split('.')
+            .map(str::trim)
+            .all(|p| !p.is_empty() && p.chars().all(ident))
+        && t.rsplit('.')
+            .next()
+            .is_some_and(|p| p.trim().starts_with(char::is_uppercase));
+    let call = text(b, src);
+    let name = match call.chars().next() {
+        Some(q @ ('\'' | '"')) => call[1..].find(q).map_or(call.len(), |i| i + 2),
+        _ => call.find(|c| !ident(c)).unwrap_or(call.len()),
+    };
+    typed
+        && name > 0
+        && call[name..]
+            .trim_start_matches([' ', '\t'])
+            .starts_with('(')
 }
 
 /// EmptyCatchBlock, with CodeNarc's default exemption for `ignore` / `ignored` parameter names.
@@ -2083,6 +2135,79 @@ mod tests {
             rules("def x = f()[0];\n++n;\nm()\ny();\n--n\n"),
             vec![("UnnecessarySemicolon", 2)]
         );
+    }
+
+    #[test]
+    fn semicolon_that_keeps_a_method_declaration_away_is_kept() {
+        // #211, each checked on Groovy 2.4.21, 3.0.25 and 4.0.24: without the `;`, Groovy 3+
+        // reads a top-level type then a call on the next line as a method declaration, an
+        // error without a body (`FOO bar()`) and a new method with one (`FOO bar() { 1 }`)
+        let semis = |src: &str| {
+            lint(src)
+                .expect("parses")
+                .into_iter()
+                .filter(|v| v.rule == "UnnecessarySemicolon")
+                .count()
+        };
+        for src in [
+            "FOO;\nbar()\n",
+            "Foo;\nbar(int x)\n",
+            "FOO;\nbar() { 1 }\n",
+            "FOO;\nbar(x) { x }\n",
+            "FOO;\nbar()\n{ 1 }\n",
+            "a.B;\nbar()\n",
+            "java.util.List;\nbar()\n",
+            "FOO.BAR;\nbar()\n",
+            "Foo.Bar;\nbar(a, b)\n",
+            "List<String>;\nbar()\n",
+            "Foo<T>;\nbar()\n",
+            "String[];\nbar()\n",
+            "FOO;\nbar(x)\n",
+            "FOO;\nbar(x = 1)\n",
+            "FOO;\nbar(Foo)\n",
+            "FOO;\nbar(Foo x, int y)\n",
+            "FOO;\nbar(it)\n",
+            "FOO;\n'bar'()\n",
+            "FOO;\n\"bar\"()\n",
+            "FOO;\nBar()\n",
+            "FOO;\nyield()\n",
+            "FOO; // c\n\n// d\nbar()\n",
+            "FOO;;\nbar()\n",
+            "FOO /* c */;\nbar()\n",
+            "FOO;\nbar ()\n",
+            "class A {}\nFOO;\nbar()\n",
+            // conservative: Groovy reads these two statements, as no argument can be a parameter
+            "FOO;\nbar(1)\n",
+            "FOO;\nbar(x.y)\n",
+        ] {
+            assert_eq!(semis(src), 0, "{src:?}");
+        }
+        // same meaning without the `;` on all three
+        for src in [
+            "foo;\nbar()\n",
+            "a.b;\nbar()\n",
+            "A.b;\nbar()\n",
+            "this.FOO;\nbar()\n",
+            "super.FOO;\nbar()\n",
+            "FOO.class;\nbar()\n",
+            "L: FOO;\nbar()\n",
+            "x = FOO;\nbar()\n",
+            "foo();\nbar()\n",
+            "FOO();\nbar()\n",
+            "String x;\nbar()\n",
+            "def x;\nbar()\n",
+            "FOO;\nbar x\n",
+            "FOO;\nbar\n",
+            "FOO;\nbar = 1\n",
+            "FOO;\nbar {}\n",
+            "FOO;\ndef bar() {}\n",
+            // not at the top level, where no method can be declared
+            "def m() {\n  FOO;\n  bar()\n}\n",
+            "c = {\n  FOO;\n  bar()\n}\n",
+            "if (c) {\n  FOO;\n  bar()\n}\n",
+        ] {
+            assert_eq!(semis(src), 1, "{src:?}");
+        }
     }
 
     #[test]

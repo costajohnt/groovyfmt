@@ -6,6 +6,12 @@
 
 - SpockUnassertedCondition also reports a predicate call nested the same way, alone or under `!`, `&&` and `||`: `contains`, `containsAll`, `containsKey`, `containsValue`, `endsWith`, `equals`, `equalsIgnoreCase`, `hasErrors`, `hasNext`, `isAssignableFrom`, `isEmpty`, `isPresent`, `matches` or `startsWith` on a receiver, as in `if (valid) { r.items.contains(42) }` or `xs.each { !it.isEmpty() }`. Spock 2.4 drops these like a nested comparison. Only these side-effect-free names are reported, not a bare call (`contains(x)` may be a spec helper that asserts) or a call in an assertion chain such as `assertThat(s).contains(x)`. ([#207](https://github.com/costajohnt/groovyfmt/issues/207))
 
+### Fixed
+
+- `--lint --fix` no longer breaks a script on Groovy 3 and 4 by removing the `;` after a top-level type-like name followed by a call on the next line. Groovy 3 and 4 read `FOO` then `bar()` as the method declaration `FOO bar()`, an error without a body, and `FOO` then `bar(x) { x }` as a new method instead of a call with a closure; Groovy 2.4 reads two statements. UnnecessarySemicolon no longer reports such a `;`: after a name whose last part is capitalized (`FOO`, `a.B`, `java.util.List`), with or without type arguments or `[]`, before a statement starting with a name or string and `(`. The fix's safety check also refuses any fix that leaves such a pair joined where the input had none, as removing an import line between them would. Checked with Groovy 2.4.21, 3.0.25 and 4.0.24. ([#211](https://github.com/costajohnt/groovyfmt/issues/211))
+- A directory walk takes an extensionless pipeline named `Jenkinsfile` followed by a capitalized name, such as corda's `JenkinsfileSnykScan` or aqa-tests' `JenkinsfileBase`, when it parses, as it does `Jenkinsfile_k8s`; named on the command line it is checked, where it was skipped with exit 0 (`Jenkinsfiles` and `JenkinsfileX.md` are still not taken). ([#212](https://github.com/costajohnt/groovyfmt/issues/212))
+- EqualsOverloaded no longer reports an `equals` with a typed parameter annotated `@Override`, which implements a base class's own typed hook (jjwt's `@Override protected boolean equals(Jwk)`). ([#212](https://github.com/costajohnt/groovyfmt/issues/212))
+
 ## 0.22.0 (2026-11-17)
 
 ### Added
