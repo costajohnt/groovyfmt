@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>groovyfmt: a fast formatter and linter for Groovy, Gradle and Jenkinsfiles</title>
+<meta name="description" content="A fast formatter and linter for Groovy, Gradle build scripts and Jenkinsfiles. One static binary, no JVM.">
+<meta property="og:title" content="groovyfmt">
+<meta property="og:description" content="A fast formatter and linter for Groovy, Gradle build scripts and Jenkinsfiles. One static binary, no JVM.">
+<meta property="og:image" content="https://raw.githubusercontent.com/costajohnt/groovyfmt/main/docs/banner.png">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>{}</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="hero">
+  <h1>groovyfmt</h1>
+  <p class="pitch">A fast formatter and linter for Groovy, Gradle build scripts and Jenkinsfiles. One static binary, no JVM.</p>
+  <div class="ba">
+    <figure>
+      <figcaption>before</figcaption>
+<pre><code>dependencies {
+        implementation 'junit:junit:4.13.2'
+}
+tasks.register('hello') {
+  doLast {
+println 'hello'
+      }
+}</code></pre>
+    </figure>
+    <figure>
+      <figcaption>after <code>groovyfmt</code></figcaption>
+<pre><code>dependencies {
+    implementation 'junit:junit:4.13.2'
+}
+tasks.register('hello') {
+    doLast {
+        println 'hello'
+    }
+}</code></pre>
+    </figure>
+  </div>
+</header>
+
+<main>
+  <section class="install">
+    <h2>Install</h2>
+    <div class="cmd">
+      <code id="cmd">brew install costajohnt/tap/groovyfmt</code>
+      <button id="copy" type="button">copy</button>
+    </div>
+    <p class="note">Or <code>npm install --save-dev groovyfmt</code>, <code>cargo install --locked groovyfmt</code>, or a prebuilt binary for Linux, macOS or Windows from the <a href="https://github.com/costajohnt/groovyfmt/releases">releases</a>. Then run <code>groovyfmt --check</code> in a repository.</p>
+    <a class="gh" href="https://github.com/costajohnt/groovyfmt">
+      <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      View the source on GitHub
+    </a>
+  </section>
+
+  <section>
+    <h2>What it does</h2>
+    <ul class="features">
+      <li>
+        <h3>Safe formatting</h3>
+        <p>By default it re-indents from the parse tree, trims trailing whitespace and collapses blank lines. Every result is re-parsed and token-compared with the input, and a file is left alone if anything other than whitespace would change.</p>
+      </li>
+      <li>
+        <h3>Linting that knows Gradle and Jenkins</h3>
+        <p>84 rules, with CodeNarc names for the general ones. The Gradle and Jenkinsfile rules catch what usually breaks only when the build runs, like APIs removed in Gradle 9 and classes Groovy 4 moved. <code>--fix</code> repairs the safe cases.</p>
+<pre class="wrap"><code>$ groovyfmt --lint
+build.gradle:3:1: GradleRemovedApi: The project property `sourceCompatibility` was removed in Gradle 9.0 with the plugin conventions; use java { sourceCompatibility = ... }</code></pre>
+      </li>
+      <li>
+        <h3>Fast</h3>
+        <p>Checks the 635-file Spock repository in 0.2 seconds on a laptop. It fits in a pre-commit hook or an editor's format-on-save.</p>
+      </li>
+      <li>
+        <h3>Tested on real code</h3>
+        <p>Run against more than 6,000 open source repositories. It found real bugs in them, and 13 fixes have been merged upstream so far.</p>
+      </li>
+      <li>
+        <h3>CI and editors</h3>
+        <p>A GitHub Action, pre-commit hooks, SARIF and GitHub annotations for CI. A built-in language server, with extensions for VS Code and JetBrains IDEs and setup for Neovim, Helix and Zed.</p>
+<pre><code>- uses: costajohnt/groovyfmt@v0.28.0</code></pre>
+      </li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Who it's for</h2>
+    <p class="note">Teams with Gradle builds, Jenkins pipelines or Groovy code who want consistent formatting and early warnings in CI, without starting a JVM. Coming from CodeNarc or npm-groovy-lint? <code>groovyfmt --import-codenarc</code> converts your config.</p>
+  </section>
+</main>
+
+<footer>
+  <p>Issues and pull requests are welcome. <a href="https://github.com/costajohnt/groovyfmt/issues">Open an issue</a> or read the <a href="https://github.com/costajohnt/groovyfmt#readme">README</a>.</p>
+  <p>
+    <a href="https://www.npmjs.com/package/groovyfmt">npm</a> ·
+    <a href="https://crates.io/crates/groovyfmt">crates.io</a> ·
+    <a href="https://marketplace.visualstudio.com/items?itemName=groovyfmt.groovyfmt">VS Code</a> ·
+    MIT licensed ·
+    by <a href="https://jcosta.tech">John Costa</a>
+  </p>
+</footer>
+
+<script>
+document.getElementById('copy').addEventListener('click', async (e) => {
+  await navigator.clipboard.writeText(document.getElementById('cmd').textContent);
+  e.target.textContent = 'copied';
+  setTimeout(() => { e.target.textContent = 'copy'; }, 1500);
+});
+</script>
+</body>
+</html>

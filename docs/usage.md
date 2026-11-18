@@ -14,7 +14,7 @@ groovyfmt [OPTIONS] [PATH]...
 | `groovyfmt --check` | list files that would be reformatted, exit 1 if any |
 | `groovyfmt --check --diff` | print a unified diff of what formatting would change, exit 1 if any |
 | `groovyfmt --lint` | report lint violations, exit 1 if any |
-| `groovyfmt --lint --fix` | fix what can be fixed safely (unused and duplicate imports, imports from the file's own package, unnecessary semicolons), then report the rest |
+| `groovyfmt --lint --fix` | fix what the [lint rules](lint.md#fixing) mark fixable (imports, semicolons, removed Gradle syntax and more), then report the rest |
 | `groovyfmt --syntax` | only parse, and report each place groovyfmt could not parse, exit 1 if any |
 | `groovyfmt --stdin` | format stdin to stdout, for editors |
 | `groovyfmt --lsp` | serve the Language Server Protocol on stdin and stdout ([editors](editors.md)) |
@@ -37,7 +37,8 @@ groovyfmt [OPTIONS] [PATH]...
 | `--lines <start>-<end>` | change only these lines ([below](#formatting-some-lines)) |
 | `--changed-since <rev>` | only files that differ from a git revision ([below](#only-changed-files)) |
 | `--baseline <file>`, `--write-baseline[=file]` | lint against a baseline ([lint](lint.md#baseline)) |
-| `-v` | also list skipped files, where each failed to parse, and timing |
+| `-v`, `--verbose` | also list skipped files, where each failed to parse, and timing |
+| `-V`, `--version` | print the version |
 | `--` | treat every later argument as a path |
 
 ## Exit status

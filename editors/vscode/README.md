@@ -10,7 +10,9 @@ It covers `*.groovy`, `*.gvy`, `*.gy`, `*.gsh`, `*.gradle`, `*.jenkinsfile`, `Je
 
 ## Install
 
-Install the extension, then open a Groovy file. If groovyfmt isn't installed, the extension offers to download the release that matches its own version from GitHub and keeps it in the extension's storage. Each release of the extension carries the SHA-256 of that release's archives, taken when they were built, and a download that doesn't match is never written or run. A build of the extension made outside a release (from a pull request, or packaged by hand) carries no checksums and doesn't download; install groovyfmt yourself to use it.
+Install the extension from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=groovyfmt.groovyfmt) (publisher `groovyfmt`, id `groovyfmt.groovyfmt`), or with `code --install-extension groovyfmt.groovyfmt`. Editors that use Open VSX instead (VSCodium, Cursor) don't have it there yet; download `groovyfmt-<version>.vsix` from a [release](https://github.com/costajohnt/groovyfmt/releases) and install it with **Extensions: Install from VSIX...**.
+
+Then open a Groovy file. If groovyfmt isn't installed, the extension offers to download the release that matches its own version from GitHub and keeps it in the extension's storage. Each release of the extension carries the SHA-256 of that release's archives, taken when they were built, and a download that doesn't match is never written or run. A build of the extension made outside a release (from a pull request, or packaged by hand) carries no checksums and doesn't download; install groovyfmt yourself to use it.
 
 To use a groovyfmt you installed yourself, see [Finding groovyfmt](#finding-groovyfmt). The groovyfmt [README](https://github.com/costajohnt/groovyfmt#install) lists the ways to install it (Homebrew, npm, release archives, cargo).
 

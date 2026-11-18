@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `--explain GradleRemovedApi` says the rule is partly fixed automatically, and its description names the classes Groovy 4 moved.
+- The release workflow downloads only the build artifacts each job publishes, and the VS Code extension build runs `npm ci --ignore-scripts`.
+- README: a before/after example, a Gradle 9 lint example, the current rule count and the full `--fix` scope.
+
 ## 0.28.0 (2026-11-18)
 
 ### Added
