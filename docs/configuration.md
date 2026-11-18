@@ -23,7 +23,7 @@ gradle_compile_replacement = "implementation" # or "api": lets --fix replace Gra
 - `normalize_spacing` and `max_line_length` are described in [formatting](formatting.md).
 - `baseline` and the `[lint]` rule names are described in [lint](lint.md), and so is `gradle_compile_replacement` ([fixing](lint.md#fixing)). `"api"` needs the `java-library` plugin, which makes the `api` configuration: in a file that applies only `java` or `application`, `compile` is reported but not fixed.
 
-Unknown keys and misspelled rule names are errors, so a typo can't silently do nothing. A config file can only fail the run when groovyfmt reaches a file or directory it governs. `-v` prints each config in use.
+Unknown keys, and rule names within two edits of a known one, are errors, so a typo can't silently do nothing. A rule name groovyfmt doesn't know otherwise (one a newer version added) is a warning and is ignored, so a config written for a newer groovyfmt still works with an older one; with `--strict` it is an error. A `.groovyfmt.toml` in a git repository that is a symlink must point inside the repository (for a submodule, the superproject). A config file can only fail the run when groovyfmt reaches a file or directory it governs. `-v` prints each config in use.
 
 ## Migrating from CodeNarc
 

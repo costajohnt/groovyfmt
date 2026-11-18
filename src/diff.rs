@@ -157,6 +157,10 @@ pub fn unified(path: &str, old: &str, new: &str) -> String {
 /// With `max_line_length`, only lines in the ranges are wrapped, and a wrapped line's pieces
 /// all take its place.
 pub fn format_lines(src: &str, style: &Style, ranges: &[(usize, usize)]) -> Outcome {
+    crate::format::lone_cr(src, |src| lines_of(src, style, ranges))
+}
+
+fn lines_of(src: &str, style: &Style, ranges: &[(usize, usize)]) -> Outcome {
     let ranges = &without(ranges, &off_lines(src));
     let out = match format_rows(src, style, ranges) {
         Outcome::Formatted(out) => out,
@@ -315,6 +319,21 @@ mod tests {
         assert_eq!(
             unified("x", "a\n", ""),
             "--- a/x\n+++ b/x\n@@ -1,1 +0,0 @@\n-a\n"
+        );
+    }
+
+    #[test]
+    fn lines_of_a_classic_mac_file() {
+        // M4: a lone `\r` ends a line here as in `format`; it was all one line, and the
+        // last `\r` came back as `\n`
+        let src = "def f() {\rx()\r}\r";
+        assert_eq!(
+            format_lines(src, &Style::default(), &[(2, 2)]),
+            Outcome::Formatted("def f() {\r    x()\r}\r".into())
+        );
+        assert_eq!(
+            format_lines(src, &Style::default(), &[(1, 1)]),
+            Outcome::Unchanged
         );
     }
 

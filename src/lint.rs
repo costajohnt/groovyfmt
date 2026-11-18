@@ -953,7 +953,7 @@ pub fn lint_with(
         lines
             .get(line - 1)
             .and_then(|l| l.get(..col - 1))
-            .map_or(col, |prefix| prefix.chars().count() + 1)
+            .map_or(col, |prefix| crate::chars_before(prefix, line - 1) + 1)
     };
     for x in &mut v {
         x.col = chars(x.line, x.col);
@@ -1012,7 +1012,11 @@ fn at(n: Node, rule: &'static str, message: String) -> Violation {
 /// The lines holding `n`, with the line break after them, when nothing but whitespace and
 /// a `;` shares them.
 fn own_lines(src: &str, n: Node) -> Option<Edit> {
-    let start = src[..n.start_byte()].rfind('\n').map_or(0, |i| i + 1);
+    // a UTF-8 BOM stays, and isn't something sharing the line
+    let bom = if src.starts_with('\u{feff}') { 3 } else { 0 };
+    let start = src[..n.start_byte()]
+        .rfind('\n')
+        .map_or(bom.min(n.start_byte()), |i| i + 1);
     let end = src[n.end_byte()..]
         .find('\n')
         .map_or(src.len(), |i| n.end_byte() + i + 1);

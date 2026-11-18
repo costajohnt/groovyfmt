@@ -106,6 +106,16 @@ pub fn display_path(p: &Path) -> String {
     s
 }
 
+/// The characters in `prefix`, line `row` (0-based) up to a byte column: a column as editors
+/// count it, so without a UTF-8 BOM at the start of the file, which they don't show.
+pub fn chars_before(prefix: &str, row: usize) -> usize {
+    let prefix = match row {
+        0 => prefix.strip_prefix('\u{feff}').unwrap_or(prefix),
+        _ => prefix,
+    };
+    prefix.chars().count()
+}
+
 /// Control characters escaped, so a crafted file name or file content (lint messages quote
 /// source text) can't break a report line or inject CI workflow commands such as `::set-env`.
 /// The GitHub Actions runner also takes the older `##[command]` form anywhere in a line, so
@@ -132,7 +142,9 @@ pub fn printable(s: &str) -> String {
 /// than `Jenkinsfile` and `*.jenkinsfile` first, and takes an extensionless script by its
 /// shebang (`is_walked_file`).
 pub fn is_groovy_file(path: &Path) -> bool {
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let name = &*path
+        .file_name()
+        .map_or(std::borrow::Cow::Borrowed(""), |n| n.to_string_lossy());
     [".groovy", ".gradle", ".gvy", ".gy", ".gsh"]
         .iter()
         .any(|ext| name.ends_with(ext))
@@ -159,7 +171,9 @@ pub fn is_groovy_file(path: &Path) -> bool {
 /// `/* */` comments (a license header), is left out (#230, #236, #242).
 /// A file named on the command line is not read here, and is taken whatever it holds.
 pub fn is_walked_file(path: &Path) -> bool {
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let name = &*path
+        .file_name()
+        .map_or(std::borrow::Cow::Borrowed(""), |n| n.to_string_lossy());
     if !is_groovy_file(path) {
         return Path::new(name).extension().is_none()
             && !name.ends_with('~')
@@ -375,7 +389,9 @@ pub fn is_skipped_dir(path: &Path) -> bool {
 
 /// Why `is_skipped_dir` skips `path`, for `-v`.
 pub fn skipped_dir(path: &Path) -> Option<&'static str> {
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let name = &*path
+        .file_name()
+        .map_or(std::borrow::Cow::Borrowed(""), |n| n.to_string_lossy());
     if matches!(name, "build" | "out" | "target") {
         let full = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let mut in_src = false;

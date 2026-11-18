@@ -2,19 +2,50 @@
 //! only, never skips these files, and a second pass changes nothing. Checked on each fixture
 //! as written and on a copy with every line's indent scrambled, at three styles.
 
-use groovyfmt::format::{Outcome, Style, format};
+use groovyfmt::format::{Outcome, Style, format, shape, tokens};
 
 fn no_space(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
-/// Every line's leading whitespace replaced by a varying run of spaces and tabs.
-fn scramble(src: &str) -> String {
+/// Whether `a` and `b` have the same tokens, byte for byte (strings included; comments
+/// without trailing whitespace), and parse to the same tree shape.
+fn same_code(a: &str, b: &str) -> bool {
+    let (ta, tb) = (groovyfmt::parse(a), groovyfmt::parse(b));
+    tokens(a, &ta) == tokens(b, &tb) && shape(&ta) == shape(&tb)
+}
+
+/// Every line's leading whitespace replaced by a varying run of spaces and tabs. With
+/// `code_only`, not the lines whose indentation formatting keeps or reads: inside a
+/// multi-line string or comment (its content), in a `groovyfmt: off` region, or a `//`
+/// comment (one at column 0 stays there, as commented-out code).
+fn scramble(src: &str, code_only: bool) -> String {
+    let mut kept: Vec<(usize, usize)> = Vec::new();
+    if code_only {
+        let tree = groovyfmt::parse(src);
+        groovyfmt::preorder(tree.root_node(), |n| {
+            let multi = n.start_position().row < n.end_position().row;
+            if multi && (n.kind().contains("string") || n.kind().contains("comment")) {
+                kept.push((n.start_position().row + 1, n.end_position().row));
+                return false;
+            }
+            true
+        });
+        kept.extend(
+            groovyfmt::diff::off_lines(src)
+                .into_iter()
+                .map(|(a, b)| (a - 1, b.saturating_sub(1))),
+        );
+    }
     src.split('\n')
         .enumerate()
         .map(|(i, l)| {
             let body = l.trim_start_matches([' ', '\t']);
-            if body.is_empty() || body == "\r" {
+            if body.is_empty()
+                || body == "\r"
+                || (code_only && body.starts_with("//"))
+                || kept.iter().any(|&(a, b)| a <= i && i <= b)
+            {
                 return l.to_string();
             }
             format!("{}{body}", [" ", "\t", "   ", "", "  \t "][i % 5])
@@ -30,7 +61,10 @@ fn check(name: &str, src: &str, style: &Style) -> String {
         Outcome::Formatted(o) => o,
         Outcome::Skipped(why) => panic!("{name}: skipped: {why}"),
     };
+    // both: the text check sees what the grammar skips (a `\` line continuation, a BOM),
+    // the token check what deleting whitespace hides (`a - -b` as `a --b`)
     assert_eq!(no_space(&out), no_space(src), "{name}: not whitespace-only");
+    assert!(same_code(&out, src), "{name}: tokens changed");
     assert_eq!(
         format(&out, style),
         Outcome::Unchanged,
@@ -258,6 +292,52 @@ fn mutation_check_over_a_corpus() {
     assert!(failed.iter().all(Vec::is_empty));
 }
 
+/// The fixtures written as input to format, not in their formatted form, and why; every
+/// other fixture is its own formatted output (at `canonical_style`). Sorted by name.
+const INPUTS: &[(&str, &str)] = &[
+    ("blank_runs.groovy", "runs of blank lines to collapse"),
+    (
+        "braceless_control.groovy",
+        "unindented braceless if/else and for",
+    ),
+    (
+        "cr_line_endings.groovy",
+        "unindented, classic Mac line endings",
+    ),
+    ("crlf.groovy", "misindented, CRLF line endings"),
+    ("mixed_endings.groovy", "unindented, mixed line endings"),
+    (
+        "nested_closures_args.groovy",
+        "unindented nested calls and closures",
+    ),
+    ("no_final_newline.groovy", "unindented, no final newline"),
+    (
+        "scripted.jenkinsfile.groovy",
+        "unindented scripted pipeline",
+    ),
+    ("settings_messy.gradle", "messy indentation"),
+    ("switch_case.groovy", "unindented switch"),
+    ("tabs.groovy", "tab indentation to convert"),
+    ("tabs_build.gradle", "tab indentation to convert"),
+    ("trailing_whitespace.groovy", "trailing whitespace to strip"),
+    ("unindented_class.groovy", "unindented class"),
+];
+
+/// The style a fixture is written in, where it isn't the default.
+fn canonical_style(name: &str) -> Style {
+    match name {
+        "spock_labels_indented.groovy" => Style {
+            indent_after_labels: true,
+            ..Style::default()
+        },
+        "wrapped_params_conditions.groovy" => Style {
+            continuation: Some(8),
+            ..Style::default()
+        },
+        _ => Style::default(),
+    }
+}
+
 #[test]
 fn fixtures_format_whitespace_only_and_idempotently() {
     let (dir, paths) = fixture_paths();
@@ -292,20 +372,37 @@ fn fixtures_format_whitespace_only_and_idempotently() {
         },
     ];
     let mut changed_when_scrambled = 0;
+    let mut not_canonical = Vec::new();
     for p in &paths {
         let name = p.file_name().unwrap().to_string_lossy();
         let src = std::fs::read_to_string(p).unwrap();
-        let scrambled = scramble(&src);
+        let scrambled = scramble(&src, false);
+        let code_scrambled = scramble(&src, true);
         for style in &styles {
-            check(&name, &src, style);
+            let out = check(&name, &src, style);
             if check(&format!("{name} (scrambled)"), &scrambled, style) != scrambled
                 && *style == Style::default()
             {
                 changed_when_scrambled += 1;
-                eprintln!("changes when scrambled: {name}");
             }
+            // indentation is derived from the code alone: scrambled, it lands where the
+            // fixture does
+            assert_eq!(
+                check(&format!("{name} (code scrambled)"), &code_scrambled, style),
+                out,
+                "{name}: scrambled indentation formats differently at {style:?}"
+            );
+        }
+        // the fixtures are goldens: formatted, unless written as input
+        if check(&name, &src, &canonical_style(&name)) != src {
+            not_canonical.push(name.to_string());
         }
     }
+    let inputs: Vec<&str> = INPUTS.iter().map(|(n, _)| *n).collect();
+    assert_eq!(
+        not_canonical, inputs,
+        "fixtures that formatting changes, against the ones listed in INPUTS"
+    );
     assert!(paths.len() >= 20, "{} fixtures", paths.len());
     // spacing changes only what the option is for, and never moves a line break
     let src = std::fs::read_to_string(format!("{dir}/spacing.groovy")).unwrap();

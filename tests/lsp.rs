@@ -21,7 +21,8 @@ impl Dir {
     fn new(name: &str) -> Dir {
         let p = std::env::temp_dir().join(format!("groovyfmt-lsp-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
-        std::fs::create_dir_all(&p).unwrap();
+        // a repository of its own, as in tests/cli.rs
+        std::fs::create_dir_all(p.join(".git")).unwrap();
         // canonical, so the URIs we build match what the server resolves
         Dir(std::fs::canonicalize(&p).unwrap())
     }
@@ -882,19 +883,33 @@ fn the_config_baseline_holds_back_diagnostics_and_fixes() {
         fix_all(&mut srv, &u, edited).as_deref(),
         Some("import a.Old\nx = 1;\n")
     );
-    // a baseline the config points out of its tree is a diagnostic, not a read
-    d.write(".groovyfmt.toml", "baseline = \"../x.json\"\n");
-    srv.notify(
-        "textDocument/didChange",
-        &format!(
-            "{{\"textDocument\":{{\"uri\":{},\"version\":3}},\"contentChanges\":[{{\"text\":{}}}]}}",
-            js(&u),
-            js(text)
-        ),
-    );
-    let ds = srv.diagnostics(&u);
-    assert_eq!(ds.len(), 1);
-    assert_eq!(ds[0].get("code").str(), Some("config"));
+    // a baseline the config points out of its tree through a symlink is a diagnostic, not
+    // a read: the target exists and is a valid baseline, so only containment refuses it
+    #[cfg(unix)]
+    {
+        let outside = Dir::new("lspbaseline-outside");
+        std::fs::copy(d.0.join("bl.json"), outside.0.join("x.json")).unwrap();
+        std::os::unix::fs::symlink(&outside.0, d.0.join("ci")).unwrap();
+        d.write(".groovyfmt.toml", "baseline = \"ci/x.json\"\n");
+        srv.notify(
+            "textDocument/didChange",
+            &format!(
+                "{{\"textDocument\":{{\"uri\":{},\"version\":3}},\"contentChanges\":[{{\"text\":{}}}]}}",
+                js(&u),
+                js(text)
+            ),
+        );
+        let ds = srv.diagnostics(&u);
+        assert_eq!(ds.len(), 1, "{ds:?}");
+        assert_eq!(ds[0].get("code").str(), Some("baseline"));
+        assert!(
+            ds[0]
+                .get("message")
+                .str()
+                .is_some_and(|m| m.contains("must stay inside")),
+            "{ds:?}"
+        );
+    }
 }
 
 #[test]

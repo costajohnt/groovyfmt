@@ -19,7 +19,9 @@ impl Dir {
     fn new(name: &str) -> Dir {
         let p = std::env::temp_dir().join(format!("groovyfmt-cli-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
-        std::fs::create_dir_all(&p).unwrap();
+        // a repository of its own: project-root discovery stops here, never reaching
+        // another test's files through whatever is above the temp dir
+        std::fs::create_dir_all(p.join(".git")).unwrap();
         Dir(p)
     }
     fn write(&self, rel: &str, text: &str) -> PathBuf {
@@ -131,6 +133,8 @@ fn check_then_write_then_check() {
 #[test]
 fn skips_build_and_hidden_dirs_but_not_explicit_files() {
     let d = Dir::new("skip");
+    // a Gradle project, where `build` is output (`Dir` makes every test dir a repository)
+    d.write("build.gradle", "plugins {\n    id 'java'\n}\n");
     d.write("build/gen/G.groovy", UGLY);
     d.write(".hidden/H.groovy", UGLY);
     d.write("node_modules/x/N.groovy", UGLY);
@@ -814,7 +818,7 @@ fn json_output_is_one_document_on_stdout() {
     assert_eq!(o.status.code(), Some(0));
     assert_eq!(
         stderr(&o),
-        "config: none found, using defaults\n",
+        "skipped dir .git: hidden\nconfig: none found, using defaults\n",
         "-v keeps its config lines on stderr"
     );
     assert_eq!(
@@ -1004,6 +1008,12 @@ fn lint_fix_keeps_what_would_change_the_program() {
     for (f, src) in keep {
         d.write(f, src);
     }
+    // the replacement is set, so `compile` would be rewritten if the local `compile`
+    // method weren't seen
+    d.write(
+        "compile/.groovyfmt.toml",
+        "[lint]\ngradle_compile_replacement = \"implementation\"\n",
+    );
     d.write("Gone.groovy", "import a.B as TU\nprintln \"$T.x\"\n");
     let f = run(&d.0, &["--lint", "--fix"], None);
     assert_eq!(f.status.code(), Some(1), "{}", stderr(&f));
@@ -3800,10 +3810,15 @@ fn bad_baselines_are_errors() {
     }
     // a missing baseline named by the config is an error too
     d.write(".groovyfmt.toml", "baseline = \"missing.json\"\n");
-    assert_eq!(run(&d.0, &["--lint"], None).status.code(), Some(2));
-    // the file isn't echoed
+    let o = run(&d.0, &["--lint"], None);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(stderr(&o).contains("missing.json: "), "{}", stderr(&o));
+    // the file isn't echoed: it is read and refused, not skipped for another reason
+    std::fs::remove_file(d.0.join(".groovyfmt.toml")).unwrap();
     d.write("secret.json", "TOPSECRET\n");
     let o = run(&d.0, &["--lint", "--baseline", "secret.json"], None);
+    assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
+    assert!(stderr(&o).contains("secret.json: "), "{}", stderr(&o));
     assert!(!stderr(&o).contains("TOPSECRET"), "{}", stderr(&o));
 }
 
@@ -3828,11 +3843,18 @@ fn a_config_cannot_point_its_baseline_outside_its_tree() {
         );
     }
     assert!(!d.0.join("x.json").exists());
-    // a nested config pointing above its own directory
+    // a nested config pointing above its own directory, at a baseline that exists
     d.write("repo/.groovyfmt.toml", "\n");
+    d.write("repo/x.json", "{\"version\":1,\"entries\":[]}\n");
     d.write("repo/sub/.groovyfmt.toml", "baseline = \"../x.json\"\n");
     d.write("repo/sub/B.groovy", "x = 1\n");
-    assert_eq!(run(&repo, &["--lint"], None).status.code(), Some(2));
+    let o = run(&repo, &["--lint"], None);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(
+        stderr(&o).contains("relative path inside"),
+        "{}",
+        stderr(&o)
+    );
     std::fs::remove_file(d.0.join("repo/sub/.groovyfmt.toml")).unwrap();
     #[cfg(unix)]
     {
@@ -3853,13 +3875,23 @@ fn a_config_cannot_point_its_baseline_outside_its_tree() {
                 "{target}: {}",
                 stderr(&o)
             );
-            assert_eq!(
-                run(&repo, &["--lint"], None).status.code(),
-                Some(2),
-                "{target}: read"
+            assert!(!d.0.join("outside/x.json").exists() && !d.0.join("outside/t.json").exists());
+            // reading: the target exists and is a valid baseline, so only containment
+            // refuses it
+            d.write(
+                &format!("outside/{}", &target[target.len() - 6..]),
+                "{\"version\":1,\"entries\":[]}\n",
             );
+            let o = run(&repo, &["--lint"], None);
+            assert_eq!(o.status.code(), Some(2), "{target}: read");
+            assert!(
+                stderr(&o).contains("must stay inside"),
+                "{target}: read: {}",
+                stderr(&o)
+            );
+            std::fs::remove_file(d.0.join(format!("outside/{}", &target[target.len() - 6..])))
+                .unwrap();
         }
-        assert!(!d.0.join("outside/x.json").exists() && !d.0.join("outside/t.json").exists());
     }
     // the normal case, and an explicit path anywhere: the user's choice
     d.write("repo/.groovyfmt.toml", "baseline = \"ci2/bl.json\"\n");
@@ -4356,6 +4388,416 @@ fn specs_whose_base_is_in_another_file_are_checked() {
     let o = run(&d.0, &["--lint", "src/BTest.groovy"], None);
     assert!(
         stdout(&o).contains("SpockUnassertedCondition"),
+        "{}",
+        stdout(&o)
+    );
+}
+
+#[test]
+fn lines_in_a_classic_mac_file() {
+    // a lone `\r` ends a line for --lines as for whole-file formatting (M4)
+    let d = Dir::new("cr-lines");
+    let src = "def f() {\rx()\r}\r";
+    let o = run(&d.0, &["--stdin", "--lines", "2-2"], Some(src));
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(stdout(&o), "def f() {\r    x()\r}\r");
+    let o = run(&d.0, &["--stdin", "--lines", "1-1"], Some(src));
+    assert_eq!(stdout(&o), src);
+}
+
+#[test]
+fn a_bom_is_not_a_column_and_does_not_share_the_line() {
+    let d = Dir::new("bom");
+    d.write("A.groovy", "\u{feff}import a.B\nx = 1\n");
+    let o = run(&d.0, &["--lint"], None);
+    assert!(
+        stdout(&o).contains("A.groovy:1:1: UnusedImport"),
+        "{}",
+        stdout(&o)
+    );
+    let o = run(&d.0, &["--lint", "--fix"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stdout(&o));
+    assert_eq!(d.read("A.groovy"), "\u{feff}x = 1\n");
+    // syntax errors count columns the same way
+    d.write("B.groovy", "\u{feff}def f() { x = }\n");
+    let o = run(&d.0, &["--syntax", "B.groovy"], None);
+    assert!(stdout(&o).contains("B.groovy:1:13: "), "{}", stdout(&o));
+}
+
+#[cfg(unix)]
+#[test]
+fn arguments_that_are_not_utf8() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let d = Dir::new("non-utf8");
+    for args in [
+        vec![
+            OsStr::from_bytes(b"--check"),
+            OsStr::from_bytes(b"caf\xe9.groovy"),
+        ],
+        vec![
+            OsStr::from_bytes(b"--config"),
+            OsStr::from_bytes(b"caf\xe9.toml"),
+        ],
+        vec![
+            OsStr::from_bytes(b"--check"),
+            OsStr::from_bytes(b"--caf\xe9"),
+        ],
+    ] {
+        let o = Command::new(bin())
+            .args(&args)
+            .current_dir(&d.0)
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(2), "{args:?}: {}", stderr(&o));
+        assert!(!stderr(&o).contains("panicked"), "{}", stderr(&o));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_config_symlink_stays_in_its_repository() {
+    use std::os::unix::fs::symlink;
+    let d = Dir::new("config-link");
+    // the repository is `repo`, not the test dir around it
+    std::fs::remove_dir_all(d.0.join(".git")).unwrap();
+    d.write("outside/secret.toml", "TOPSECRET\n");
+    d.write("repo/.git/HEAD", "");
+    d.write("repo/shared/style.toml", "indent = 2\n");
+    d.write("repo/a/A.groovy", "class A {\ndef f() {}\n}\n");
+    d.write("repo/b/B.groovy", "class B {\ndef f() {}\n}\n");
+    // inside the repository: followed
+    symlink("../shared/style.toml", d.0.join("repo/a/.groovyfmt.toml")).unwrap();
+    let repo = d.0.join("repo");
+    let o = run(&repo, &["a/A.groovy"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(d.read("repo/a/A.groovy"), "class A {\n  def f() {}\n}\n");
+    // out of it: an error that shows nothing of the target
+    symlink(
+        "../../outside/secret.toml",
+        d.0.join("repo/b/.groovyfmt.toml"),
+    )
+    .unwrap();
+    let o = run(&repo, &["b/B.groovy"], None);
+    assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains("a config symlink must point inside the repository"),
+        "{}",
+        stderr(&o)
+    );
+    assert!(!stderr(&o).contains("TOPSECRET"), "{}", stderr(&o));
+    // --config is the user's choice
+    let o = run(
+        &repo,
+        &["--config", "b/.groovyfmt.toml", "b/B.groovy"],
+        None,
+    );
+    assert!(!stderr(&o).contains("symlink"), "{}", stderr(&o));
+}
+
+#[test]
+fn an_unknown_rule_is_a_warning_unless_it_looks_like_a_typo() {
+    let d = Dir::new("unknown-rule");
+    d.write("A.groovy", "x = 1\n");
+    // a rule from a newer groovyfmt: ignored, said once
+    d.write(".groovyfmt.toml", "[lint]\nSomeFutureRule = true\n");
+    let o = run(&d.0, &["--lint"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(
+        stderr(&o)
+            .matches("unknown lint rule `SomeFutureRule` ignored")
+            .count(),
+        1,
+        "{}",
+        stderr(&o)
+    );
+    let o = run(&d.0, &["--lint", "--strict"], None);
+    assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains("unknown lint rule `SomeFutureRule` (known: "),
+        "{}",
+        stderr(&o)
+    );
+    // two edits from a known rule: a typo, an error
+    d.write(".groovyfmt.toml", "[lint]\nUnusedImprt = false\n");
+    let o = run(&d.0, &["--lint"], None);
+    assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains("unknown lint rule `UnusedImprt` (did you mean `UnusedImport`?)"),
+        "{}",
+        stderr(&o)
+    );
+    // case and underscores don't make a rule name new
+    for typo in ["UNUSEDIMPORT", "unused_import"] {
+        d.write(".groovyfmt.toml", &format!("[lint]\n{typo} = false\n"));
+        let o = run(&d.0, &["--lint"], None);
+        assert_eq!(o.status.code(), Some(2), "{typo}: {}", stderr(&o));
+        assert!(
+            stderr(&o).contains("did you mean `UnusedImport`?"),
+            "{}",
+            stderr(&o)
+        );
+    }
+}
+
+#[test]
+fn nothing_above_the_temp_dir_is_a_project() {
+    // a test that removes its `.git` marker (a build outside git) walks up from here: a
+    // stray `.git`, config or settings file above it would make tests see each other
+    let tmp = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    for dir in tmp.ancestors() {
+        for marker in [
+            ".git",
+            ".groovyfmt.toml",
+            "groovyfmt.toml",
+            "settings.gradle",
+            "settings.gradle.kts",
+        ] {
+            assert!(
+                !dir.join(marker).exists(),
+                "{} holds {marker}: tests in the temp dir would share a project",
+                dir.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn off_regions_are_kept_and_the_rest_formatted() {
+    // the comment lines are part of the region: kept as written too
+    let d = Dir::new("off-regions");
+    let src = "class A {\ndef f() {\n// groovyfmt: off\n  x   =  1\n// groovyfmt: on\ny = 2\n[1].each {\n/* groovyfmt: off */\n      z()\n/* groovyfmt: on */\n}\n}\n}\n// groovyfmt: off\n  w()\n";
+    d.write("A.groovy", src);
+    let o = run(&d.0, &["A.groovy"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(
+        d.read("A.groovy"),
+        "class A {\n    def f() {\n// groovyfmt: off\n  x   =  1\n// groovyfmt: on\n        y = 2\n        [1].each {\n/* groovyfmt: off */\n      z()\n/* groovyfmt: on */\n        }\n    }\n}\n// groovyfmt: off\n  w()\n"
+    );
+    assert_eq!(
+        run(&d.0, &["--check", "A.groovy"], None).status.code(),
+        Some(0)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn config_symlinks_outside_git_and_into_a_superproject_are_followed() {
+    use std::os::unix::fs::symlink;
+    // no repository at all: a home directory's config linked into a Nix store
+    let d = Dir::new("config-link-nogit");
+    std::fs::remove_dir_all(d.0.join(".git")).unwrap();
+    d.write("store/style.toml", "indent = 2\n");
+    d.write("home/A.groovy", "class A {\ndef f() {}\n}\n");
+    symlink("../store/style.toml", d.0.join("home/.groovyfmt.toml")).unwrap();
+    let o = run(&d.0.join("home"), &["A.groovy"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(d.read("home/A.groovy"), "class A {\n  def f() {}\n}\n");
+    // a submodule's config linked into its superproject (`Dir` makes the superproject)
+    let d = Dir::new("config-link-submodule");
+    d.write("shared/style.toml", "indent = 2\n");
+    d.write("sub/.git", "gitdir: ../.git/modules/sub\n");
+    d.write("sub/A.groovy", "class A {\ndef f() {}\n}\n");
+    symlink("../shared/style.toml", d.0.join("sub/.groovyfmt.toml")).unwrap();
+    let o = run(&d.0.join("sub"), &["A.groovy"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(d.read("sub/A.groovy"), "class A {\n  def f() {}\n}\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_config_symlink_in_a_nested_repository_stays_in_it() {
+    use std::os::unix::fs::symlink;
+    // `Dir` is the outer repository (a dotfiles repository at home, say)
+    let d = Dir::new("config-link-nested");
+    d.write("shared/style.toml", "indent = 2\n");
+    for (repo, gitdir) in [
+        // a repository of its own inside another
+        ("inner", None),
+        // a `.git` file that doesn't point into the outer repository's modules
+        ("worktree", Some("gitdir: ../elsewhere/worktree.git\n")),
+    ] {
+        match gitdir {
+            None => std::fs::create_dir_all(d.0.join(repo).join(".git")).unwrap(),
+            Some(g) => {
+                d.write(&format!("{repo}/.git"), g);
+            }
+        }
+        d.write(&format!("{repo}/A.groovy"), "class A {\ndef f() {}\n}\n");
+        symlink(
+            "../shared/style.toml",
+            d.0.join(repo).join(".groovyfmt.toml"),
+        )
+        .unwrap();
+        let o = run(&d.0.join(repo), &["A.groovy"], None);
+        assert_eq!(o.status.code(), Some(2), "{repo}: {}", stderr(&o));
+        assert!(
+            stderr(&o).contains("a config symlink must point inside the repository"),
+            "{repo}: {}",
+            stderr(&o)
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_file_name_that_is_not_utf8_is_formatted() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let d = Dir::new("latin1-name");
+    let name = OsStr::from_bytes(b"caf\xe9.groovy");
+    // some file systems (APFS) refuse a name that isn't UTF-8
+    if std::fs::write(d.0.join(name), UGLY).is_err() {
+        return;
+    }
+    let check = Command::new(bin())
+        .arg("--check")
+        .arg(name)
+        .current_dir(&d.0)
+        .output()
+        .unwrap();
+    assert_eq!(check.status.code(), Some(1), "{}", stderr(&check));
+    let lint = Command::new(bin())
+        .args(["--lint", "--strict"])
+        .arg(name)
+        .current_dir(&d.0)
+        .output()
+        .unwrap();
+    assert!(!stderr(&lint).contains("skipped"), "{}", stderr(&lint));
+    let o = Command::new(bin())
+        .arg(name)
+        .current_dir(&d.0)
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(std::fs::read_to_string(d.0.join(name)).unwrap(), PRETTY);
+    // and found by a walk
+    std::fs::write(d.0.join(name), UGLY).unwrap();
+    assert_eq!(run(&d.0, &["--check"], None).status.code(), Some(1));
+}
+
+#[cfg(unix)]
+#[test]
+fn an_option_value_after_an_equals_sign_need_not_be_utf8() {
+    use std::os::unix::ffi::OsStrExt;
+    let d = Dir::new("non-utf8-eq");
+    let arg = |b: &[u8]| std::ffi::OsStr::from_bytes(b).to_os_string();
+    let mut child = Command::new(bin())
+        .arg("--stdin")
+        .arg(arg(b"--stdin-filepath=caf\xe9.groovy"))
+        .current_dir(&d.0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(UGLY.as_bytes())
+        .unwrap();
+    let o = child.wait_with_output().unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(stdout(&o), PRETTY);
+    // read as a path: a missing file, not a refused argument
+    let o = Command::new(bin())
+        .args([arg(b"--config=caf\xe9.toml"), arg(b"--check")])
+        .current_dir(&d.0)
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2));
+    assert!(!stderr(&o).contains("not UTF-8"), "{}", stderr(&o));
+    assert!(stderr(&o).contains(".toml: "), "{}", stderr(&o));
+}
+
+#[cfg(unix)]
+#[test]
+fn config_from_a_pipe() {
+    // `--config <(...)`: a FIFO, not a regular file
+    let d = Dir::new("config-fifo");
+    let fifo = d.0.join("cfg.toml");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let writer = {
+        let fifo = fifo.clone();
+        std::thread::spawn(move || {
+            let _ = std::fs::write(fifo, "indent = 2\n");
+        })
+    };
+    let o = run(&d.0, &["--config", "cfg.toml", "--stdin"], Some(UGLY));
+    // the writer still waits only if nothing opened the pipe: open it so the test ends
+    if !writer.is_finished() {
+        let _ = std::fs::File::open(&fifo);
+    }
+    writer.join().unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(
+        stdout(&o),
+        "class A {\n  def f() {\n    println 'x'\n  }\n}\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_config_above_the_governing_one_that_links_out_is_passed_over() {
+    use std::os::unix::fs::symlink;
+    // home is a dotfiles repository (`Dir`), its config a link into a store outside it
+    let home = Dir::new("dotfiles-home");
+    let store = Dir::new("dotfiles-store");
+    store.write("style.toml", "indent = 2\n");
+    symlink(store.0.join("style.toml"), home.0.join(".groovyfmt.toml")).unwrap();
+    home.write("proj/.git/HEAD", "");
+    home.write("proj/.groovyfmt.toml", "indent = 4\n");
+    home.write("proj/A.groovy", UGLY);
+    // a project with its own config: home's is read only for excludes, and passed over
+    let o = run(&home.0.join("proj"), &["--check", "A.groovy"], None);
+    assert_eq!(o.status.code(), Some(1), "{}", stderr(&o));
+    assert_eq!(stdout(&o), "A.groovy\n");
+    // where home's config governs, it is still an error
+    home.write("B.groovy", UGLY);
+    let o = run(&home.0, &["--check", "B.groovy"], None);
+    assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains("a config symlink must point inside the repository"),
+        "{}",
+        stderr(&o)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn files_whose_names_are_not_utf8_share_no_baseline_key() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let d = Dir::new("latin1-baseline");
+    let (e9, e8) = (
+        OsStr::from_bytes(b"caf\xe9.groovy"),
+        OsStr::from_bytes(b"caf\xe8.groovy"),
+    );
+    // some file systems (APFS) refuse a name that isn't UTF-8
+    if std::fs::write(d.0.join(e9), "import a.B\nx = 1\n").is_err() {
+        return;
+    }
+    let o = run(&d.0, &["--lint", "--write-baseline"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert!(stderr(&o).contains("isn't UTF-8"), "{}", stderr(&o));
+    // another file whose lossy name is the same: its violation is reported
+    std::fs::write(d.0.join(e8), "import a.C\nx = 1\n").unwrap();
+    let o = run(
+        &d.0,
+        &["--lint", "--baseline", ".groovyfmt-baseline.json"],
+        None,
+    );
+    assert_eq!(o.status.code(), Some(1), "{}", stderr(&o));
+    assert_eq!(
+        stdout(&o).matches("UnusedImport").count(),
+        2,
         "{}",
         stdout(&o)
     );

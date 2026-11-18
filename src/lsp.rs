@@ -212,6 +212,11 @@ impl<'a> Lines<'a> {
         let Some(&start) = self.nl.get(line.saturating_sub(1)) else {
             return self.text.len();
         };
+        // line 1's columns don't count a BOM (`chars_before`)
+        let start = match line {
+            1 if self.text.starts_with('\u{feff}') => 3,
+            _ => start,
+        };
         let end = self.nl.get(line).map_or(self.text.len(), |n| n - 1);
         self.text[start..end]
             .char_indices()
@@ -219,9 +224,19 @@ impl<'a> Lines<'a> {
             .map_or(end, |(i, _)| start + i)
     }
 
-    /// The 1-based groovyfmt line holding `offset`.
+    /// Where each line `format_lines` counts starts: `nl`, but a classic Mac file's lone
+    /// `\r`s are line breaks to it, as to LSP.
+    fn rows(&self) -> &[usize] {
+        if self.text.contains('\n') {
+            &self.nl
+        } else {
+            &self.lsp
+        }
+    }
+
+    /// The 1-based `format_lines` line holding `offset`.
     fn line_of(&self, offset: usize) -> usize {
-        self.nl.partition_point(|&s| s <= offset)
+        self.rows().partition_point(|&s| s <= offset)
     }
 
     /// The LSP position of `offset`, a char boundary, as JSON.
@@ -317,7 +332,10 @@ fn baseline_of(doc: &Doc, cfg: &Config) -> Result<Option<(Baseline, String)>, St
         return Ok(None);
     };
     crate::baseline::confined(&cfg.root, f)?;
-    let rel = crate::baseline::relative(&doc.path, f.parent().unwrap_or(Path::new("")));
+    let Some(rel) = crate::baseline::relative(&doc.path, f.parent().unwrap_or(Path::new("")))
+    else {
+        return Ok(None);
+    };
     Ok(Some((Baseline::load(f)?, rel)))
 }
 
@@ -463,7 +481,7 @@ impl Server {
             };
             let first = lines.line_of(s);
             // a selection ending at the start of a line doesn't take that line
-            let at_line_start = e > s && lines.nl.binary_search(&e).is_ok();
+            let at_line_start = e > s && lines.rows().binary_search(&e).is_ok();
             let last = (lines.line_of(e) - usize::from(at_line_start)).max(first);
             diff::format_lines(&doc.text, &cfg.style, &[(first, last)])
         } else {
@@ -966,6 +984,14 @@ mod tests {
         let z = text.find('z').unwrap();
         assert_eq!(lsp_pos(&u16, z), (2, 0));
         assert_eq!(u16.line_of(z), 2);
+        // in a classic Mac file, lone `\r`s are groovyfmt lines too (`format_lines`)
+        let mac = Lines::new("a\rb\rc", false);
+        assert_eq!(mac.line_of(2), 2);
+        assert_eq!(mac.line_of(4), 3);
+        // a BOM isn't a column of line 1
+        let bom = Lines::new("\u{feff}ab\ncd", false);
+        assert_eq!(bom.offset(1, 2), 4);
+        assert_eq!(bom.offset(2, 2), 7);
         assert_eq!(u16.offset_of(&at(2, 3)), Some(text.len() - 1));
         assert_eq!(lsp_pos(&u16, text.len()), (3, 0));
         assert_eq!(u16.offset_of(&at(9, 0)), Some(text.len()));

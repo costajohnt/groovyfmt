@@ -8,6 +8,7 @@ use groovyfmt::report::{self, Diagnostic, FileReport};
 use groovyfmt::syntax::{self, SyntaxError};
 use groovyfmt::{MAX_FILE_BYTES, display_path, printable};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -168,9 +169,27 @@ fn say(line: &str) {
     let _ = writeln!(std::io::stdout().lock(), "{line}");
 }
 
+/// `--flag=value` whose value isn't UTF-8 (a path): the flag, and the value as it is.
+#[cfg(unix)]
+fn flag_and_value(arg: &std::ffi::OsStr) -> Option<(String, OsString)> {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    let b = arg.as_bytes();
+    let eq = b.iter().position(|&c| c == b'=')?;
+    let flag = std::str::from_utf8(&b[..eq]).ok()?;
+    flag.starts_with("--")
+        .then(|| (flag.to_string(), OsString::from_vec(b[eq + 1..].to_vec())))
+}
+
+/// Windows arguments that aren't Unicode can't be split safely: an error, as before.
+#[cfg(not(unix))]
+fn flag_and_value(_: &std::ffi::OsStr) -> Option<(String, OsString)> {
+    None
+}
+
 fn parse_args() -> Args {
     let mut a = Args::default();
-    let mut it = std::env::args().skip(1);
+    // paths needn't be UTF-8 (a Latin-1 name from `xargs`); options and their text are
+    let mut it = std::env::args_os().skip(1);
     let set_mode = |a: &mut Args, m: Mode| {
         // --lint --stats is the one allowed combination
         a.mode = match (std::mem::take(&mut a.mode), m) {
@@ -188,19 +207,39 @@ fn parse_args() -> Args {
             a.paths.push(PathBuf::from(arg));
             continue;
         }
-        if arg == "--" {
-            only_paths = true;
-            continue;
-        }
-        let (flag, mut inline) = match arg.split_once('=') {
-            Some((f, v)) if f.starts_with("--") => (f.to_string(), Some(v.to_string())),
-            _ => (arg.clone(), None),
+        let (arg, flag, mut inline) = match arg.into_string() {
+            Ok(arg) if arg == "--" => {
+                only_paths = true;
+                continue;
+            }
+            Ok(arg) => match arg.split_once('=') {
+                Some((f, v)) if f.starts_with("--") => {
+                    (arg.clone(), f.to_string(), Some(OsString::from(v)))
+                }
+                _ => (arg.clone(), arg, None),
+            },
+            Err(arg) => match flag_and_value(&arg) {
+                Some((f, v)) => (f.clone(), f, Some(v)),
+                None if arg.to_string_lossy().starts_with('-') => die(format!(
+                    "`{}` is not UTF-8 (see --help)",
+                    printable(&arg.to_string_lossy())
+                )),
+                None => {
+                    a.paths.push(PathBuf::from(arg));
+                    continue;
+                }
+            },
         };
+        // a path option's value may be any OsString; `text` is for the others
         let mut value = |name: &str| {
             inline
                 .take()
                 .or_else(|| it.next())
                 .unwrap_or_else(|| die(format!("{name} needs a value")))
+        };
+        let text = |name: &str, v: OsString| {
+            v.into_string()
+                .unwrap_or_else(|_| die(format!("{name} needs a UTF-8 value")))
         };
         match flag.as_str() {
             "-h" | "--help" => {
@@ -217,7 +256,7 @@ fn parse_args() -> Args {
             "--stdin" => set_mode(&mut a, Mode::Stdin),
             "--rules" => set_mode(&mut a, Mode::Rules),
             "--explain" => {
-                let rule = value("--explain");
+                let rule = text("--explain", value("--explain"));
                 set_mode(&mut a, Mode::Explain(rule));
             }
             "--suggest-style" => set_mode(&mut a, Mode::SuggestStyle),
@@ -227,12 +266,15 @@ fn parse_args() -> Args {
             "--errors" => set_mode(&mut a, Mode::Errors),
             "--tree" => set_mode(&mut a, Mode::Tree),
             "-v" | "--verbose" => a.verbose = true,
-            "--strict" => a.strict = true,
+            "--strict" => {
+                a.strict = true;
+                config::STRICT.store(true, Ordering::Relaxed);
+            }
             "--fix" => a.fix = true,
             "--force" => FORCE.store(true, Ordering::Relaxed),
             "--diff" => a.diff = true,
             "--lines" => {
-                let v = value("--lines");
+                let v = text("--lines", value("--lines"));
                 let range = v
                     .split_once('-')
                     .and_then(|(s, e)| Some((s.parse().ok()?, e.parse().ok()?)))
@@ -243,14 +285,16 @@ fn parse_args() -> Args {
                     ))
                 }));
             }
-            "--changed-since" => a.changed_since = Some(value("--changed-since")),
+            "--changed-since" => {
+                a.changed_since = Some(text("--changed-since", value("--changed-since")))
+            }
             "--baseline" => a.baseline = Some(PathBuf::from(value("--baseline"))),
             // only `--write-baseline=FILE`: a separate word would read as a path to lint
             "--write-baseline" => a.write_baseline = Some(inline.take().map(PathBuf::from)),
             "--config" => a.config = Some(PathBuf::from(value("--config"))),
             "--stdin-filepath" => a.stdin_filepath = Some(PathBuf::from(value("--stdin-filepath"))),
             "--indent" => {
-                let v = value("--indent");
+                let v = text("--indent", value("--indent"));
                 a.indent = Some(
                     v.parse()
                         .ok()
@@ -258,7 +302,7 @@ fn parse_args() -> Args {
                         .unwrap_or_else(|| die("--indent must be 1 to 16")),
                 );
             }
-            "--output-format" => match value("--output-format").as_str() {
+            "--output-format" => match text("--output-format", value("--output-format")).as_str() {
                 "text" => (a.github, a.machine) = (false, None),
                 "github" => (a.github, a.machine) = (true, None),
                 "json" => (a.github, a.machine) = (false, Some(Machine::Json)),
@@ -565,7 +609,9 @@ static FORCE: AtomicBool = AtomicBool::new(false);
 /// shebang runs groovy (`is_groovy_shebang`). Only files named on the command line can fail this; a Makefile or
 /// YAML file there (`groovyfmt *`) would parse as labels and lose its indentation.
 fn is_groovy(path: &Path, bytes: &[u8]) -> bool {
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let name = &*path
+        .file_name()
+        .map_or(std::borrow::Cow::Borrowed(""), |n| n.to_string_lossy());
     // Windows drops trailing dots and spaces: `A.groovy.` opens A.groovy
     let name = if cfg!(windows) {
         name.trim_end_matches(['.', ' '])
@@ -1408,16 +1454,23 @@ fn lint_files(
         // writing: the whole of every file is recorded, relative to the file written
         Some(target) => files
             .iter()
-            .map(|p| {
-                let rel = baseline::relative(p, &dir(target));
-                (p.as_path(), (Arc::new(Baseline::default()), rel))
+            .filter_map(|p| {
+                let Some(rel) = baseline::relative(p, &dir(target)) else {
+                    eprintln!(
+                        "groovyfmt: warning: {}: the name isn't UTF-8, so its violations aren't recorded in the baseline",
+                        shown(p)
+                    );
+                    return None;
+                };
+                Some((p.as_path(), (Arc::new(Baseline::default()), rel)))
             })
             .collect(),
+        // a file whose name isn't UTF-8 has no entries: all of its violations are reported
         None => files
             .iter()
             .filter_map(|p| {
                 let f = baseline_file(a, &cfgs[p])?;
-                Some((p.as_path(), (load(&f), baseline::relative(p, &dir(&f)))))
+                Some((p.as_path(), (load(&f), baseline::relative(p, &dir(&f))?)))
             })
             .collect(),
     };

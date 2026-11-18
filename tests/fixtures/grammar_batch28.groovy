@@ -12,9 +12,9 @@ run python ?: 'python3', 'scripts/v.py'
 run python ?: 'python3', *arguments
 
 B<String,
-        Integer> b = null
+    Integer> b = null
 B<
-        String, Integer> c = null
+    String, Integer> c = null
 
 def d() { new File('x') }
 def read = { File f = d() ->

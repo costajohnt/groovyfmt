@@ -4,7 +4,7 @@
 // comma; a block comment in type arguments; an interface method with no return type (Groovy 3
 // and 4); `return` inside `${}`.
 def a = new Object()
-    { -> 3 }
+{ -> 3 }
 def r = new Runnable() {
     void run() { }
 }

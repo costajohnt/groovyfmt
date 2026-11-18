@@ -78,8 +78,10 @@ pub fn keys(src: &str, vs: &[Violation]) -> Keys {
 }
 
 /// `path` relative to `dir`, both made absolute against the working directory and
-/// normalized lexically, with `/` separators; `..` where `path` is outside `dir`.
-pub fn relative(path: &Path, dir: &Path) -> String {
+/// normalized lexically, with `/` separators; `..` where `path` is outside `dir`. None when
+/// a name in it isn't UTF-8: a lossy key would be shared by different files, so such a
+/// file has no baseline entries.
+pub fn relative(path: &Path, dir: &Path) -> Option<String> {
     let cwd = std::env::current_dir().unwrap_or_default();
     let (p, d) = (
         crate::config::normalize(&cwd.join(path)),
@@ -88,13 +90,11 @@ pub fn relative(path: &Path, dir: &Path) -> String {
     let (pc, dc): (Vec<Component>, Vec<Component>) =
         (p.components().collect(), d.components().collect());
     let common = pc.iter().zip(&dc).take_while(|(a, b)| a == b).count();
-    let mut out: Vec<String> = vec!["..".to_string(); dc.len() - common];
-    out.extend(
-        pc[common..]
-            .iter()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned()),
-    );
-    out.join("/")
+    let mut out: Vec<&str> = vec![".."; dc.len() - common];
+    for c in &pc[common..] {
+        out.push(c.as_os_str().to_str()?);
+    }
+    Some(out.join("/"))
 }
 
 impl Baseline {
@@ -465,16 +465,16 @@ mod tests {
     #[test]
     fn relative_paths_use_slashes_and_dot_dot() {
         assert_eq!(
-            relative(Path::new("/r/src/A.groovy"), Path::new("/r")),
-            "src/A.groovy"
+            relative(Path::new("/r/src/A.groovy"), Path::new("/r")).as_deref(),
+            Some("src/A.groovy")
         );
         assert_eq!(
-            relative(Path::new("/r/A.groovy"), Path::new("/r/sub")),
-            "../A.groovy"
+            relative(Path::new("/r/A.groovy"), Path::new("/r/sub")).as_deref(),
+            Some("../A.groovy")
         );
         assert_eq!(
-            relative(Path::new("/r/./x/../A.groovy"), Path::new("/r/")),
-            "A.groovy"
+            relative(Path::new("/r/./x/../A.groovy"), Path::new("/r/")).as_deref(),
+            Some("A.groovy")
         );
     }
 }

@@ -29,10 +29,10 @@ class Batch9 {
     def continued(a, b) {
         final @Deprecated q = 1
         def r = a || \
-        // c
-        b
+            // c
+            b
         def s = a || \
-        /* c */ b
+            /* c */ b
         def t = a && \
             b
         r && s && t
