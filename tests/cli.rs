@@ -418,6 +418,84 @@ fn spock_unasserted_predicate_calls() {
     );
 }
 
+/// #218, as seen with Spock 2.4: what a with { } holds is asserted, but not what a .each { }
+/// in it holds; Groovy's `it.with { }` in a .each { } drops its conditions too.
+#[test]
+fn spock_unasserted_with_and_each() {
+    let d = Dir::new("spock-with-each");
+    d.write(
+        "WithSpec.groovy",
+        "class WithSpec extends Specification {
+    def 'w'() {
+        when:
+        def x = f()
+
+        then:
+        x.with {
+            a == 1
+            if (b) {
+                a == 2
+            }
+            items.each {
+                it == 5
+            }
+        }
+        x.items.each {
+            it.with {
+                a == 2
+            }
+            it.startsWith \"y\"
+            with(it) {
+                a == 2
+            }
+        }
+    }
+}
+",
+    );
+    let text = stdout(&run(&d.0, &["--lint"], None));
+    let found: Vec<&str> = text
+        .lines()
+        .filter(|s| s.contains("SpockUnassertedCondition"))
+        .map(|s| s.split(": ").next().unwrap_or(""))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            "WithSpec.groovy:13:17",
+            "WithSpec.groovy:18:17",
+            "WithSpec.groovy:20:13"
+        ],
+        "{text}"
+    );
+}
+
+/// #218: Gradle 9.0 removed the plugin conventions, so `sourceCompatibility = 11` at the top
+/// level fails there; reported only under a wrapper pinning 9 or later.
+#[test]
+fn gradle_removed_conventions_follow_the_wrapper() {
+    let src = "apply plugin: 'application'\nsourceCompatibility = 11\nmainClassName = 'a.B'\njava { targetCompatibility = 11 }\napplication { applicationName = 'x' }\n";
+    let wrapper = |v: &str| {
+        format!("distributionUrl=https\\://services.gradle.org/distributions/gradle-{v}-bin.zip\n")
+    };
+    let hits = |v: &str| {
+        let d = project(
+            &format!("gradle-conventions-{v}"),
+            &[
+                ("build.gradle", src),
+                ("gradle/wrapper/gradle-wrapper.properties", &wrapper(v)),
+            ],
+        );
+        let text = stdout(&run(&d.0, &["--lint"], None));
+        text.lines()
+            .filter(|l| l.contains("GradleRemovedApi"))
+            .map(|l| l.split(": ").next().unwrap_or("").to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(hits("9.0.0"), ["build.gradle:2:1", "build.gradle:3:1"]);
+    assert_eq!(hits("8.14.4"), Vec::<String>::new());
+}
+
 const BROKEN_AT: &str =
     "Broken.groovy:1:10: could not parse: expected `}` to close the `{` on line 1\n";
 

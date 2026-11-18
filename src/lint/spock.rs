@@ -282,7 +282,7 @@ fn feature(src: &str, body: Node, v: &mut Vec<Violation>) {
             table.row(src, stmt, v);
         }
         if matches!(last, B::Then | B::Expect) {
-            unasserted(src, stmt, None, v);
+            unasserted(src, stmt, None, false, v);
         }
     }
     if !successors(last).contains(&B::End) {
@@ -346,16 +346,27 @@ const DISCARDING: &[&str] = &["each", "eachWithIndex", "reverseEach", "forEach",
 /// expression statements. A comparison nested in `if`, a loop, `switch`, `try` or a
 /// `.each { }` closure is evaluated and dropped (checked with Spock 2.4). `inside` names
 /// the construct around `n` once it is no longer at the top level (for a closure, its
-/// method's name).
-fn unasserted<'a>(src: &'a str, n: Node, inside: Option<&'a str>, v: &mut Vec<Violation>) {
-    let inside = match n.kind() {
-        "if_statement" => Some("an if"),
-        "for_statement" | "for_in_statement" | "while_statement" | "do_while_statement" => {
-            Some("a loop")
+/// method's name). `with` is set in a `with { }` or `verifyAll { }` closure Spock asserts:
+/// there it asserts what an `if` or a loop holds too, but not what a `.each { }` closure
+/// holds (`x.with { xs.each { it == 2 } }`). In a closure that drops its conditions, Groovy's
+/// `it.with { }` drops them too, unlike Spock's own `with(it) { }` (all checked with Spock 2.4).
+fn unasserted<'a>(
+    src: &'a str,
+    n: Node,
+    inside: Option<&'a str>,
+    with: bool,
+    v: &mut Vec<Violation>,
+) {
+    let (inside, with) = match n.kind() {
+        "if_statement" if !with => (Some("an if"), false),
+        "for_statement" | "for_in_statement" | "while_statement" | "do_while_statement"
+            if !with =>
+        {
+            (Some("a loop"), false)
         }
-        "switch_case" | "switch_default" => Some("a switch"),
-        "try_statement" => Some("a try"),
-        "synchronized_statement" => Some("a synchronized block"),
+        "switch_case" | "switch_default" if !with => (Some("a switch"), false),
+        "try_statement" if !with => (Some("a try"), false),
+        "synchronized_statement" if !with => (Some("a synchronized block"), false),
         // anything a closure's method may run, or not, as it likes; and classes and lambdas
         "closure" => {
             let call = n
@@ -363,21 +374,23 @@ fn unasserted<'a>(src: &'a str, n: Node, inside: Option<&'a str>, v: &mut Vec<Vi
                 .filter(|p| p.kind() == "argument_list")
                 .map_or(n.parent(), |a| a.parent())
                 .filter(|c| c.kind() == "method_invocation");
-            let name = call
-                .and_then(|c| c.child_by_field_name("function"))
-                .map(|f| f.child_by_field_name("field").unwrap_or(f));
-            match name.map(|f| text(f, src)) {
-                Some(m) if DISCARDING.contains(&m) => Some(m),
+            let f = call.and_then(|c| c.child_by_field_name("function"));
+            let field = f.and_then(|f| f.child_by_field_name("field"));
+            match field.or(f).map(|f| text(f, src)) {
+                Some(m) if DISCARDING.contains(&m) => (Some(m), false),
+                // `x.with { }`, Groovy's, in a closure that drops its conditions
+                Some("with") if inside.is_some() && field.is_some() => (inside, false),
+                Some("with" | "verifyAll") if inside.is_none() => (None, true),
                 _ => return,
             }
         }
         "lambda_expression" | "class_body" | "switch_arrow_case" => return,
-        _ => inside,
+        _ => (inside, with),
     };
     if let Some(ctx) = inside
-        && n.kind() == "expression_statement"
-        && let Some(e) = n.named_child(0)
-        && is_condition(e, src)
+        && (n.kind() == "expression_statement"
+            && n.named_child(0).is_some_and(|e| is_condition(e, src))
+            || n.kind() == "command_chain" && is_predicate(n, src))
     {
         let ctx = if DISCARDING.contains(&ctx) {
             format!("a .{ctx} {{ }} closure")
@@ -392,7 +405,7 @@ fn unasserted<'a>(src: &'a str, n: Node, inside: Option<&'a str>, v: &mut Vec<Vi
         return;
     }
     for c in n.named_children(&mut n.walk()) {
-        unasserted(src, c, inside, v);
+        unasserted(src, c, inside, with, v);
     }
 }
 
@@ -445,7 +458,8 @@ const PREDICATES: &[&str] = &[
 ];
 
 /// A call named in PREDICATES on a receiver, with no closure, and no assertion call
-/// (`assertThat`, `expect`, `verify`, `that`, ...) anywhere in the receiver chain.
+/// (`assertThat`, `expect`, `verify`, `that`, ...) anywhere in the receiver chain. `e` may
+/// be a command chain of one argument: `it.startsWith "a"`.
 fn is_predicate<'a>(e: Node<'a>, src: &'a str) -> bool {
     // `x.m` or `x?.m`
     let member = |f: Node<'a>| {
@@ -454,6 +468,7 @@ fn is_predicate<'a>(e: Node<'a>, src: &'a str) -> bool {
     };
     let name = |call: Node<'a>| {
         call.child_by_field_name("function")
+            .or_else(|| call.child_by_field_name("receiver"))
             .map(|f| (text(member(f).unwrap_or(f), src), f))
     };
     let Some((m, f)) =
@@ -461,7 +476,13 @@ fn is_predicate<'a>(e: Node<'a>, src: &'a str) -> bool {
     else {
         return false;
     };
-    if !PREDICATES.contains(&m) || e.child_by_field_name("closure").is_some() {
+    if !PREDICATES.contains(&m)
+        || e.child_by_field_name("closure").is_some()
+        || e.kind() == "command_chain"
+            && (e.named_child_count() != 2
+                || e.child_by_field_name("argument")
+                    .is_none_or(|a| a.kind() == "closure"))
+    {
         return false;
     }
     let mut r = f.child_by_field_name("object");
@@ -789,6 +810,25 @@ mod tests {
                 "expect:\nif (a) {\n$('body').text().contains('x') || o.isPresent()\n}",
                 5,
             ),
+            // #218: a .each { } in a with { } or verifyAll { }, Groovy's `it.with { }` in a
+            // .each { } or an if, and a predicate called without parentheses
+            ("when:\nf()\nthen:\nx.with {\nxs.each {\nit == 5\n}\n}", 8),
+            ("when:\nf()\nthen:\nwith(x) {\nxs.each {\nit == 5\n}\n}", 8),
+            (
+                "when:\nf()\nthen:\nverifyAll(x) {\nif (c) {\nxs.each { it == 5 }\n}\n}",
+                8,
+            ),
+            ("when:\nf()\nthen:\nxs.each {\nit.with {\na == 2\n}\n}", 8),
+            (
+                "when:\nf()\nthen:\nxs.each {\nit.with {\nif (b) {\na == 2\n}\n}\n}",
+                9,
+            ),
+            ("when:\nf()\nthen:\nif (c) {\nx.with {\na == 2\n}\n}", 8),
+            ("when:\nf()\nthen:\nxs.each {\nit.startsWith \"y\"\n}", 7),
+            (
+                "expect:\n[a: [1]].with {\na.each { b -> b.with { c == 2 } }\n}",
+                5,
+            ),
         ] {
             assert_eq!(unasserted(body), vec![line], "{body}");
         }
@@ -807,6 +847,12 @@ mod tests {
             "when:\nf()\nthen:\nverifyEach(xs) {\nif (c) {\nit == 2\n}\n}",
             "when:\nf()\nthen:\nif (c) {\nwith(x) {\na == 2\n}\n}",
             "when:\nf()\nthen:\nxs.each {\nverifyAll {\nit == 2\n}\n}",
+            // #218: Groovy's `x.with { }` at the top level too, even in an if, a loop or a
+            // nested with; and Spock's own with and verifyAll in a .each { }
+            "when:\nf()\nthen:\nx.with {\na == 2\nif (c) {\na == 2\n}\nfor (i in a) {\ni == 5\n}\ny.with {\nb == 1\n}\n}",
+            "when:\nf()\nthen:\nwith(x) {\nif (c) {\na == 2\n}\n}\nxs.each {\nwith(it) {\na == 2\n}\nverifyAll(it) {\na == 2\n}\n}",
+            // a command-call predicate at the top level, or not a predicate
+            "when:\nf()\nthen:\nit.startsWith \"y\"\nxs.each {\nit.add \"y\"\nit.contains { it }\nstartsWith \"y\"\n}",
             // interactions, argument constraints, interaction blocks, response closures
             "when:\nf()\nthen:\n1 * m.foo({ it == 2 })\ninteraction {\n1 * m.foo({ it == 2 })\n}",
             "when:\nf()\nthen:\nif (c) {\n1 * m.foo(2)\n}\n1 * m.foo(_) >> { args -> args[0] == 2 }",

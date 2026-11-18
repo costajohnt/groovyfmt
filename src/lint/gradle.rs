@@ -10,7 +10,9 @@
 //! properties removed in 8.0), https://docs.gradle.org/current/userguide/upgrading_version_8.html
 //! (space assignment deprecated in 8.12, "Upgrading from 8.11 and earlier"),
 //! https://docs.gradle.org/current/userguide/upgrading_version_9.html (multi-string
-//! dependency notation deprecated in 9.1, "Upgrading from 9.0.0 and earlier").
+//! dependency notation deprecated in 9.1, "Upgrading from 9.0.0 and earlier"),
+//! https://docs.gradle.org/current/userguide/upgrading_major_version_9.html (plugin
+//! conventions removed in 9.0, "Removal of conventions").
 
 use super::jenkins::{Call, call, statements};
 use super::{Edit, Violation, at, constant_value, has_interpolation, own_lines};
@@ -76,6 +78,8 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
     let mut plugins = HashSet::new();
     // the script's own methods: its `compile(x)` or `jcenter()` is no configuration (#192)
     let mut methods = HashSet::new();
+    // removed convention properties the script sets, and the extra properties it makes
+    let (mut conventions, mut ext) = (Vec::new(), HashSet::new());
     crate::preorder(root, |n| {
         plugins.extend(applied_plugin(src, n));
         if n.kind() == "method_declaration"
@@ -84,6 +88,7 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
             methods.insert(text(m, src));
         }
         removed_api(src, n, &mut removed, &mut conf_refs);
+        convention(src, n, &mut conventions, &mut ext);
         if let Some(names) = property_scope(src, n)
             && !path
                 .file_name()
@@ -185,6 +190,22 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
     if methods.contains("jcenter") {
         v.retain(|x| x.rule != "GradleJcenter");
     }
+    let project_script = path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .is_some_and(|f| f != "settings.gradle" && !f.ends_with("init.gradle"));
+    // only under a wrapper pinning 9 or later: many builds still pin 8, where these work
+    if project_script && !conventions.is_empty() && wrapper_major(path).is_some_and(|m| m >= 9) {
+        for (s, name, new) in conventions {
+            if !ext.contains(name) && !shadowed(src, s, name) && !gradle_property(path, name) {
+                v.push(at(
+                    s,
+                    "GradleRemovedApi",
+                    format!("The project property `{name}` was removed in Gradle 9.0 with the plugin conventions; use {new}"),
+                ));
+            }
+        }
+    }
     if removed.is_empty() {
         return;
     }
@@ -196,6 +217,150 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
             v.push(at(n, "GradleRemovedApi", msg));
         }
     }
+}
+
+/// Project properties that came from plugin conventions, which Gradle 9.0 removed (the java,
+/// base, application, war, ear and project-report plugins'), and their replacements. Each
+/// was checked to work under Gradle 8.14.4 and to fail under 9.0.0 and 9.9.1, and each
+/// replacement to work under both.
+const CONVENTIONS: &[(&str, &str)] = &[
+    ("sourceCompatibility", "java { sourceCompatibility = ... }"),
+    ("targetCompatibility", "java { targetCompatibility = ... }"),
+    ("docsDirName", "java { docsDir = ... }"),
+    ("testResultsDirName", "java { testResultsDir = ... }"),
+    ("testReportDirName", "java { testReportDir = ... }"),
+    ("archivesBaseName", "base { archivesName = ... }"),
+    ("distsDirName", "base { distsDirectory = ... }"),
+    ("libsDirName", "base { libsDirectory = ... }"),
+    ("mainClassName", "application { mainClass = ... }"),
+    ("applicationName", "application { applicationName = ... }"),
+    (
+        "applicationDefaultJvmArgs",
+        "application { applicationDefaultJvmArgs = ... }",
+    ),
+    ("executableDir", "application { executableDir = ... }"),
+    ("webAppDirName", "the war task's webAppDirectory"),
+    ("appDirName", "the ear task's appDirectory"),
+    ("libDirName", "the ear task's libDirName"),
+    (
+        "projectReportDirName",
+        "the report tasks' own output settings",
+    ),
+];
+
+/// Blocks that run against a project, where a name falls through to the project's
+/// properties.
+const PROJECT_BLOCKS: &[&str] = &[
+    "allprojects",
+    "subprojects",
+    "project",
+    "configure",
+    "afterEvaluate",
+];
+
+/// GradleRemovedApi on a removed convention property (`CONVENTIONS`) set at the project
+/// level: `sourceCompatibility = 11` or `project.archivesBaseName = 'x'` at the top level of
+/// the script or in a `PROJECT_BLOCKS` block, and `mainClassName` in `application { }` or
+/// `archivesBaseName` in `base { }`, which fall through to the project too. Not in `java { }`
+/// or a task's block, which have properties of these names. Only setting is reported: a read
+/// may be of an extra property another script makes. Also gathers, into `ext`, the names
+/// the script makes extra properties of (`ext.x = `, `ext { x = }`), which it can then set.
+/// Report-only: `java { sourceCompatibility = v }` reads the names in `v` against the
+/// extension first, so moving the value there can change what it means.
+fn convention<'a>(
+    src: &'a str,
+    s: Node<'a>,
+    out: &mut Vec<(Node<'a>, &'a str, &'static str)>,
+    ext: &mut HashSet<&'a str>,
+) {
+    let Some(left) = s
+        .named_child(0)
+        .filter(|a| s.kind() == "expression_statement" && a.kind() == "assignment_expression")
+        .and_then(|a| a.child_by_field_name("left"))
+    else {
+        return;
+    };
+    let field = left.child_by_field_name("field");
+    let object = left.child_by_field_name("object").map(|o| text(o, src));
+    // `ext.x = `, `project.ext.x = `
+    if let (Some(f), Some(o)) = (field, object)
+        && (o == "ext" || o.ends_with(".ext"))
+    {
+        ext.insert(text(f, src));
+    }
+    let name = match left.kind() {
+        "identifier" => text(left, src),
+        "field_access" if object == Some("project") => field.map_or("", |f| text(f, src)),
+        _ => return,
+    };
+    let closures = || {
+        std::iter::successors(s.parent(), |p| p.parent())
+            .filter(|p| p.kind() == "closure")
+            .map(|cl| {
+                cl.parent()
+                    .and_then(|p| {
+                        if p.kind() == "argument_list" {
+                            p.parent()
+                        } else {
+                            Some(p)
+                        }
+                    })
+                    .and_then(|m| match m.kind() {
+                        "method_invocation" => m.child_by_field_name("function"),
+                        // `allprojects { }`
+                        "command_chain" => m.child_by_field_name("receiver"),
+                        _ => None,
+                    })
+                    .map_or("", |f| text(f, src))
+            })
+    };
+    if left.kind() == "identifier"
+        && closures()
+            .next()
+            .is_some_and(|o| o == "ext" || o.ends_with(".ext"))
+    {
+        ext.insert(name);
+    }
+    let Some((_, new)) = CONVENTIONS.iter().find(|c| c.0 == name) else {
+        return;
+    };
+    let project = closures().all(|o| {
+        PROJECT_BLOCKS.contains(&o)
+            || (o == "application" && name == "mainClassName")
+            || (o == "base" && matches!(name, "archivesBaseName" | "distsDirName" | "libsDirName"))
+    });
+    if project
+        && !std::iter::successors(s.parent(), |p| p.parent()).any(|p| p.kind() == "class_body")
+    {
+        out.push((s, name, new));
+    }
+}
+
+/// Whether a `gradle.properties` in the script's directory, or one above it up to the
+/// wrapper's, sets `name`: then it is a project property, which a build can still set
+/// (checked with Gradle 9.9.1).
+fn gradle_property(path: &Path, name: &str) -> bool {
+    let dir = path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    for d in dir.ancestors() {
+        let sets = read_small(&d.join("gradle.properties"), MAX_WRAPPER_BYTES).is_some_and(|p| {
+            p.lines().any(|l| {
+                l.trim_start()
+                    .strip_prefix(name)
+                    .is_some_and(|r| r.is_empty() || r.starts_with([' ', '\t', '=', ':']))
+            })
+        });
+        if sets {
+            return true;
+        }
+        if d.join("gradle/wrapper/gradle-wrapper.properties").is_file() {
+            return false;
+        }
+    }
+    false
 }
 
 /// Adds to `declared` the configurations `n` makes: the names a `configurations { }` block
@@ -1409,6 +1574,56 @@ mod tests {
         assert_eq!(run("6.9"), vec![1]);
         assert_eq!(run("7.6"), vec![1, 2]);
         assert_eq!(run("8.14"), vec![1, 2, 3]);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Gradle 9.0's convention removals (#218), each checked under Gradle 8.14.4 and 9.0.0.
+    #[test]
+    fn removed_conventions() {
+        let root =
+            std::env::temp_dir().join(format!("groovyfmt-convention-{}", std::process::id()));
+        let sub = root.join("sub");
+        std::fs::create_dir_all(root.join("gradle/wrapper")).unwrap();
+        std::fs::create_dir_all(&sub).unwrap();
+        let props = root.join("gradle/wrapper/gradle-wrapper.properties");
+        let wrapper = |v: &str| {
+            std::fs::write(&props, format!("distributionUrl=https\\://services.gradle.org/distributions/gradle-{v}-bin.zip\n")).unwrap()
+        };
+        let lines = |dir: &Path, name: &str, src: &str| {
+            rules(dir.join(name).to_str().unwrap(), src)
+                .iter()
+                .filter(|r| r.0 == "GradleRemovedApi")
+                .map(|r| r.1)
+                .collect::<Vec<_>>()
+        };
+        let src = "apply plugin: 'application'\nsourceCompatibility = 1.8\nproject.targetCompatibility = '11'\nmainClassName = 'a.B'\narchivesBaseName = 'x'\napplicationDefaultJvmArgs += ['-X']\nif (ci) { libsDirName = 'l' }\nallprojects { docsDirName = 'd' }\nsubprojects {\n    afterEvaluate { webAppDirName = 'w' }\n}\nproject(':a') { appDirName = 'a' }\napplication { mainClassName = 'a.B' }\nbase { archivesBaseName = 'y' }\n";
+        wrapper("9.0.0");
+        assert_eq!(
+            lines(&root, "build.gradle", src),
+            vec![2, 3, 4, 5, 6, 7, 8, 10, 12, 13, 14]
+        );
+        // under Gradle 8, or with no wrapper, quiet: many builds still pin 8
+        wrapper("8.14.4");
+        assert_eq!(lines(&root, "build.gradle", src), Vec::<usize>::new());
+        assert_eq!(rules("build.gradle", src), vec![]);
+        wrapper("9.9.1");
+        // the new forms, a task's own properties, a read, an extra property the script
+        // makes, a local variable, a class's code, a settings script
+        let quiet = "java {\n    sourceCompatibility = 11\n    targetCompatibility = 11\n}\napplication {\n    mainClass = 'a.B'\n    applicationName = 'x'\n    executableDir = 'b'\n}\nbase { archivesName = 'x' }\ncompileJava { sourceCompatibility = 11 }\ntasks.withType(JavaCompile) { targetCompatibility = 11 }\ntasks.named('x').configure { sourceCompatibility = 11 }\nshadowJar { mainClassName = 'a.B' }\njar { manifest { attributes 'Main-Class': mainClassName } }\next.executableDir = 'b'\nexecutableDir = 'c'\next {\n    webAppDirName = 'w'\n}\nwebAppDirName = 'v'\ndef appDirName = 'a'\nappDirName = 'z'\nclass C { def f() { libDirName = 1 } }\nfoo.mainClassName = 'x'\n";
+        assert_eq!(lines(&root, "build.gradle", quiet), Vec::<usize>::new());
+        assert_eq!(
+            lines(&root, "settings.gradle", "sourceCompatibility = 1"),
+            Vec::<usize>::new()
+        );
+        // a gradle.properties up to the wrapper's directory that sets it makes it a project
+        // property, which a build can set
+        let src = "mainClassName = 'a.B'\nsourceCompatibility = 1.8\n";
+        assert_eq!(lines(&sub, "build.gradle", src), vec![1, 2]);
+        std::fs::write(sub.join("gradle.properties"), "# x\nmainClassName=a.C\n").unwrap();
+        std::fs::write(root.join("gradle.properties"), "sourceCompatibility : 8\n").unwrap();
+        assert_eq!(lines(&sub, "build.gradle", src), Vec::<usize>::new());
+        std::fs::write(root.join("gradle.properties"), "sourceCompatibilityX=8\n").unwrap();
+        assert_eq!(lines(&sub, "build.gradle", src), vec![2]);
         std::fs::remove_dir_all(&root).unwrap();
     }
 
