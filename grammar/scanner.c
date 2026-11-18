@@ -46,6 +46,7 @@ enum TokenType {
     SEALED_KEYWORD,
     COMMAND_KEYWORD_ARGUMENT,
     DIMENSION_ANNOTATION_START,
+    COMMAND_OPERAND,
     ERROR_SENTINEL,
 };
 
@@ -70,6 +71,7 @@ static inline bool is_ident_part(int32_t c) {
 static bool finish_command_named_key(TSLexer *lexer, const bool *valid_symbols,
                                      const char *word, unsigned len);
 static unsigned read_word(TSLexer *lexer, char *word, unsigned size);
+static bool else_follows(TSLexer *lexer);
 
 static bool scan_command_named_key(TSLexer *lexer, const bool *valid_symbols) {
     while (lexer->lookahead == ' ' || lexer->lookahead == '\t') {
@@ -108,6 +110,48 @@ static bool is_name_argument(const char *word, unsigned len) {
         || (len == 7 && memcmp(word, "default", 7) == 0));
 }
 
+static inline bool is_operator_char(int32_t c) {
+    return c == '+' || c == '-' || c == '*' || c == '%' || c == '<' || c == '>' || c == '&'
+        || c == '|' || c == '^' || c == '=' || c == '!';
+}
+
+// `_command_operand`, with the lexer at an operator character after the name:
+// a binary operator (none that is a node of its own, an assignment or `/`,
+// which may start a comment), the rest of the line, and an `else` starting
+// the next one.
+static bool finish_command_operand(TSLexer *lexer) {
+    static const char *const ops[] = {
+        "+", "-", "*", "%", "<<", ">>", ">>>", "<", "<=", ">", ">=",
+        "==", "!=", "&", "^", "|", "&&", "||",
+    };
+    char op[5];
+    unsigned len = 0;
+    while (is_operator_char(lexer->lookahead)) {
+        if (len == sizeof(op) - 1) {
+            return false;
+        }
+        op[len++] = (char)lexer->lookahead;
+        lexer->advance(lexer, false);
+    }
+    op[len] = '\0';
+    bool known = false;
+    for (unsigned i = 0; i < sizeof(ops) / sizeof(ops[0]); i++) {
+        known |= strcmp(op, ops[i]) == 0;
+    }
+    // `==~` and `=~` are regex matches, not `== ~x`.
+    if (!known || lexer->lookahead == '~') {
+        return false;
+    }
+    while (!lexer->eof(lexer) && lexer->lookahead != '\n') {
+        lexer->advance(lexer, false);
+    }
+    if (!else_follows(lexer)) {
+        return false;
+    }
+    lexer->result_symbol = COMMAND_OPERAND;
+    return true;
+}
+
 // The rest of `scan_command_named_key`, once the identifier is read.
 static bool finish_command_named_key(TSLexer *lexer, const bool *valid_symbols,
                                      const char *word, unsigned len) {
@@ -129,6 +173,13 @@ static bool finish_command_named_key(TSLexer *lexer, const bool *valid_symbols,
         lexer->advance(lexer, false);
     }
     int32_t n = lexer->lookahead;
+    // `if (c) o.f a - b` then `else`: the name a binary operator follows, as
+    // the first operand of a braceless if body's one command argument. None of
+    // the tokens below starts with an operator, so a miss returns false.
+    if (valid_symbols[COMMAND_OPERAND] && is_name_argument(word, len)
+        && !(len == 4 && memcmp(word, "else", 4) == 0) && is_operator_char(n)) {
+        return finish_command_operand(lexer);
+    }
     if (n == ':' && valid_symbols[COMMAND_NAMED_KEY]) {
         lexer->advance(lexer, false);
         if (lexer->lookahead == ':') {
@@ -1087,7 +1138,7 @@ bool tree_sitter_groovy_external_scanner_scan(
                 return true;
             }
             if (valid_symbols[COMMAND_NAMED_KEY] || valid_symbols[COMMAND_NAME_ARGUMENT]
-                || valid_symbols[CLOSURE_COMMAND_ARGUMENT]) {
+                || valid_symbols[CLOSURE_COMMAND_ARGUMENT] || valid_symbols[COMMAND_OPERAND]) {
                 return finish_command_named_key(lexer, valid_symbols, word, len);
             }
             return false;
