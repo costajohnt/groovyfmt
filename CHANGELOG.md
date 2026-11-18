@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- A Docker image, `ghcr.io/costajohnt/groovyfmt`, for linux/amd64 and linux/arm64, is published with each release, starting with 0.29.0: `docker run --rm -v "$PWD:/src" -w /src ghcr.io/costajohnt/groovyfmt --check`.
+
 ## 0.29.0 (2026-11-18)
 
 ### Fixed

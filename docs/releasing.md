@@ -166,11 +166,10 @@ A version can't be replaced once published, only yanked. Once a CI publish has w
 
 ## Channels not published yet
 
-The repository, the Homebrew tap, crates.io, npm and the Visual Studio Marketplace are live. To switch on the rest:
+The repository, the Homebrew tap, crates.io, npm, the Visual Studio Marketplace and the ghcr.io image (since 0.29.0) are live. To switch on the rest:
 
-1. Docker: set `PUBLISH_IMAGE`. After the next release, make the package public and check that `docker run --rm ghcr.io/costajohnt/groovyfmt --version` prints the new version.
-2. Gradle plugin: create the portal account and API key secrets as above, then set `PUBLISH_GRADLE_PLUGIN`.
-3. Open VSX: create the namespace and `OVSX_PAT` as above, then set `PUBLISH_OPENVSX`.
-4. JetBrains plugin: create the vendor, upload the first version by hand and store the token (and the signing secrets, if signing) as above, then set `PUBLISH_JETBRAINS`.
-5. Push the next release tag and check that the new jobs succeeded.
-6. In `README.md` (Install) and `docs/ci.md` (Gradle), drop the "not published yet" lines for each channel that is now published.
+1. Gradle plugin: create the portal account and API key secrets as above, then set `PUBLISH_GRADLE_PLUGIN`.
+2. Open VSX: create the namespace and `OVSX_PAT` as above, then set `PUBLISH_OPENVSX`.
+3. JetBrains plugin: create the vendor, upload the first version by hand and store the token (and the signing secrets, if signing) as above, then set `PUBLISH_JETBRAINS`.
+4. Push the next release tag and check that the new jobs succeeded.
+5. In `README.md` (Install) and `docs/ci.md` (Gradle), drop the "not published yet" lines for each channel that is now published.

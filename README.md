@@ -51,11 +51,12 @@ test/groovy/BaseTest.groovy:2:1: UnusedImport: The [mock.CurrentBuild] import is
 brew install costajohnt/tap/groovyfmt       # macOS, Linux
 npm install --save-dev groovyfmt            # or: npx groovyfmt --check
 cargo install --locked groovyfmt            # Rust 1.90+ and a C compiler
+docker run --rm -v "$PWD:/src" -w /src ghcr.io/costajohnt/groovyfmt --check
 ```
 
 Prebuilt binaries for Linux (static musl), macOS and Windows, each with a `.sha256`, are on every [release](https://github.com/costajohnt/groovyfmt/releases). See also [Windows](https://github.com/costajohnt/groovyfmt/blob/main/docs/windows.md).
 
-Not published yet: the Gradle plugin on the Gradle Plugin Portal (it works from a checkout) and a Docker image.
+Not published yet: the Gradle plugin on the Gradle Plugin Portal (it works from a checkout).
 
 ## Usage
 
