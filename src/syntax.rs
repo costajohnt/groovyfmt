@@ -200,10 +200,9 @@ fn rejected(src: &str, tree: &Tree) -> Vec<SyntaxError> {
             .is_some_and(|o| !matches!(o.kind(), "method_declaration" | "constructor_declaration")),
         _ => false,
     };
-    // Found from the `{`s that open a method's body, after its `)`, which costs less than a
-    // walk of the tree. ponytail: a method with a `throws` clause is missed.
+    // Found from the `{`s that open a method's body, which costs less than a walk of the tree.
     for (i, _) in src.match_indices('{') {
-        if !src[..i].trim_end().ends_with(')') {
+        if !declaration_before(src, i) {
             continue;
         }
         let Some(n) = root
@@ -243,6 +242,40 @@ fn rejected(src: &str, tree: &Tree) -> Vec<SyntaxError> {
         }
     }
     out
+}
+
+/// Whether the text before the `{` at `i` reads `word name(...)`, as a method declaration's
+/// does (`def f(n)`, `String g()`), so a call's `f(x) {` costs no lookup in the tree.
+// ponytail: parentheses in a parameter's default string, and a `throws` clause, hide a method.
+fn declaration_before(src: &str, i: usize) -> bool {
+    let b = src[..i].trim_end().as_bytes();
+    if b.last() != Some(&b')') {
+        return false;
+    }
+    // a parameter list is short: looking further back for its `(` only costs time
+    let from = b.len().saturating_sub(4096);
+    let mut depth = 0;
+    let Some(open) = b[from..].iter().rposition(|&c| {
+        depth += match c {
+            b')' => 1,
+            b'(' => -1,
+            _ => 0,
+        };
+        depth == 0
+    }) else {
+        return false;
+    };
+    let open = from + open;
+    let word = |c: &u8| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'$';
+    let before = src[..open].trim_end_matches([' ', '\t']).as_bytes();
+    let name = before.iter().rev().take_while(|c| word(c)).count();
+    let rest = &before[..before.len() - name];
+    let kept = rest.trim_ascii_end();
+    name > 0
+        && kept.len() < rest.len()
+        && kept
+            .last()
+            .is_some_and(|c| word(c) || matches!(c, b'>' | b']'))
 }
 
 fn at(src: &str, n: Node, message: &str) -> SyntaxError {
