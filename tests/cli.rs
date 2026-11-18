@@ -4589,6 +4589,41 @@ fn config_symlinks_outside_git_and_into_a_superproject_are_followed() {
 
 #[cfg(unix)]
 #[test]
+fn a_config_symlink_in_a_nested_repository_stays_in_it() {
+    use std::os::unix::fs::symlink;
+    // `Dir` is the outer repository (a dotfiles repository at home, say)
+    let d = Dir::new("config-link-nested");
+    d.write("shared/style.toml", "indent = 2\n");
+    for (repo, gitdir) in [
+        // a repository of its own inside another
+        ("inner", None),
+        // a `.git` file that doesn't point into the outer repository's modules
+        ("worktree", Some("gitdir: ../elsewhere/worktree.git\n")),
+    ] {
+        match gitdir {
+            None => std::fs::create_dir_all(d.0.join(repo).join(".git")).unwrap(),
+            Some(g) => {
+                d.write(&format!("{repo}/.git"), g);
+            }
+        }
+        d.write(&format!("{repo}/A.groovy"), "class A {\ndef f() {}\n}\n");
+        symlink(
+            "../shared/style.toml",
+            d.0.join(repo).join(".groovyfmt.toml"),
+        )
+        .unwrap();
+        let o = run(&d.0.join(repo), &["A.groovy"], None);
+        assert_eq!(o.status.code(), Some(2), "{repo}: {}", stderr(&o));
+        assert!(
+            stderr(&o).contains("a config symlink must point inside the repository"),
+            "{repo}: {}",
+            stderr(&o)
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn a_file_name_that_is_not_utf8_is_formatted() {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;

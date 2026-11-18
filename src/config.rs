@@ -268,15 +268,14 @@ impl Config {
 /// A config file found by discovery (not `--config`, the user's choice) that is a symlink
 /// in a repository must point inside it: a pull request can commit the link, and a read
 /// outside could show another file's content in a parse error. The repository is the
-/// outermost directory above the link holding `.git`, so a submodule's link into its
-/// superproject is fine. Outside git there is no pull request, and no check (a home
-/// directory's config linked into a Nix store). As for the baseline (`baseline::confined`).
+/// nearest directory above the link holding `.git` (`repository`). Outside git there is no
+/// pull request, and no check (a home directory's config linked into a Nix store). As for
+/// the baseline (`baseline::confined`).
 fn linked_inside(file: &Path) -> Result<(), String> {
     if !std::fs::symlink_metadata(file).is_ok_and(|m| m.file_type().is_symlink()) {
         return Ok(());
     }
-    let dir = file.parent().unwrap_or(file);
-    let Some(root) = dir.ancestors().filter(|d| d.join(".git").exists()).last() else {
+    let Some(root) = repository(file.parent().unwrap_or(file)) else {
         return Ok(());
     };
     let outside = || {
@@ -292,6 +291,47 @@ fn linked_inside(file: &Path) -> Result<(), String> {
     } else {
         Err(outside())
     }
+}
+
+/// The repository holding `dir`: the nearest directory at or above it with `.git`; for a
+/// submodule (a `.git` file whose `gitdir:` is in an enclosing repository's `modules`), the
+/// enclosing repository, and so on outward. Not a dotfiles repository around the project:
+/// it holds the project's directory, not its git directory.
+fn repository(dir: &Path) -> Option<PathBuf> {
+    let mut root = dir
+        .ancestors()
+        .find(|d| d.join(".git").exists())?
+        .to_path_buf();
+    loop {
+        let Some(own) = git_dir(&root).filter(|_| root.join(".git").is_file()) else {
+            return Some(root);
+        };
+        let outer = root.parent().and_then(|p| {
+            p.ancestors()
+                .find(|d| git_dir(d).is_some_and(|g| own.starts_with(g.join("modules"))))
+        });
+        match outer {
+            Some(o) => root = o.to_path_buf(),
+            None => return Some(root),
+        }
+    }
+}
+
+/// The git directory of the repository at `d`: `d/.git`, or where a `.git` file's
+/// `gitdir:` points, lexically normalized.
+fn git_dir(d: &Path) -> Option<PathBuf> {
+    let git = d.join(".git");
+    if git.is_dir() {
+        return Some(normalize(&git));
+    }
+    let mut text = String::new();
+    std::fs::File::open(&git)
+        .ok()?
+        .take(4096)
+        .read_to_string(&mut text)
+        .ok()?;
+    let to = text.lines().next()?.strip_prefix("gitdir:")?.trim();
+    Some(normalize(&d.join(to)))
 }
 
 /// `a/./b/../c` as `a/c`, without touching the file system (the path may not exist).
