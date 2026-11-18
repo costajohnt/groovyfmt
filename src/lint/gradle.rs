@@ -96,8 +96,9 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
     let mut methods = HashSet::new();
     // removed convention properties the script sets, and the extra properties it makes
     let (mut conventions, mut ext) = (Vec::new(), HashSet::new());
-    // reads of removed convention properties (`READS`)
-    let mut reads = Vec::new();
+    // reads of removed convention properties (`READS`), and the names the script tests
+    // with `hasProperty('x')`, which it reads as extra properties (#248)
+    let (mut reads, mut tested) = (Vec::new(), HashSet::new());
     // `exec { }` and `javaexec { }` on the project or script
     let mut execs = Vec::new();
     let mut applies_script = false;
@@ -115,6 +116,7 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
         execs.extend(project_exec(src, n));
         convention(src, n, &mut conventions, &mut ext);
         reads.extend(convention_read(src, n));
+        tested.extend(has_property(src, n));
         if let Some(names) = property_scope(src, n)
             && !path
                 .file_name()
@@ -264,6 +266,7 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
         let nearby_ext = std::cell::OnceCell::new();
         for (n, name, new, since) in reads {
             if !ext.contains(name)
+                && !tested.contains(name)
                 && !shadowed(src, n, name)
                 && !gradle_property(path, name)
                 && !nearby_ext
@@ -681,6 +684,21 @@ fn convention_read<'a>(
     let in_code = std::iter::successors(n.parent(), |p| p.parent())
         .any(|p| matches!(p.kind(), "class_body" | "method_declaration"));
     (!in_code).then_some((n, *name, *new, *since))
+}
+
+/// The name in `hasProperty('x')` or `project.hasProperty('x')`: a script that tests for
+/// it treats it as an extra property its subprojects may set (`ext.x = `), which Gradle 9
+/// still resolves.
+fn has_property<'a>(src: &'a str, n: Node<'a>) -> Option<&'a str> {
+    let f = n
+        .child_by_field_name("function")
+        .filter(|_| n.kind() == "method_invocation")?;
+    if !matches!(text(f, src), "hasProperty" | "project.hasProperty") {
+        return None;
+    }
+    let arg = n.child_by_field_name("arguments")?.named_child(0)?;
+    let t = text(arg, src);
+    (arg.kind() == "string_literal" && !t.contains('$')).then(|| t.trim_matches(['\'', '"']))
 }
 
 /// Whether a bare name at `n` falls through to the project (`convention_read`): every
@@ -1113,12 +1131,46 @@ fn last(t: &str) -> &str {
     t.rsplit('.').next().unwrap_or(t)
 }
 
+/// `org.gradle.util` classes Gradle 9.0 removed: an import of one fails the script's
+/// compilation ("unable to resolve class"). Each import checked to work under 8.14.4 and
+/// fail under 9.9.1; the package's `GradleVersion`, `Path` and `Configurable` remain (#248).
+const REMOVED_UTIL: &[&str] = &[
+    "ClosureBackedAction",
+    "CollectionUtils",
+    "ConfigureUtil",
+    "DistributionLocator",
+    "GFileUtils",
+    "GUtil",
+    "NameMatcher",
+    "NameValidator",
+    "RelativePathUtil",
+    "SingleMessageLogger",
+    "TextUtil",
+    "VersionNumber",
+    "WrapUtil",
+];
+
 fn removed_api<'a>(
     src: &'a str,
     n: Node<'a>,
     out: &mut Vec<(Node<'a>, String, u32)>,
     conf_refs: &mut Vec<(Node<'a>, &'a str)>,
 ) {
+    // import org.gradle.util.VersionNumber, import static org.gradle.util.GUtil.x
+    // ponytail: imports only; a fully qualified use in code is rare, add it if seen
+    if n.kind() == "import_declaration"
+        && let Some(name) = n.child_by_field_name("name")
+        && let Some(class) = text(name, src)
+            .strip_prefix("org.gradle.util.")
+            .and_then(|r| r.split('.').next())
+        && REMOVED_UTIL.contains(&class)
+    {
+        out.push((
+            n,
+            format!("`org.gradle.util.{class}` was removed in Gradle 9.0, so importing it fails; use a library or Gradle's public API instead (GradleVersion for Gradle versions)"),
+            9,
+        ));
+    }
     // configurations.compile
     if n.kind() == "field_access"
         && let (Some(o), Some(f)) = (
@@ -2447,6 +2499,30 @@ mod tests {
     }
 
     #[test]
+    fn removed_gradle_util() {
+        // #248: org.gradle.util classes removed in 9.0, only under a wrapper pinning 9
+        let root = std::env::temp_dir().join(format!("groovyfmt-util-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("gradle/wrapper")).unwrap();
+        let props = root.join("gradle/wrapper/gradle-wrapper.properties");
+        let wrapper = |v: &str| {
+            std::fs::write(&props, format!("distributionUrl=https\\://services.gradle.org/distributions/gradle-{v}-bin.zip\n")).unwrap()
+        };
+        let lines = |src: &str| {
+            rules(root.join("build.gradle").to_str().unwrap(), src)
+                .into_iter()
+                .filter(|r| r.0 == "GradleRemovedApi")
+                .map(|r| r.1)
+                .collect::<Vec<_>>()
+        };
+        let src = "import org.gradle.util.DistributionLocator\nimport org.gradle.util.VersionNumber\nimport static org.gradle.util.GUtil.toCamelCase\nimport org.gradle.util.TextUtil as T\nimport org.gradle.util.GradleVersion\nimport org.gradle.util.Path\nimport org.gradle.util.*\nimport org.gradle.util.internal.VersionNumber\nimport com.x.org.gradle.util.GUtil\n";
+        wrapper("9.9.1");
+        assert_eq!(lines(src), vec![1, 2, 3, 4]);
+        wrapper("8.14.4");
+        assert_eq!(lines(src), Vec::<usize>::new());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn removed_api_skips_a_configuration_the_file_makes() {
         // `configurations { testRuntime }` or reading the name in that block makes it (#145)
         for decl in [
@@ -2583,6 +2659,10 @@ mod tests {
             lines(&root, "settings.gradle", "println sourceCompatibility\n"),
             Vec::<usize>::new()
         );
+        // #248: a name the script tests with hasProperty is an extra property its subprojects
+        // set; another name, an interpolated one, or a set of the tested name still counts
+        let src = "subprojects {\n    tasks.register('e', JavaExec) {\n        if (!project.hasProperty('mainClassName')) { return }\n        mainClass = project.mainClassName\n    }\n}\nif (hasProperty(\"applicationName\")) { println applicationName }\nif (hasProperty('x')) { println project.executableDir }\nif (hasProperty(\"${n}Dir\")) { println project.docsDir }\nif (hasProperty('libsDirName')) { libsDirName = 'l' }\n";
+        assert_eq!(lines(&root, "build.gradle", src), vec![8, 9, 10]);
         // an extra property a script above makes, or a gradle.properties value, can be read
         let src = "println project.archivesBaseName\nprintln mainClassName\nprintln libsDir\n";
         std::fs::write(sub.join("build.gradle"), src).unwrap();

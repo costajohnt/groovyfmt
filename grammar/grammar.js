@@ -2749,10 +2749,11 @@ module.exports = grammar({
       $.spread_map_entry,
     ),
 
+    // The receiver may be dotted (Groovy 3 and 4): `l.add(sc.process f, "x")`.
     // prec.dynamic: in an enum, `E(A b` may also start a constructor's
     // parameters; where both parse, the parameter wins.
     _argument_command: $ => prec.dynamic(-1, seq(
-      field('receiver', $.identifier),
+      field('receiver', choice($.identifier, $.field_access)),
       field('argument', $.identifier),
     )),
 
