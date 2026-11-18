@@ -33,27 +33,100 @@ pub fn check(src: &str) -> (Vec<SyntaxError>, usize) {
 }
 
 /// What the grammar takes leniently and Groovy 2.4, 3 and 4 reject: a shebang after the first
-/// line, as after a license comment. Only the top level holds a shebang.
+/// line, as after a license comment (only the top level holds one); a second `package`
+/// statement; `$(` in a double-quoted string; a label on a `return`'s line, which is a
+/// command call as its value, `return readJSON text: x`. The last two are found from the
+/// text, so a file without them costs no walk of the tree.
 // ponytail: a primitive type name as a variable's name (`{ char -> }`) is rejected by Groovy
 // too, but where the grammar misreads a valid declaration the name lands on `int` or `boolean`,
 // so checking it reported valid files.
 fn rejected(src: &str, tree: &Tree) -> Vec<SyntaxError> {
     let root = tree.root_node();
+    let mut out = Vec::new();
     let mut c = root.walk();
-    root.children(&mut c)
-        .filter(|n| n.kind() == "shebang" && n.start_position().row > 0)
-        .map(|n| {
-            let (line, col) = position(src, n.start_position());
-            let (end_line, end_col) = position(src, n.end_position());
-            SyntaxError {
+    let mut packages = 0;
+    for n in root.children(&mut c) {
+        if n.kind() == "shebang" && n.start_position().row > 0 {
+            out.push(at(
+                src,
+                n,
+                "a shebang (`#!`) must be on the file's first line",
+            ));
+        }
+        if n.kind() == "package_declaration" {
+            packages += 1;
+            if packages > 1 {
+                out.push(at(src, n, "a file has at most one `package` statement"));
+            }
+        }
+    }
+    for (i, _) in src.match_indices("$(") {
+        let escaped = src[..i].bytes().rev().take_while(|&b| b == b'\\').count() % 2 == 1;
+        let in_gstring = root
+            .descendant_for_byte_range(i, i + 1)
+            .filter(|n| n.kind() == "string_fragment")
+            .and_then(|n| n.parent())
+            .is_some_and(|s| s.kind() == "string_literal" && text(s, src).starts_with('"'));
+        if in_gstring && !escaped {
+            let (line, col) = position(src, byte_point(src, i));
+            out.push(SyntaxError {
                 line,
                 col,
-                end_line,
-                end_col,
-                message: "a shebang (`#!`) must be on the file's first line".into(),
-            }
-        })
-        .collect()
+                end_line: line,
+                end_col: col + 2,
+                message:
+                    "`$(` in a double-quoted string: write `${...}`, or `\\$` for a dollar sign"
+                        .into(),
+            });
+        }
+    }
+    for (i, _) in src.match_indices("return") {
+        let Some(r) = root
+            .descendant_for_byte_range(i, i + 6)
+            .filter(|n| n.kind() == "return")
+            .and_then(|n| n.parent())
+            .filter(|r| r.kind() == "return_statement")
+        else {
+            continue;
+        };
+        // Only a label: a name argument (`return foo x`) is rejected too, but where the grammar
+        // misreads a valid value (`return pipeline { }`, `return y.new X()`) a statement
+        // follows the same way.
+        if let Some(next) = r.next_sibling().filter(|n| {
+            n.kind() == "labeled_statement"
+                && n.start_position().row == r.end_position().row
+                && !src[r.start_byte()..n.start_byte()]
+                    .trim_end()
+                    .ends_with(';')
+        }) {
+            out.push(at(
+                src,
+                next,
+                "a `return` value can't be a command call: put its arguments in parentheses",
+            ));
+        }
+    }
+    out
+}
+
+fn at(src: &str, n: Node, message: &str) -> SyntaxError {
+    let (line, col) = position(src, n.start_position());
+    let (end_line, end_col) = position(src, n.end_position());
+    SyntaxError {
+        line,
+        col,
+        end_line,
+        end_col,
+        message: message.into(),
+    }
+}
+
+/// The tree-sitter point of byte `i`.
+fn byte_point(src: &str, i: usize) -> tree_sitter::Point {
+    let before = &src[..i];
+    let row = before.matches('\n').count();
+    let column = i - before.rfind('\n').map_or(0, |n| n + 1);
+    tree_sitter::Point { row, column }
 }
 
 /// A tree-sitter point as a 1-based line and column; tree-sitter columns count bytes, these
@@ -286,6 +359,31 @@ mod tests {
         );
         assert_eq!(
             checked("#!/usr/bin/env groovy\nprintln 1\n"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            checked("package a\npackage b\n"),
+            ["2:1: a file has at most one `package` statement"]
+        );
+        let dollar = "`$(` in a double-quoted string: write `${...}`, or `\\$` for a dollar sign";
+        assert_eq!(
+            checked("x = \"a $(uname) b\"\ny = \"\"\"\n$(z)\"\"\"\n"),
+            [format!("1:8: {dollar}"), format!("3:1: {dollar}")]
+        );
+        // escaped, single-quoted, slashy, dollar-slashy, in a GString's code: Groovy takes them
+        assert_eq!(
+            checked("a = \"\\$(x)\"\nb = '$(x)'\nc = /$(x)/\nd = $/ $(x) /$\ne = \"${f('$(')}\"\n"),
+            Vec::<String>::new()
+        );
+        let ret = "a `return` value can't be a command call: put its arguments in parentheses";
+        assert_eq!(
+            checked("def f(x) {\n    return readJSON text: x\n}\ndef g(x) { return foo a: x }\n"),
+            [format!("2:21: {ret}"), format!("4:23: {ret}")]
+        );
+        assert_eq!(
+            checked(
+                "def f(x) {\n    if (x) return 1 else return 2\n    return x; a: y\n    return pipeline { }\n    return y.new X()\n}\nreturnValue x\n"
+            ),
             Vec::<String>::new()
         );
     }

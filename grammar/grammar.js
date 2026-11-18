@@ -1708,13 +1708,26 @@ module.exports = grammar({
       )),
       // Modifiers on a script variable, as on a field:
       // `public static final long IM = 139968`.
+      // `final` may lead: `final static long N = 1`.
       prec.dynamic(1, seq(
+        optional('final'),
         choice('public', 'protected', 'private', 'static'),
         repeat($._modifier),
         field('type', $._type),
         $._initialized_declarator,
         repeat(seq(',', $._initialized_declarator)),
       )),
+      // The same with no type, a dynamically typed local in Groovy 2.4, 3 and
+      // 4: `private static final X = 1`, `static final Y = 2`, `private z = 3`.
+      // The token after the first name decides: `=` here, a name for the
+      // typed form, `(` for a script method.
+      seq(
+        optional('final'),
+        choice('public', 'protected', 'private', 'static'),
+        repeat($._modifier),
+        $._initialized_declarator,
+        repeat(seq(',', $._initialized_declarator)),
+      ),
       // §5.10 — a type on the line before the name is a separate path that
       // loses to any other reading: `a.b` and then `bar = 1` on the next
       // line are two statements, though the parser split at the `.` before
@@ -3002,6 +3015,15 @@ module.exports = grammar({
         // `as` is a name too (Groovy 3 and 4): `{ String as -> as }`
         field('name', choice($.identifier, alias('as', $.identifier))),
       )),
+      // `in` too, after a type (Groovy 3 and 4): `{ InputStream in -> }`. Only
+      // after a type, where `in` is already a keyword token, so `{ in.x }`
+      // still lexes `in` as a name.
+      prec(2, seq(
+        repeat($.annotation),
+        optional(choice('final', seq('def', 'final'))),
+        field('type', choice($._type, $.varargs_type)),
+        field('name', alias('in', $.identifier)),
+      )),
       prec.dynamic(-1, seq(
         optional('final'),
         optional(choice('def', field('type', choice($._type, $.varargs_type)))),
@@ -3043,15 +3065,34 @@ module.exports = grammar({
     // the conflict declaration above keeps both alternatives alive.
     // Elements may be spread: `[*a, *b]`. Groovy 2.4 drops an empty element,
     // `[a,,b]` (see `_argument_list_body`).
-    list_literal: $ => seq(
-      '[',
-      optional(seq(
-        choice($._expression, $.spread_arguments),
-        repeat(seq(',', repeat(','), choice($._expression, $.spread_arguments))),
-        optional(','),
-      )),
-      ']',
-    ),
+    list_literal: $ => {
+      const element = choice(
+        $._expression,
+        $.spread_arguments,
+        alias($._list_line_call, $.method_invocation),
+      );
+      return seq(
+        '[',
+        optional(seq(
+          element,
+          repeat(seq(',', repeat(','), element)),
+          optional(','),
+        )),
+        ']',
+      );
+    },
+
+    // In a list a line break ends nothing, so an argument list on the next
+    // line still calls the element, as Groovy 2.4, 3 and 4 read it:
+    // `[ buildDiscarder` then `(logRotator(…)) ]`. The `(` is the in-grammar
+    // one, valid after an element only here; on the element's line the
+    // scanner's `_call_open` takes it as usual.
+    _list_line_call: $ => prec.left(PREC.POSTFIX, seq(
+      field('function', choice($._expression, alias($._list_line_call, $.method_invocation))),
+      field('arguments', alias($._list_line_arguments, $.argument_list)),
+    )),
+
+    _list_line_arguments: $ => seq('(', optional($._argument_list_body), ')'),
 
     // §3.2 PRIMARY / §5.3 — map literal. `[:]` is the empty map;
     // anything else is one-or-more `key: value` entries. The
