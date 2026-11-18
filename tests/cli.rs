@@ -269,6 +269,23 @@ fn unparseable_files_are_left_alone() {
 }
 
 #[test]
+fn deeply_nested_gstrings_do_not_overflow_the_stack() {
+    // the scanner's `pipeline { … }` lookahead recursed once per `${`
+    let d = Dir::new("nested-gstrings");
+    d.write(
+        "Deep.groovy",
+        &format!("pipeline {{ x = \"{}\n", "${\"".repeat(100_000)),
+    );
+    let o = run(&d.0, &["--check"], None);
+    assert!(
+        matches!(o.status.code(), Some(0 | 1)),
+        "{:?}: {}",
+        o.status,
+        stderr(&o)
+    );
+}
+
+#[test]
 fn strict_fails_on_skipped_files_and_lists_them() {
     let d = Dir::new("strict");
     d.write("Broken.groovy", "def x = {\n");

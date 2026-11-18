@@ -277,14 +277,34 @@ static inline bool is_whitespace(int32_t c) {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == 0xFEFF;
 }
 
+// The skippers below look ahead past a whole `{…}` or `(…)` to choose a
+// reading, and a scan that fails starts again at the next `{` or `(`: on
+// unbalanced input that is quadratic, and a GString's `${…}` nests by
+// recursion. A budget of steps bounds both; a scan that runs out answers
+// false, the caller's default reading.
+// ponytail: a fixed budget; a `pipeline { … }.with { }` whose body runs past it
+// reads as the pipeline block, as an unbalanced one does.
+#define SKIP_BUDGET 4000
+
+// Whether the scan may take one more step: not at the end of input and
+// budget left.
+static inline bool skip_step(TSLexer *lexer, unsigned *budget) {
+    if (lexer->eof(lexer) || *budget == 0) {
+        return false;
+    }
+    --*budget;
+    return true;
+}
+
 // Skips whitespace; true when a line ended in it.
 // Advances past a balanced `{…}`, the lookahead being its `{`; false at the
 // end of input. Strings, GString `${…}` and comments are skipped, so their
 // braces don't count. Slashy strings are not recognized: a brace in one may
-// end the scan early, and the caller then keeps its default reading.
-static bool skip_braces(TSLexer *lexer) {
+// end the scan early, and the caller then keeps its default reading, as it
+// does when the scan runs out of its step budget (see skip_step).
+static bool skip_braces(TSLexer *lexer, unsigned *budget) {
     unsigned depth = 0;
-    while (!lexer->eof(lexer)) {
+    while (skip_step(lexer, budget)) {
         int32_t c = lexer->lookahead;
         advance(lexer);
         if (c == '{') {
@@ -294,13 +314,13 @@ static bool skip_braces(TSLexer *lexer) {
                 return true;
             }
         } else if (c == '/' && lexer->lookahead == '/') {
-            while (!lexer->eof(lexer) && lexer->lookahead != '\n') {
+            while (skip_step(lexer, budget) && lexer->lookahead != '\n') {
                 advance(lexer);
             }
         } else if (c == '/' && lexer->lookahead == '*') {
             advance(lexer);
             int32_t prev = 0;
-            while (!lexer->eof(lexer) && !(prev == '*' && lexer->lookahead == '/')) {
+            while (skip_step(lexer, budget) && !(prev == '*' && lexer->lookahead == '/')) {
                 prev = lexer->lookahead;
                 advance(lexer);
             }
@@ -316,7 +336,7 @@ static bool skip_braces(TSLexer *lexer) {
                 triple = true;
             }
             unsigned run = 0;
-            while (!lexer->eof(lexer)) {
+            while (skip_step(lexer, budget)) {
                 int32_t d = lexer->lookahead;
                 if (d == '\\') {
                     advance(lexer);
@@ -332,7 +352,7 @@ static bool skip_braces(TSLexer *lexer) {
                 }
                 if (c == '"' && d == '$') {
                     advance(lexer);
-                    if (lexer->lookahead == '{' && !skip_braces(lexer)) {
+                    if (lexer->lookahead == '{' && !skip_braces(lexer, budget)) {
                         return false;
                     }
                     run = 0;
@@ -354,10 +374,12 @@ static bool skip_braces(TSLexer *lexer) {
 }
 
 // Advances to just past the `)` that closes a `(` already read; false at the
-// end of input. Quoted strings are skipped, so their parentheses don't count.
+// end of input or of the step budget. Quoted strings are skipped, so their
+// parentheses don't count.
 static bool skip_parens(TSLexer *lexer) {
     unsigned depth = 1;
-    while (!lexer->eof(lexer)) {
+    unsigned budget = SKIP_BUDGET;
+    while (skip_step(lexer, &budget)) {
         int32_t c = lexer->lookahead;
         advance(lexer);
         if (c == '(') {
@@ -367,7 +389,7 @@ static bool skip_parens(TSLexer *lexer) {
                 return true;
             }
         } else if (c == '\'' || c == '"') {
-            while (!lexer->eof(lexer) && lexer->lookahead != c && lexer->lookahead != '\n') {
+            while (skip_step(lexer, &budget) && lexer->lookahead != c && lexer->lookahead != '\n') {
                 if (lexer->lookahead == '\\') {
                     advance(lexer);
                     if (lexer->lookahead == '\r') {
@@ -1427,7 +1449,8 @@ bool tree_sitter_groovy_external_scanner_scan(
                 // Only when the `}` ends the statement: `pipeline { a } | b`,
                 // `pipeline { }.with { }` call a method named `pipeline`.
                 // An unbalanced body keeps the block reading.
-                if (skip_braces(lexer)) {
+                unsigned budget = SKIP_BUDGET;
+                if (skip_braces(lexer, &budget)) {
                     while (lexer->lookahead == ' ' || lexer->lookahead == '\t') {
                         advance(lexer);
                     }

@@ -601,6 +601,26 @@ pub(crate) mod scaling {
 
 #[cfg(test)]
 mod tests {
+    /// The scanner's lookaheads past a `{…}` or `(…)` stop after a fixed number of steps, so
+    /// lines that each start one and never close it (or hide its close in a slashy string,
+    /// which the lookahead doesn't know) parse in linear time, not quadratic.
+    #[test]
+    fn scanner_lookahead_is_linear() {
+        for line in [
+            "pipeline {\n",
+            "pipeline { x = /{/ }\n",
+            "p.accept f(",
+            "p.accept f(/'/)\n",
+            "foo (/'/)\n",
+            "def x = new int @A(",
+        ] {
+            let run = |n: usize| {
+                std::hint::black_box(super::parse(&line.repeat(n)));
+            };
+            crate::scaling::assert_scales_up_to(&format!("{line:?}"), run, 2_000, 256_000, 4, 8);
+        }
+    }
+
     #[test]
     fn nul_byte_in_a_string_parses() {
         // in every string kind, and in a comment, which already parsed
