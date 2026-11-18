@@ -342,6 +342,25 @@ fn empty_check(b: B, label: Option<Node>, content: usize, v: &mut Vec<Violation>
 /// `interaction { }` and argument constraints as conditions of their own.
 const DISCARDING: &[&str] = &["each", "eachWithIndex", "reverseEach", "forEach", "times"];
 
+/// The name of the method a closure is passed to, and whether it is called on a receiver.
+fn closure_call<'a>(n: Node<'a>, src: &'a str) -> (Option<Node<'a>>, Option<&'a str>) {
+    let call = n
+        .parent()
+        .filter(|p| p.kind() == "argument_list")
+        .map_or(n.parent(), |a| a.parent())
+        .filter(|c| c.kind() == "method_invocation");
+    let f = call.and_then(|c| c.child_by_field_name("function"));
+    let field = f.and_then(|f| f.child_by_field_name("field"));
+    (field, field.or(f).map(|f| text(f, src)))
+}
+
+/// Whether the closure `n` goes to a method in DISCARDING, which drops its value.
+pub(super) fn discarded(n: Node, src: &str) -> bool {
+    closure_call(n, src)
+        .1
+        .is_some_and(|m| DISCARDING.contains(&m))
+}
+
 /// SpockUnassertedCondition: in a then: or expect: block Spock asserts only top-level
 /// expression statements. A comparison nested in `if`, a loop, `switch`, `try` or a
 /// `.each { }` closure is evaluated and dropped (checked with Spock 2.4). `inside` names
@@ -369,14 +388,8 @@ fn unasserted<'a>(
         "synchronized_statement" if !with => (Some("a synchronized block"), false),
         // anything a closure's method may run, or not, as it likes; and classes and lambdas
         "closure" => {
-            let call = n
-                .parent()
-                .filter(|p| p.kind() == "argument_list")
-                .map_or(n.parent(), |a| a.parent())
-                .filter(|c| c.kind() == "method_invocation");
-            let f = call.and_then(|c| c.child_by_field_name("function"));
-            let field = f.and_then(|f| f.child_by_field_name("field"));
-            match field.or(f).map(|f| text(f, src)) {
+            let (field, m) = closure_call(n, src);
+            match m {
                 Some(m) if DISCARDING.contains(&m) => (Some(m), false),
                 // `x.with { }`, Groovy's, in a closure that drops its conditions
                 Some("with") if inside.is_some() && field.is_some() => (inside, false),
@@ -389,7 +402,8 @@ fn unasserted<'a>(
     };
     if let Some(ctx) = inside
         && (n.kind() == "expression_statement"
-            && n.named_child(0).is_some_and(|e| is_condition(e, src))
+            && n.named_child(0)
+                .is_some_and(|e| is_condition(e, src, reads_check(n, src)))
             || n.kind() == "command_chain" && is_predicate(n, src))
     {
         let ctx = if DISCARDING.contains(&ctx) {
@@ -413,26 +427,67 @@ fn unasserted<'a>(
 /// PREDICATES), or `!`, `&&` or `||` over them: an expression
 /// statement made only of checks, with nothing it could be run for (`x != null && x.close()`
 /// is not one).
-fn is_condition(e: Node, src: &str) -> bool {
+fn is_condition(e: Node, src: &str, reads: bool) -> bool {
     let op = || e.child_by_field_name("operator").map(|o| text(o, src));
     match e.kind() {
-        "parenthesized_expression" => e.named_child(0).is_some_and(|x| is_condition(x, src)),
+        "parenthesized_expression" => e
+            .named_child(0)
+            .is_some_and(|x| is_condition(x, src, reads)),
         "instanceof_expression" | "identity_expression" | "membership_expression" => true,
         "unary_expression" => {
             op() == Some("!")
                 && e.child_by_field_name("operand")
-                    .is_some_and(|x| is_condition(x, src))
+                    .is_some_and(|x| is_condition(x, src, reads))
         }
         "binary_expression" => match op() {
             Some("==" | "!=" | "<" | "<=" | ">" | ">=") => true,
             Some("&&" | "||") => ["left", "right"].iter().all(|f| {
                 e.child_by_field_name(f)
-                    .is_some_and(|x| is_condition(x, src))
+                    .is_some_and(|x| is_condition(x, src, reads))
             }),
             _ => false,
         },
         "method_invocation" => is_predicate(e, src),
+        "field_access" | "safe_navigation_expression" => reads && is_property_read(e),
         _ => false,
+    }
+}
+
+/// Whether a property read in the statement `n` is a check: not when a `try` around it may
+/// be waiting for the read to throw (`try { bean.missing; assert false } catch (...)`, a Geb
+/// `page.requiredDiv`), nor when more code follows on its line, which the grammar may have
+/// split off a command call (`operation.child applyPlugin(p)`).
+fn reads_check(n: Node, src: &str) -> bool {
+    let rest = src[n.end_byte()..].trim_start_matches([' ', '\t']);
+    let line_ends = rest.is_empty() || rest.starts_with(['\n', '\r', ';', '}', '/']);
+    line_ends
+        && !std::iter::successors(n.parent(), |p| p.parent()).any(|p| p.kind() == "try_statement")
+}
+
+/// A property read on a plain path, `x.done`, `it?.ok`, `xs[0].terminal`, `this.valid`:
+/// no call anywhere in it, so evaluating it does nothing but answer (#212).
+fn is_property_read(mut e: Node) -> bool {
+    loop {
+        e = match e.kind() {
+            "field_access" | "safe_navigation_expression" | "parenthesized_expression" => {
+                match e.child_by_field_name("object").or_else(|| e.named_child(0)) {
+                    Some(o) => o,
+                    None => return false,
+                }
+            }
+            "subscript_expression" => {
+                let plain = e.child_by_field_name("index").is_some_and(|i| {
+                    matches!(i.kind(), "number_literal" | "identifier")
+                        || i.kind() == "string_literal" && !has_interpolation(i)
+                });
+                match e.child_by_field_name("object") {
+                    Some(o) if plain => o,
+                    _ => return false,
+                }
+            }
+            "identifier" | "this" => return true,
+            _ => return false,
+        };
     }
 }
 
@@ -451,6 +506,7 @@ const PREDICATES: &[&str] = &[
     "hasErrors",
     "hasNext",
     "isAssignableFrom",
+    "isClosed",
     "isEmpty",
     "isPresent",
     "matches",
@@ -829,6 +885,14 @@ mod tests {
                 "expect:\n[a: [1]].with {\na.each { b -> b.with { c == 2 } }\n}",
                 5,
             ),
+            // #212: a property read on a plain path, alone, under `!` or `&&`; isClosed()
+            ("when:\nf()\nthen:\n[1].each {\nsnapshots[0].terminal\n}", 7),
+            ("when:\nf()\nthen:\n[1].each {\n!snapshots[1].initial\n}", 7),
+            ("when:\nf()\nthen:\nif (a) {\nx.ok\n}", 7),
+            ("when:\nf()\nthen:\nfor (e in xs) {\nit?.a && e.b.c\n}", 7),
+            ("when:\nf()\nthen:\nxs.each {\nthis.valid\n}", 7),
+            ("when:\nf()\nthen:\nxs.each {\nm['k'].done\n}", 7),
+            ("when:\nf()\nthen:\nxs.each {\n!cursor.isClosed()\n}", 7),
         ] {
             assert_eq!(unasserted(body), vec![line], "{body}");
         }
@@ -866,6 +930,13 @@ mod tests {
             "when:\nf()\nthen:\nif (c) {\nassertThat(r).output().contains('x')\nassertAbout(t).that(r).isEmpty()\nexpect(s).startsWith('a')\nverify(m).equals(x)\n}",
             // predicates Spock asserts: top level, with, verifyAll, every, an argument constraint
             "when:\nf()\nthen:\nxs.contains(1)\n!m.isEmpty()\nwith(xs) {\nif (c) {\nit.contains(1)\n}\n}\nverifyAll {\nif (c) {\nxs.contains(1)\n}\n}\nxs.every { it.startsWith('a') }\n1 * m.foo({ it.contains('a') })",
+            // #212: property reads Spock asserts, or with a call in the path, a computed
+            // index, an assignment, or a bare name
+            "when:\nf()\nthen:\nx.ok\n!xs[0].ok\nxs.every { it.ok }\nwith(x) {\nif (c) {\nx.ok\n}\n}\nxs.find { it.ok }",
+            "when:\nf()\nthen:\nxs.each {\nf().ok\nit.next().ok\nxs[i + 1].ok\nm[\"$k\"].ok\nit.ok = true\nok\nxs[0]\n}",
+            // #212: a read a try waits on to throw, and one the grammar split off a command call
+            "expect:\ntry {\nbean.notBoolean\nassert false\n} catch (MissingPropertyException e) {\n}\nxs.each {\ntry { page.requiredDiv } catch (e) { }\n}",
+            "when:\nf()\nthen:\nxs.each { op ->\nop.child applyPlugin(p1)\n}",
             // not then: or expect:
             "given:\nif (c) {\nx == 2\n}\nexpect:\ntrue\ncleanup:\nif (c) {\nx == 2\n}",
             "when:\nif (c) {\nx == 2\n}\nthen:\ntrue\nwhere:\nx << [1]",

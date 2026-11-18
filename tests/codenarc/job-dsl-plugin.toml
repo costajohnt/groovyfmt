@@ -56,7 +56,7 @@ ClassNameSameAsFilename = true
 UnusedPrivateField = true
 UnusedPrivateMethod = true
 UnusedVariable = true
-# groovyfmt's Jenkins, Gradle and Spock rules, UnusedSuppression and Groovy24EmptyElement keep their defaults.
+# groovyfmt's Jenkins, Gradle and Spock rules, UnusedSuppression, Groovy24EmptyElement and StringLeftShiftDiscarded keep their defaults.
 
 # Enabled in the source, no groovyfmt equivalent yet (242):
 #   AbstractClassName, AbstractClassWithPublicConstructor, AddEmptyString,

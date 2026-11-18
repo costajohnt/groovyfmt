@@ -418,6 +418,64 @@ fn spock_unasserted_predicate_calls() {
     );
 }
 
+/// #212: a nested property read in a then: block, and `<<` on a local String.
+#[test]
+fn spock_property_read_and_string_left_shift() {
+    let d = Dir::new("issue-212");
+    d.write(
+        "SnapshotSpec.groovy",
+        "class SnapshotSpec extends Specification {
+    def 'c'() {
+        when:
+        def snapshots = f()
+
+        then:
+        snapshots.size() == 2
+        snapshots[0].initial
+        [1].each {
+            snapshots[0].terminal
+            !snapshots[1].initial
+            snapshots.last().ok
+        }
+    }
+
+    void check(names) {
+        def notFound = ''
+        for (name in names) {
+            if (!name) {
+                notFound << \"missing: $name\"
+            }
+        }
+        def found = new StringBuilder()
+        names.each { found << it }
+        if (notFound) {
+            throw new IllegalStateException(notFound)
+        }
+    }
+}
+",
+    );
+    let text = stdout(&run(&d.0, &["--lint"], None));
+    let found: Vec<String> = text
+        .lines()
+        .filter(|s| {
+            s.contains("SpockUnassertedCondition") || s.contains("StringLeftShiftDiscarded")
+        })
+        .map(|s| s.split(": ").take(2).collect::<Vec<_>>().join(" "))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            "SnapshotSpec.groovy:10:13 SpockUnassertedCondition",
+            "SnapshotSpec.groovy:11:13 SpockUnassertedCondition",
+            "SnapshotSpec.groovy:20:17 StringLeftShiftDiscarded",
+        ],
+        "{text}"
+    );
+    let rules = stdout(&run(&d.0, &["--rules"], None));
+    assert!(rules.contains("StringLeftShiftDiscarded"), "{rules}");
+}
+
 /// #218, as seen with Spock 2.4: what a with { } holds is asserted, but not what a .each { }
 /// in it holds; Groovy's `it.with { }` in a .each { } drops its conditions too.
 #[test]

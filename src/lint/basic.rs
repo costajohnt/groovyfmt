@@ -147,6 +147,7 @@ pub(super) fn check(src: &str, nodes: &[Node], v: &mut Vec<Violation>) {
                     broken_oddness(src, n, v);
                 }
                 "!=" | "<" | "<=" | ">" | ">=" => two_constants(src, n, v),
+                "<<" => string_left_shift(src, n, v),
                 "||" | "&&" => broken_null_check(src, n, v),
                 _ => {}
             },
@@ -175,6 +176,163 @@ pub(super) fn check(src: &str, nodes: &[Node], v: &mut Vec<Violation>) {
             _ => {}
         }
     }
+}
+
+/// StringLeftShiftDiscarded: `s << x` as a statement on a local String. Groovy's
+/// `String.leftShift` returns a new StringBuffer and leaves the String alone (checked with
+/// Groovy 4.0.24), so the statement does nothing. Only a local declared as `String` or with
+/// a plain string literal, never assigned anything but one, and only where the
+/// statement's value goes nowhere: not the last statement of a closure or method (#212).
+fn string_left_shift(src: &str, n: Node, v: &mut Vec<Violation>) {
+    let Some(stmt) = n.parent().filter(|p| p.kind() == "expression_statement") else {
+        return;
+    };
+    let mut left = n;
+    while left.kind() == "binary_expression"
+        && left
+            .child_by_field_name("operator")
+            .is_some_and(|o| o.kind() == "<<")
+    {
+        let Some(l) = left.child_by_field_name("left") else {
+            return;
+        };
+        left = l;
+    }
+    if left.kind() != "identifier" || value_used(src, stmt) {
+        return;
+    }
+    let name = text(left, src);
+    let Some(scope) = string_local(src, stmt, name) else {
+        return;
+    };
+    let mut reassigned = false;
+    crate::preorder(scope, |x| {
+        reassigned |= x.kind() == "assignment_expression"
+            && x.child_by_field_name("left")
+                .is_some_and(|l| l.kind() == "identifier" && text(l, src) == name)
+            && !(x
+                .child_by_field_name("operator")
+                .is_some_and(|o| o.kind() == "=")
+                && x.child_by_field_name("right")
+                    .is_some_and(|r| r.kind() == "string_literal" && !has_interpolation(r)));
+        !reassigned
+    });
+    if !reassigned {
+        v.push(at(
+            stmt,
+            "StringLeftShiftDiscarded",
+            format!("`{name}` is a String, so `<<` returns a new StringBuffer and leaves `{name}` unchanged; use `{name} += ...`, or make `{name}` a StringBuilder"),
+        ));
+    }
+}
+
+/// Whether a statement's value can be used: it is, or ends, what a closure (but one passed to
+/// `.each { }` and the like) or a non-void method returns, or the statement isn't in a plain
+/// block or branch.
+fn value_used(src: &str, stmt: Node) -> bool {
+    let mut n = stmt;
+    while let Some(p) = n.parent() {
+        match p.kind() {
+            "block" | "closure" => {
+                let mut next = n.next_named_sibling();
+                while next.is_some_and(is_comment) {
+                    next = next.and_then(|x| x.next_named_sibling());
+                }
+                if next.is_some() {
+                    return false;
+                }
+                if p.kind() == "closure" {
+                    return !super::spock::discarded(p, src);
+                }
+            }
+            "if_statement" | "try_statement" | "catch_clause" | "labeled_statement" => {}
+            "for_statement" | "for_in_statement" | "while_statement" | "do_while_statement" => {
+                return false;
+            }
+            "method_declaration" => {
+                return p
+                    .child_by_field_name("return_type")
+                    .is_none_or(|t| text(t, src) != "void");
+            }
+            _ => return true,
+        }
+        n = p;
+    }
+    true
+}
+
+/// The block declaring `name` as a String local, seen from `at`: the nearest declaration
+/// before it, walking out through blocks and closures (whose parameters shadow it).
+fn string_local<'a>(src: &str, at: Node<'a>, name: &str) -> Option<Node<'a>> {
+    let named = |x: Option<Node>| x.is_some_and(|x| text(x, src) == name);
+    let mut n = at;
+    while let Some(p) = n.parent() {
+        match p.kind() {
+            "method_declaration"
+            | "constructor_declaration"
+            | "lambda_expression"
+            | "class_body" => return None,
+            "closure" => {
+                let mut shadowed = false;
+                if let Some(ps) = p
+                    .named_child(0)
+                    .filter(|c| c.kind() == "closure_parameters")
+                {
+                    crate::preorder(ps, |x| {
+                        shadowed |= x.kind() == "identifier" && text(x, src) == name;
+                        !shadowed
+                    });
+                }
+                if shadowed {
+                    return None;
+                }
+            }
+            "catch_clause" => {
+                if named(
+                    p.child_by_field_name("parameter")
+                        .and_then(|c| c.child_by_field_name("name")),
+                ) {
+                    return None;
+                }
+            }
+            "for_in_statement" if named(p.child_by_field_name("variable")) => return None,
+            _ => {}
+        }
+        let mut s = n.prev_named_sibling();
+        while let Some(d) = s {
+            match d.kind() {
+                "local_variable_declaration" => {
+                    let ty = d.child_by_field_name("type").map(|t| text(t, src));
+                    let mut c = d.walk();
+                    let decls: Vec<Node> = if d.child_by_field_name("name").is_some() {
+                        vec![d]
+                    } else {
+                        d.named_children(&mut c)
+                            .filter(|x| x.kind() == "variable_declarator")
+                            .collect()
+                    };
+                    if let Some(x) = decls.iter().find(|x| named(x.child_by_field_name("name"))) {
+                        let literal = x
+                            .child_by_field_name("value")
+                            .is_some_and(|v| v.kind() == "string_literal" && !has_interpolation(v));
+                        return (ty == Some("String") || ty.is_none() && literal).then_some(p);
+                    }
+                }
+                "multi_assignment_declaration" => {
+                    let mut c = d.walk();
+                    if d.named_children(&mut c)
+                        .any(|x| named(x.child_by_field_name("name")))
+                    {
+                        return None;
+                    }
+                }
+                _ => {}
+            }
+            s = d.prev_named_sibling();
+        }
+        n = p;
+    }
+    None
 }
 
 /// Without wrapping parentheses.
@@ -1468,6 +1626,20 @@ mod tests {
         // a doubled `break` has no such reason and is reported
         let src = "switch (x) {\n  case 1:\n    return 1\n    break\n  case 2:\n    throw new E()\n    break\n}\nx = { _, p ->\n  return pipeline {\n    name = p\n  }\n}\nwhile (a) {\n  break\n  break\n}\n";
         assert_eq!(rules(src, "DeadCode"), vec![16]);
+    }
+
+    /// #212: Groovy 4's `String.leftShift` returns a new StringBuffer.
+    #[test]
+    fn string_left_shift_discarded() {
+        let rule = "StringLeftShiftDiscarded";
+        // in a loop, an if in a loop, a chain, a .each { }, a void method, a String type
+        let src = "void f(cs) {\n  def s = ''\n  for (c in cs) {\n    if (!c) {\n      s << \"x $c\"\n    } else {\n      s << c << '\\n'\n    }\n  }\n  cs.each { s << it }\n  String t = \"a\"\n  t << 'b'\n  def u = 'a'\n  u = 'b'\n  u << 1\n  println s + t + u\n}\n";
+        assert_eq!(rules(src, rule), vec![5, 7, 10, 12, 15]);
+        let src = "def f(cs) {\n  def a = ''\n  def c = { a << 1 }\n  def b = ''\n  b = b << 1\n  b << 2\n  def d = new StringBuilder()\n  d << 1\n  def e = 'x'\n  cs.each { e -> e << 1; println e }\n  def g = 'x'\n  try { } catch (g2) { }\n  x << 1\n  def h = [], k\n  h << 1\n  def (m, n) = ['', '']\n  m << 1\n  StringBuilder p = ''\n  p << 1\n  def q = ''\n  q <<= 1\n  q << 2\n  def gs = \"${x}\"\n  gs << 1\n  def w = ''\n  w = \"$x\"\n  w << 1\n  def r = ''\n  r << 1\n}\n";
+        assert_eq!(rules(src, rule), Vec::<usize>::new());
+        // a field, a closure's or a method's result, a script's last statement
+        let src = "class K {\n  String s = ''\n  void f() {\n    s << 1\n  }\n  String g() {\n    def t = ''\n    t << 1\n  }\n}\ndef u = ''\nu << 1\n";
+        assert_eq!(rules(src, rule), Vec::<usize>::new());
     }
 
     #[test]

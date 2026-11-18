@@ -2,8 +2,13 @@
 
 ## Unreleased
 
+### Added
+
+- StringLeftShiftDiscarded (on by default) reports `s << x` as a statement on a local String. On a String, Groovy's `<<` returns a new StringBuffer and leaves the String unchanged, so `def notFound = ''` followed by `notFound << "missing: $name"` in a loop collects nothing, and a check that tests `notFound` afterwards can never fail (groovy-eclipse's `OrganizeImportsTestSuite`). Reported only for a local declared `String` or with a plain string literal and never assigned anything else, and only where the statement's value goes nowhere: not the last statement of a closure (one passed to `.each { }` and the like aside) or of a method that isn't `void`. Report only. ([#212](https://github.com/costajohnt/groovyfmt/issues/212))
+
 ### Changed
 
+- SpockUnassertedCondition reports a property read on a plain path nested where a comparison is reported, alone or under `!`, `&&`, `||`: `snapshots[0].terminal` or `!snapshots[1].initial` in a `.each { }` in a `then:` block (javers), `x.ok` in an `if`. Spock 2.4 drops these as it drops a nested comparison. The path holds only names, properties and indexes that are literals or names, so a read with a call in it (`f().ok`, `xs[i + 1].ok`) is left alone, as are an assignment, a bare name and a read inside a `try`, which may be waiting for it to throw (`try { bean.missing; assert false } catch (MissingPropertyException e) { }`, a Geb `page.requiredDiv`). `isClosed` joins the predicate calls (`!cursor.isClosed()`, mongo-java-driver). ([#212](https://github.com/costajohnt/groovyfmt/issues/212))
 - GradleRemovedApi reports `exec { }` and `javaexec { }` called on the project or build script (bare in a task action, a script method or at the top level, `exec({ })`, `project.exec { }`, `rootProject.javaexec { }`) and `main` set on a JavaExec task (`tasks.register('x', JavaExec) { main = 'a.B' }`, `task x(type: JavaExec)`, `tasks.withType(JavaExec)`, `bootRun { }`), under a wrapper pinning Gradle 9 or later: Gradle 9.0 removed them, and the build fails with "Could not find method exec()" or "Could not set unknown property 'main'". Each was checked to work under Gradle 8.8 and fail under 9.0.0 and 9.9.1. Left alone: ExecOperations and `providers.exec`, which still work there, an Exec task, a call inside a class, and a script that defines its own `exec`. Report only. ([#222](https://github.com/costajohnt/groovyfmt/issues/222))
 
 ### Fixed
