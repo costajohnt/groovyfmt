@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- More constructs parse, as Groovy reads them; files with one were skipped ([#222](https://github.com/costajohnt/groovyfmt/issues/222)). A declaration with modifiers and no type at a script's top level or in a block, `private static final X = 1`, `static final Y = 2`, `private z = 3`, `final static M = 2`, a dynamically typed local variable in Groovy 2.4, 3 and 4 (eclipse.platform.releng.aggregator's jenkinsfiles); `final` may also lead the typed form, `final static long N = 1`. An argument list on the line after a list element, `[ buildDiscarder` then `(logRotator(...)) ]`, a call in Groovy 2.4, 3 and 4 since a line break ends nothing inside a list (lsst-ts/ts_jenkins_shared_library); a statement or a closure body still ends at the line. A typed closure parameter named `in`, `{ InputStream in -> }` (Groovy 3 and 4). The grammar pin moves to tree-sitter-groovy 1d8e433.
+- `--syntax` also reports three more constructs the grammar takes but Groovy 2.4, 3 and 4 reject: a second `package` statement, `$(` in a double-quoted string (`"a $(uname) b"`; Groovy wants `${...}` or `\$`), and a command call as a `return` value, `return readJSON text: x`, which the grammar reads as `return readJSON` and a label. Such files are still formatted. ([#222](https://github.com/costajohnt/groovyfmt/issues/222))
+
 ## 0.24.0 (2026-11-18)
 
 ### Changed
