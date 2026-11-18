@@ -316,8 +316,8 @@ const GROOVY4_MOVED: &[(&str, &str)] = &[
 
 /// GradleRemovedApi on the classes of `GROOVY4_MOVED`, under a wrapper pinning Gradle 9 or
 /// later, with what `--fix` does: `groovy.util` becomes the new package in an import or a
-/// qualified name, and the first bare use of a name gets the import, put after the script's
-/// imports or before its first statement. A bare name the script imports (`import a.XmlSlurper`,
+/// qualified name, and a bare name gets its import, put after the script's imports or before
+/// its first statement (one edit for all its uses, which `--fix` makes once). A bare name the script imports (`import a.XmlSlurper`,
 /// `as XmlSlurper`, `import groovy.xml.*`) or declares a class of is left alone.
 #[derive(Default)]
 struct Groovy4<'a> {
