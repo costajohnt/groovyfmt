@@ -95,7 +95,9 @@ fn rejected(src: &str, tree: &Tree) -> Vec<SyntaxError> {
         if let Some(next) = r.next_sibling().filter(|n| {
             n.kind() == "labeled_statement"
                 && n.start_position().row == r.end_position().row
-                && !src[r.start_byte()..n.start_byte()].trim_end().ends_with(';')
+                && !src[r.start_byte()..n.start_byte()]
+                    .trim_end()
+                    .ends_with(';')
         }) {
             out.push(at(
                 src,
