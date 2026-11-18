@@ -187,9 +187,12 @@ fn rejected(src: &str, tree: &Tree) -> Vec<SyntaxError> {
     // call: Groovy 3 and 4 take `foo bar() { }`, `a.B f() { }`, `List<X> f() { }` and
     // `X[] f() { }` so. Not in a file that failed to parse, whose methods can land anywhere.
     // ponytail: a method or constructor's own body is left out too, since the grammar puts
-    // valid methods there (an enum's lone `A() { ... }` constant read as a constructor, a
+    // valid methods there (an enum constant with arguments and a body read as a constructor, a
     // nested `private static record R(...) { }` read as a method named R); method in method
     // goes unreported until the grammar reads those.
+    if root.has_error() {
+        return out;
+    }
     let in_block = |p: Node| match p.kind() {
         "closure" => true,
         "block" => p
@@ -197,9 +200,19 @@ fn rejected(src: &str, tree: &Tree) -> Vec<SyntaxError> {
             .is_some_and(|o| !matches!(o.kind(), "method_declaration" | "constructor_declaration")),
         _ => false,
     };
-    let mut walk = |n: Node| {
-        if n.kind() == "method_declaration"
-            && n.parent().is_some_and(in_block)
+    // Found from the `{`s that open a method's body, which costs less than a walk of the tree.
+    for (i, _) in src.match_indices('{') {
+        let Some(n) = root
+            .descendant_for_byte_range(i, i + 1)
+            .filter(|b| b.kind() == "{")
+            .and_then(|b| b.parent())
+            .filter(|b| b.kind() == "block")
+            .and_then(|b| b.parent())
+            .filter(|m| m.kind() == "method_declaration")
+        else {
+            continue;
+        };
+        if n.parent().is_some_and(in_block)
             && n.child_by_field_name("return_type").is_none_or(|t| {
                 let name = text(t, src);
                 t.kind() == "type_identifier"
@@ -224,10 +237,6 @@ fn rejected(src: &str, tree: &Tree) -> Vec<SyntaxError> {
                 "a method can't be declared in a closure or block: declare it at the top level or in a class, or assign a closure",
             ));
         }
-        true
-    };
-    if !root.has_error() {
-        crate::preorder(root, &mut walk);
     }
     out
 }
@@ -591,7 +600,7 @@ mod tests {
             ),
             Vec::<String>::new()
         );
-        // where the grammar puts valid methods in a body: a lone enum constant with
+        // where the grammar puts valid methods in a body: an enum constant with
         // arguments read as a constructor, a nested record with modifiers read as a method
         assert_eq!(
             checked(
