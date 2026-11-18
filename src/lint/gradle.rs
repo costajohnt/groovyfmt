@@ -96,6 +96,8 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
     let mut methods = HashSet::new();
     // removed convention properties the script sets, and the extra properties it makes
     let (mut conventions, mut ext) = (Vec::new(), HashSet::new());
+    // reads of removed convention properties (`READS`)
+    let mut reads = Vec::new();
     // `exec { }` and `javaexec { }` on the project or script
     let mut execs = Vec::new();
     let mut applies_script = false;
@@ -110,6 +112,7 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
         removed_api(src, n, &mut removed, &mut conf_refs);
         execs.extend(project_exec(src, n));
         convention(src, n, &mut conventions, &mut ext);
+        reads.extend(convention_read(src, n));
         if let Some(names) = property_scope(src, n)
             && !path
                 .file_name()
@@ -248,6 +251,30 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
             }
         }
     }
+    if project_script {
+        // extra properties of these names that a script above this one makes
+        let nearby_ext = std::cell::OnceCell::new();
+        for (n, name, new, since) in reads {
+            if !ext.contains(name)
+                && !shadowed(src, n, name)
+                && !gradle_property(path, name)
+                && !nearby_ext
+                    .get_or_init(|| nearby_ext_names(path))
+                    .contains(name)
+            {
+                let with = if since == 9 {
+                    " with the plugin conventions"
+                } else {
+                    ""
+                };
+                removed.push((
+                    n,
+                    format!("The project property `{name}` was removed in Gradle {since}.0{with}, so reading it fails; read {new}"),
+                    since,
+                ));
+            }
+        }
+    }
     if removed.is_empty() {
         return;
     }
@@ -306,9 +333,9 @@ const PROJECT_BLOCKS: &[&str] = &[
 /// level: `sourceCompatibility = 11` or `project.archivesBaseName = 'x'` at the top level of
 /// the script or in a `PROJECT_BLOCKS` block, and `mainClassName` in `application { }` or
 /// `archivesBaseName` in `base { }`, which fall through to the project too. Not in `java { }`
-/// or a task's block, which have properties of these names. Only setting is reported: a read
-/// may be of an extra property another script makes. Also gathers, into `ext`, the names
-/// the script makes extra properties of (`ext.x = `, `ext { x = }`), which it can then set.
+/// or a task's block, which have properties of these names. Reads are `convention_read`'s.
+/// Also gathers, into `ext`, the names the script makes extra properties of (`ext.x = `,
+/// `ext { x = }`), which it can then set.
 /// Report-only: `java { sourceCompatibility = v }` reads the names in `v` against the
 /// extension first, so moving the value there can change what it means.
 fn convention<'a>(
@@ -387,6 +414,205 @@ fn convention<'a>(
     {
         out.push((s, name, new));
     }
+}
+
+/// Project properties that came from plugin conventions, as `CONVENTIONS`, with what to
+/// read instead and the Gradle major that removed them. `libsDir` and `distsDir` (read-only)
+/// went in 7.0: they work under Gradle 4.10.3 and fail under 7.6, 8.8, 9.0.0 and 9.9.1. The
+/// rest went in 9.0: each read (`project.x`, bare at the top level and in an untyped task's
+/// `doLast`) was checked to work under 8.8 and to fail under 9.0.0 and 9.9.1, and each
+/// replacement to work under 7.6, 8.8 and 9.9.1.
+const READS: &[(&str, &str, u32)] = &[
+    ("libsDir", "base.libsDirectory", 7),
+    ("distsDir", "base.distsDirectory", 7),
+    ("archivesBaseName", "base.archivesName", 9),
+    ("libsDirName", "base.libsDirectory", 9),
+    ("distsDirName", "base.distsDirectory", 9),
+    ("sourceCompatibility", "java.sourceCompatibility", 9),
+    ("targetCompatibility", "java.targetCompatibility", 9),
+    ("docsDirName", "java.docsDir", 9),
+    ("docsDir", "java.docsDir", 9),
+    ("testResultsDirName", "java.testResultsDir", 9),
+    ("testResultsDir", "java.testResultsDir", 9),
+    ("testReportDirName", "java.testReportDir", 9),
+    ("testReportDir", "java.testReportDir", 9),
+    ("mainClassName", "application.mainClass", 9),
+    ("applicationName", "application.applicationName", 9),
+    (
+        "applicationDefaultJvmArgs",
+        "application.applicationDefaultJvmArgs",
+        9,
+    ),
+    ("executableDir", "application.executableDir", 9),
+    (
+        "applicationDistribution",
+        "application.applicationDistribution",
+        9,
+    ),
+    ("webAppDirName", "the war task's webAppDirectory", 9),
+    ("webAppDir", "the war task's webAppDirectory", 9),
+    ("appDirName", "the ear task's appDirectory", 9),
+    ("libDirName", "the ear task's libDirName", 9),
+    (
+        "deploymentDescriptor",
+        "the ear task's deploymentDescriptor",
+        9,
+    ),
+    (
+        "projectReportDirName",
+        "the report tasks' own output settings",
+        9,
+    ),
+    (
+        "projectReportDir",
+        "the report tasks' own output settings",
+        9,
+    ),
+];
+
+/// GradleRemovedApi on a read of a removed convention property (`READS`): `project.libsDir`
+/// anywhere outside a class (also in `"${project.libsDir}"` and `"$project.libsDir"`), or a bare `libsDir` where it
+/// falls through to the project: at the top level, in a `PROJECT_BLOCKS` block other than
+/// `configure`, and in an untyped task's block or its `doLast { }` / `doFirst { }`, whose
+/// `DefaultTask` has no such property. Not in a typed task's block (a JavaCompile has a
+/// sourceCompatibility, an Ear a libDirName), an extension's (`java { }`), a script method
+/// or a closure with a parameter of that name. `check` drops a name the build makes an
+/// extra property of or sets in `gradle.properties`, or a local variable.
+fn convention_read<'a>(
+    src: &'a str,
+    n: Node<'a>,
+) -> Option<(Node<'a>, &'a str, &'static str, u32)> {
+    let is = |p: Node, field: &str| p.child_by_field_name(field) == Some(n);
+    let p = n.parent()?;
+    let name = match n.kind() {
+        // `project.libsDir`, not `project.libsDir = x` (a set, `convention`) or a call
+        "field_access"
+            if n.child_by_field_name("object")
+                .is_some_and(|o| o.kind() == "identifier" && text(o, src) == "project")
+                && !is(p, "left")
+                && !is(p, "function")
+                && !shadowed(src, n, "project") =>
+        {
+            text(n.child_by_field_name("field")?, src)
+        }
+        // `"$libsDir"` or `"$project.libsDir"`: one identifier holding the whole path
+        "identifier" if p.kind() == "gstring_dollar_interpolation" => {
+            let mut path = text(n, src).trim_start_matches('$').split('.');
+            match (path.next()?, path.next()) {
+                ("project", Some(f)) if !shadowed(src, n, "project") => f,
+                (x, _) if project_scope(src, n) => x,
+                _ => return None,
+            }
+        }
+        "identifier"
+            if !["field", "function", "left", "key", "receiver", "name"]
+                .iter()
+                .any(|f| is(p, f))
+                && !(p.kind() == "expression_statement"
+                    && call(p, src).is_some_and(|c| !c.args.is_empty()))
+                && !matches!(p.kind(), "closure_parameter" | "formal_parameter")
+                && project_scope(src, n) =>
+        {
+            text(n, src)
+        }
+        _ => return None,
+    };
+    let (name, new, since) = READS.iter().find(|r| r.0 == name)?;
+    let in_code = std::iter::successors(n.parent(), |p| p.parent())
+        .any(|p| matches!(p.kind(), "class_body" | "method_declaration"));
+    (!in_code).then_some((n, *name, *new, *since))
+}
+
+/// Whether a bare name at `n` falls through to the project (`convention_read`): every
+/// closure around it is a `PROJECT_BLOCKS` block other than `configure`, an untyped task's
+/// block, or a `doLast { }` / `doFirst { }` right in one, and none has parameters.
+fn project_scope(src: &str, n: Node) -> bool {
+    let closures: Vec<Node> = std::iter::successors(n.parent(), |p| p.parent())
+        .filter(|p| p.kind() == "closure")
+        .collect();
+    let names: Vec<&str> = owners(n, src).collect();
+    closures
+        .iter()
+        .zip(&names)
+        .enumerate()
+        .all(|(i, (cl, name))| {
+            let mut c = cl.walk();
+            !cl.named_children(&mut c)
+                .any(|x| x.kind() == "closure_parameters")
+                && ((PROJECT_BLOCKS.contains(name) && *name != "configure")
+                    || untyped_task(src, *cl)
+                    || (matches!(*name, "doLast" | "doFirst")
+                        && closures.get(i + 1).is_some_and(|o| untyped_task(src, *o))))
+        })
+}
+
+/// Whether the closure `cl` configures a task with no type (a `DefaultTask`): `task x { }`,
+/// `task x(dependsOn: y) { }`, `task('x') { }` or `tasks.register('x') { }`, not
+/// `task x(type: Jar) { }` or `tasks.register('x', Jar) { }`.
+fn untyped_task(src: &str, cl: Node) -> bool {
+    let Some(p) = cl.parent() else { return false };
+    let stmt = p
+        .parent()
+        .filter(|s| s.kind() == "expression_statement")
+        .unwrap_or(p);
+    // `task x { }` is two statements, `task` and `x { }`, on one line
+    let after_task = stmt.prev_named_sibling().is_some_and(|t| {
+        text(t, src) == "task" && t.end_position().row == stmt.start_position().row
+    });
+    match p.kind() {
+        "command_chain" => {
+            let mut c = p.walk();
+            after_task
+                && p.child_by_field_name("receiver")
+                    .is_some_and(|r| r.kind() == "identifier")
+                && p.children_by_field_name("argument", &mut c).eq([cl])
+        }
+        "method_invocation" if p.child_by_field_name("closure") == Some(cl) => {
+            let Some(f) = p.child_by_field_name("function") else {
+                return false;
+            };
+            let mut positional = 0;
+            if let Some(a) = p.child_by_field_name("arguments") {
+                let mut c = a.walk();
+                for x in a.named_children(&mut c) {
+                    if x.kind() != "named_argument" {
+                        positional += 1;
+                    } else if x
+                        .child_by_field_name("key")
+                        .is_some_and(|k| text(k, src) == "type")
+                    {
+                        return false;
+                    }
+                }
+            }
+            let f = text(f, src);
+            if matches!(
+                f,
+                "task" | "tasks.register" | "tasks.create" | "project.tasks.register"
+            ) {
+                positional == 1
+            } else {
+                after_task && positional == 0
+            }
+        }
+        _ => false,
+    }
+}
+
+/// The names the `.gradle` scripts `nearby` (the ones in the directories above, which may
+/// configure this one with `allprojects { }`) make extra properties of.
+fn nearby_ext_names(path: &Path) -> HashSet<String> {
+    let mut names = HashSet::new();
+    nearby(path, |_, _, src, root| {
+        let mut ext = HashSet::new();
+        crate::preorder(root, |n| {
+            convention(src, n, &mut Vec::new(), &mut ext);
+            true
+        });
+        names.extend(ext.into_iter().map(str::to_string));
+        false
+    });
+    names
 }
 
 /// Whether a `gradle.properties` in the script's directory, or one above it up to the
@@ -1873,6 +2099,62 @@ mod tests {
         assert_eq!(lines(&sub, "build.gradle", src), Vec::<usize>::new());
         std::fs::write(root.join("gradle.properties"), "sourceCompatibilityX=8\n").unwrap();
         assert_eq!(lines(&sub, "build.gradle", src), vec![2]);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// #237: reads of the removed convention properties, each checked under Gradle 8.8,
+    /// 9.0.0 and 9.9.1 (`libsDir` and `distsDir` under 4.10.3 and 7.6).
+    #[test]
+    fn removed_convention_reads() {
+        let root = std::env::temp_dir().join(format!("groovyfmt-reads-{}", std::process::id()));
+        let sub = root.join("sub");
+        std::fs::create_dir_all(root.join("gradle/wrapper")).unwrap();
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(root.join("settings.gradle"), "include 'sub'\n").unwrap();
+        let props = root.join("gradle/wrapper/gradle-wrapper.properties");
+        let wrapper = |v: &str| {
+            std::fs::write(&props, format!("distributionUrl=https\\://services.gradle.org/distributions/gradle-{v}-bin.zip\n")).unwrap()
+        };
+        let lines = |dir: &Path, name: &str, src: &str| {
+            rules(dir.join(name).to_str().unwrap(), src)
+                .iter()
+                .filter(|r| r.0 == "GradleRemovedApi")
+                .map(|r| r.1)
+                .collect::<Vec<_>>()
+        };
+        // jPOS's listJars task
+        let src = "task listJars {\n    doLast {\n        println \"${project.libsDir}\"\n        println \"$project.libsDirName\"\n        println libsDirName\n        def d = project.libsDir\n    }\n}\nprintln sourceCompatibility\nallprojects { println \"$archivesBaseName\" }\ntasks.register('a') { doFirst { println mainClassName.size() } }\ntask('b') { println docsDir }\nsubprojects {\n    afterEvaluate { println project.webAppDir }\n}\nfiles(applicationDistribution)\n";
+        wrapper("9.9.1");
+        assert_eq!(
+            lines(&root, "build.gradle", src),
+            vec![3, 4, 5, 6, 9, 10, 11, 12, 14, 16]
+        );
+        // under Gradle 8 only libsDir, gone since 7.0; under 6, none
+        wrapper("8.14.4");
+        assert_eq!(lines(&root, "build.gradle", src), vec![3, 6]);
+        wrapper("6.9");
+        assert_eq!(lines(&root, "build.gradle", src), Vec::<usize>::new());
+        wrapper("9.0.0");
+        // the new forms, a typed task's or an extension's own property, another object's
+        // property, a call, a named argument, a script method, a class, a closure parameter,
+        // a local variable, an extra property, a settings script
+        let quiet = "println base.libsDirectory.get()\njava { println docsDir }\ncompileJava { println sourceCompatibility }\ntask c(type: Ear) { doLast { println libDirName } }\ntasks.register('d', Jar) { println archivesBaseName }\njar { manifest { attributes 'Main-Class': mainClassName } }\nprintln foo.libsDir\nprintln rootProject.libsDir\ndeploymentDescriptor { }\nf(libsDir: 1)\ndef g() { libsDir }\nclass C { def h() { project.libsDir } }\nallprojects { p -> println libsDir }\ndef executableDir = 'b'\nprintln executableDir\next.webAppDirName = 'w'\nprintln webAppDirName\nconfigure(tasks.war) { println webAppDir }\ndef project = x\nprintln project.libsDir\n";
+        assert_eq!(lines(&root, "build.gradle", quiet), Vec::<usize>::new());
+        assert_eq!(
+            lines(&root, "settings.gradle", "println sourceCompatibility\n"),
+            Vec::<usize>::new()
+        );
+        // an extra property a script above makes, or a gradle.properties value, can be read
+        let src = "println project.archivesBaseName\nprintln mainClassName\nprintln libsDir\n";
+        std::fs::write(sub.join("build.gradle"), src).unwrap();
+        assert_eq!(lines(&sub, "build.gradle", src), vec![1, 2, 3]);
+        std::fs::write(
+            root.join("build.gradle"),
+            "allprojects { ext.archivesBaseName = 'x' }\nsubprojects { ext { libsDir = 'd' } }\n",
+        )
+        .unwrap();
+        std::fs::write(sub.join("gradle.properties"), "mainClassName=a.B\n").unwrap();
+        assert_eq!(lines(&sub, "build.gradle", src), Vec::<usize>::new());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

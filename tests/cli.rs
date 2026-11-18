@@ -2542,7 +2542,7 @@ fn a_walk_takes_extensionless_groovy_scripts_by_shebang() {
     assert!(stderr(&o).contains("not a Groovy file"), "{}", stderr(&o));
 }
 
-/// #230: `.gsh` is also a GLSL geometry shader extension.
+/// #230, #236: `.gsh` is also a GLSL geometry shader extension.
 #[test]
 fn a_walk_skips_gsh_shaders() {
     let d = Dir::new("gshshader");
@@ -2553,8 +2553,22 @@ fn a_walk_skips_gsh_shaders() {
         "#version 330 core\nlayout (points) in;\nvoid main() { EmitVertex(); }\n",
     );
     d.write("indented.gsh", "\n  #version 150\nvoid main() { }\n");
+    // #236: a license header above `#version` (Minosoft's particle.gsh), however long
+    let license = format!("/*\n{} */\n", " * Minosoft\n".repeat(40));
+    d.write(
+        "licensed.gsh",
+        &format!("{license}\n// geometry\n#version 330 core\nvoid main() {{ }}\n"),
+    );
+    // Groovy after comments, with `#version` only inside one
+    d.write("commented.gsh", &format!("/* #version */\n// x\n{UGLY}"));
     let o = run(&d.0, &["--check", "."], None);
-    assert_eq!(stdout(&o), "a.gsh\nversion.gsh\n", "{}", stderr(&o));
+    assert_eq!(
+        stdout(&o),
+        "a.gsh\ncommented.gsh\nversion.gsh\n",
+        "{}",
+        stderr(&o)
+    );
+    assert!(!stderr(&o).contains("skipped"), "{}", stderr(&o));
     // named on the command line: taken whatever it holds
     let o = run(&d.0, &["--syntax", "shader.gsh"], None);
     assert!(!o.status.success(), "{}", stdout(&o));
@@ -3911,6 +3925,49 @@ fn private_members_used_from_another_file_are_not_reported() {
             "{alone:?}"
         );
     }
+}
+
+/// #237: a build script's top-level methods are the project's, so another build script
+/// calls them as `rootProject.f()`, `project(':a').f()`, `parent.f()` or bare (AnExplorer).
+#[test]
+fn build_script_methods_called_from_another_build_script_are_not_reported() {
+    let root = "private Integer generateVersionCode(Integer v) { 100 + v }\nprivate def viaProject() { 1 }\nprivate def viaParent() { 1 }\nprivate def bare() { 1 }\nprivate def neverCalled() { 1 }\n";
+    let sub = "println rootProject.generateVersionCode(1)\nprintln project(':').viaProject()\nprintln parent.viaParent()\nprintln bare()\n";
+    let d = project(
+        "buildscriptmethods",
+        &[
+            ("settings.gradle", "include 'app'\n"),
+            ("build.gradle", root),
+            ("app/build.gradle", sub),
+        ],
+    );
+    let o = run(&d.0, &["--lint", "."], None);
+    assert_eq!(unused_private(&o), ["build.gradle:5: neverCalled"]);
+    // named alone, the other scripts are still read
+    let o = run(&d.0, &["--lint", "build.gradle"], None);
+    assert_eq!(unused_private(&o), ["build.gradle:5: neverCalled"]);
+    // a build outside git, with no config: its settings.gradle marks the build
+    std::fs::remove_dir_all(d.0.join(".git")).unwrap();
+    let o = run(&d.0, &["--lint", "."], None);
+    assert_eq!(unused_private(&o), ["build.gradle:5: neverCalled"]);
+    // a name used only in a Groovy source, or a method of a class in a build script, is
+    // still looked up as before: by its owner
+    let d = project(
+        "buildscriptclass",
+        &[
+            (
+                "build.gradle",
+                "class C { private def helper() { 1 } }\nprivate def onlyInSrc() { 1 }\n",
+            ),
+            ("other.gradle", "println x.helper()\n"),
+            ("src/A.groovy", "class A { def f(x) { x.onlyInSrc() } }\n"),
+        ],
+    );
+    let o = run(&d.0, &["--lint", "."], None);
+    assert_eq!(
+        unused_private(&o),
+        ["build.gradle:1: helper", "build.gradle:2: onlyInSrc"]
+    );
 }
 
 #[test]

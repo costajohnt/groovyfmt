@@ -5,9 +5,10 @@
 //! reports is kept, the rest of the project is searched for the name.
 //!
 //! The project is the nearest directory at or above the file holding `.git` or a config
-//! file, so it doesn't depend on which files were named on the command line: the same
-//! file gets the same answer from `--lint .`, `--lint one/File.groovy`, `--changed-since`
-//! and the LSP. Its Groovy files are found as a directory walk finds them (no symlinks,
+//! file (with neither, the nearest holding `settings.gradle` or `settings.gradle.kts`), so
+//! it doesn't depend on which files were named on the command line: the same file gets
+//! the same answer from `--lint .`, `--lint one/File.groovy`, `--changed-since` and the
+//! LSP. Its Groovy files are found as a directory walk finds them (no symlinks,
 //! skipped directories and `exclude` patterns honored) and scanned once per run, only when
 //! some file has a report of these rules. Matching is by name only (see `scan`). When the
 //! walk hits a cap the rules stay quiet for the whole project rather than report what the
@@ -114,7 +115,17 @@ impl Projects {
             return;
         }
         let file = config::normalize(&std::env::current_dir().unwrap_or_default().join(path));
-        let Some(root) = root_of(&file) else {
+        // a Gradle build outside git and with no config is still one build (#237)
+        let Some(root) = root_of(&file).or_else(|| {
+            file.ancestors()
+                .skip(1)
+                .find(|d| {
+                    ["settings.gradle", "settings.gradle.kts"]
+                        .iter()
+                        .any(|n| d.join(n).is_file())
+                })
+                .map(Path::to_path_buf)
+        }) else {
             return;
         };
         let cell = cell(&self.cache, &root);
@@ -142,10 +153,18 @@ impl Projects {
             } else {
                 MEMBER | STRING | CALL
             };
+            // a build script's own methods are the project's too: another build script calls
+            // them as `rootProject.f()`, `project(':a').f()`, `parent.f()`, or bare from a
+            // subproject, which inherits its parents' methods (#237); after `println`, a bare
+            // call scans as `BARE`
+            let build_script = v.owner.is_none()
+                && v.rule == "UnusedPrivateMethod"
+                && file.extension().is_some_and(|e| e == "gradle");
             !idx.capped
-                && !names
-                    .iter()
-                    .any(|n| idx.used_elsewhere(n, kinds, owner, me))
+                && !names.iter().any(|n| {
+                    idx.used_elsewhere(n, kinds, owner, me)
+                        || (build_script && idx.used_in_build_script(n, kinds | BARE, me))
+                })
         });
     }
 }
@@ -247,6 +266,21 @@ impl Index {
         named(name)
             .iter()
             .any(|&(f, k)| k & kinds != 0 && Some(f) != me && names_owner(f))
+    }
+
+    /// Whether `name` appears in one of the ways in `kinds` in a `.gradle` script other
+    /// than `me`, whatever it names.
+    fn used_in_build_script(&self, name: &str, kinds: u8, me: Option<u32>) -> bool {
+        self.words.get(name).is_some_and(|ps| {
+            ps.iter().any(|&(f, k)| {
+                k & kinds != 0
+                    && Some(f) != me
+                    && self
+                        .files
+                        .get(f as usize)
+                        .is_some_and(|p| p.extension().is_some_and(|e| e == "gradle"))
+            })
+        })
     }
 }
 
