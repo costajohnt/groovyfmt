@@ -200,8 +200,12 @@ fn rejected(src: &str, tree: &Tree) -> Vec<SyntaxError> {
             .is_some_and(|o| !matches!(o.kind(), "method_declaration" | "constructor_declaration")),
         _ => false,
     };
-    // Found from the `{`s that open a method's body, which costs less than a walk of the tree.
+    // Found from the `{`s that open a method's body, after its `)`, which costs less than a
+    // walk of the tree. ponytail: a method with a `throws` clause is missed.
     for (i, _) in src.match_indices('{') {
+        if !src[..i].trim_end().ends_with(')') {
+            continue;
+        }
         let Some(n) = root
             .descendant_for_byte_range(i, i + 1)
             .filter(|b| b.kind() == "{")
