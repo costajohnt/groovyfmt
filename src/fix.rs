@@ -170,6 +170,12 @@ fn edits(todo: &[Violation]) -> (Vec<usize>, Vec<bool>) {
         let Some(e) = &todo[i].fix else {
             continue;
         };
+        // the same edit for several violations (GradleRemovedApi's import for each use of
+        // a name) is made once, and fixes them all
+        if out.iter().any(|&l| todo[l].fix.as_ref() == Some(e)) {
+            done[i] = true;
+            continue;
+        }
         match out.last().and_then(|&l| todo[l].fix.as_ref()) {
             Some(last) if e.range.start < last.range.end => {
                 done[i] = last.with.is_empty() && e.range.end <= last.range.end;

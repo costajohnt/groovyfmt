@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- GradleRemovedApi reports, under a wrapper pinning Gradle 9 or later, the classes Groovy 4 moved out of `groovy.util`: a bare `XmlSlurper`, `XmlParser` or `FileNameFinder`, which found `groovy.util`'s through Groovy's default imports, and `groovy.util.XmlSlurper` or `groovy.util.slurpersupport.GPathResult` in an import or a qualified name. Gradle 9.0 runs scripts with Groovy 4, so they fail with "unable to resolve class XmlSlurper" (checked with Gradle 9.9.1). `--fix` adds `import groovy.xml.XmlSlurper` (`groovy.ant.FileNameFinder`) after the script's imports, or before its first statement, and rewrites `groovy.util` in an import or qualified name; the new names are in Groovy 3, so the fixed script also builds on Gradle 8.14.4. A name the script imports or declares a class of is left alone (Contrast-Security-OSS/mcp-contrast's `buildSrc/build.gradle`, hmcts/nfdiv-ccd-case-migration's `gradle/suppress.gradle`). ([#245](https://github.com/costajohnt/groovyfmt/issues/245))
+
+### Fixed
+
+- GradleRemovedApi reports more Gradle 9.0 removals under a wrapper pinning 9 or later, each checked to build on Gradle 8.14.4 and fail on 9.9.1, with replacements that build on both ([#245](https://github.com/costajohnt/groovyfmt/issues/245)):
+  - a removed convention property set in `java { }` other than `sourceCompatibility` and `targetCompatibility` (`java { archivesBaseName = x }`), in a plugin callback (`pluginManager.withPlugin('java-base') { sourceCompatibility = 8 }`, `plugins.withId`, `plugins.withType`), or `archivesBaseName` in an archive task's block (`jar { }`, `tasks.jar { }`), all of which fall through to the project; reading one in `withPlugin` or `withId` too
+  - `exec { }` and `javaexec { }` in a settings or init script, not only a build script
+  - a report's `destination` set (`html.destination = file(x)`, `xml.destination file(x)`); use `outputLocation`
+  - a copy spec's `fileMode` and `dirMode` in a Copy, Sync or archive task, `copy { }`, `sync { }` or a child `from(x) { }` or `into(x) { }`; use `filePermissions { unix(...) }` and `dirPermissions { unix(...) }`
+  - the IDEA module's `testSourceDirs` and `testResourceDirs`; use `testSources.from(...)` and `testResources.from(...)`
+
 ## 0.27.1 (2026-11-18)
 
 ### Fixed

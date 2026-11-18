@@ -554,6 +554,32 @@ fn gradle_removed_conventions_follow_the_wrapper() {
     assert_eq!(hits("8.14.4"), Vec::<String>::new());
 }
 
+/// #245: Gradle 9.0's Groovy 4 moved XmlSlurper out of groovy.util; `--fix` adds the import
+/// under a 9.x wrapper (a buildSrc script finds the build's), and leaves a 8.x build alone.
+#[test]
+fn gradle_groovy4_moved_classes_fix_follows_the_wrapper() {
+    let src = "plugins { id 'groovy' }\ndef p = new XmlSlurper()\nprintln new XmlSlurper().parseText('<a/>')\n";
+    let wrapper = |v: &str| {
+        format!("distributionUrl=https\\://services.gradle.org/distributions/gradle-{v}-bin.zip\n")
+    };
+    let fixed = |v: &str| {
+        let d = project(
+            &format!("gradle-groovy4-{v}"),
+            &[
+                ("buildSrc/build.gradle", src),
+                ("settings.gradle", "rootProject.name = 'a'\n"),
+                ("gradle/wrapper/gradle-wrapper.properties", &wrapper(v)),
+            ],
+        );
+        let o = run(&d.0, &["--lint", "--fix"], None);
+        (stdout(&o) + &stderr(&o), d.read("buildSrc/build.gradle"))
+    };
+    let (out, text) = fixed("9.9.1");
+    assert!(out.contains("fixed 2 violations"), "{out}");
+    assert_eq!(text, format!("import groovy.xml.XmlSlurper\n{src}"));
+    assert_eq!(fixed("8.14.4").1, src);
+}
+
 const BROKEN_AT: &str =
     "Broken.groovy:1:10: could not parse: expected `}` to close the `{` on line 1\n";
 
