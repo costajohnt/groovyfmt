@@ -6,6 +6,10 @@
 
 - A Docker image, `ghcr.io/costajohnt/groovyfmt`, for linux/amd64 and linux/arm64, is published with each release, starting with 0.29.0: `docker run --rm -v "$PWD:/src" -w /src ghcr.io/costajohnt/groovyfmt --check`.
 
+### Fixed
+
+- The language server's diagnostics now match `--lint`: with `gradle_compile_replacement` set, a `compile` dependency's GradleRemovedConfiguration message names the configured replacement, where the editor showed the generic message. The command line, `--lint --fix`, the editor's diagnostics and its code actions now share one lint pipeline, so they can't drift apart again.
+
 ## 0.29.0 (2026-11-18)
 
 ### Fixed

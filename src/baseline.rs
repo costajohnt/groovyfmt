@@ -97,6 +97,30 @@ pub fn relative(path: &Path, dir: &Path) -> Option<String> {
     Some(out.join("/"))
 }
 
+/// `path` as the baseline `file` names it: relative to the baseline's directory.
+pub fn name_in(path: &Path, file: &Path) -> Option<String> {
+    relative(path, file.parent().unwrap_or(Path::new("")))
+}
+
+/// The baseline file for a file governed by `cfg`: `flag` (`--baseline`, empty for none)
+/// when given, else the config's, which must stay in the config's directory (`confined`).
+pub fn file_for(
+    cfg: &crate::config::Config,
+    flag: Option<&Path>,
+) -> Result<Option<PathBuf>, String> {
+    match flag {
+        Some(f) if f.as_os_str().is_empty() => Ok(None),
+        Some(f) => Ok(Some(f.to_path_buf())),
+        None => {
+            let Some(f) = &cfg.baseline else {
+                return Ok(None);
+            };
+            confined(&cfg.root, f)?;
+            Ok(Some(f.clone()))
+        }
+    }
+}
+
 impl Baseline {
     pub fn parse(text: &str) -> Result<Baseline, String> {
         let doc = crate::json::parse(text)?;
@@ -159,9 +183,10 @@ impl Baseline {
         Baseline::parse(&text).map_err(|e| err(&e))
     }
 
-    /// Whether the baseline has any violation of `rule` on a line like `line` in `path`
-    /// (for `--fix`, which leaves those alone).
-    pub fn covers_line(&self, path: &str, rule: &str, line: &str) -> bool {
+    /// Whether the baseline has any violation of `rule` on a line like line `n` (1-based) of
+    /// `text` in `path` (for `--fix`, which leaves those alone).
+    pub fn covers_line(&self, path: &str, rule: &str, text: &str, n: usize) -> bool {
+        let line = text.split('\n').nth(n.saturating_sub(1)).unwrap_or("");
         self.files
             .get(path)
             .is_some_and(|(counts, _)| counts.contains_key(&(rule.to_string(), fingerprint(line))))

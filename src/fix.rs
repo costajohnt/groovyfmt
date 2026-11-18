@@ -12,7 +12,7 @@
 //! so this runs rounds until one finds nothing to fix. A fix failing the checks on its own is
 //! dropped, its report left standing, and the others are made without it.
 
-use crate::lint::{Edit, Violation, lint_file};
+use crate::lint::{Edit, Violation, lint_opt_in};
 use std::ops::Range;
 use std::path::Path;
 use tree_sitter::{Node, Tree};
@@ -51,10 +51,9 @@ pub fn fix(
     // why a fix was dropped, reported when no other fix is made
     let mut dropped = None;
     for n in 0..=MAX_ROUNDS {
-        let Ok(mut vs) = lint_file(path, &text) else {
+        let Ok(vs) = lint_opt_in(path, &text, compile, &|_| None) else {
             return Fix::Refused("parse error");
         };
-        crate::lint::opt_in_fixes(&mut vs, &text, compile);
         let (todo, keep): (Vec<_>, Vec<_>) = vs
             .into_iter()
             .partition(|v| v.fix.is_some() && wanted(v, &text));
@@ -313,8 +312,8 @@ fn check(
         .map(|v| key(v, &replaced))
         .collect();
     let new: Vec<Range<usize>> = inserted.iter().filter(|r| !r.is_empty()).cloned().collect();
-    let mut vs = lint_file(path, out).map_err(|_| "the fixed file would not parse")?;
-    crate::lint::opt_in_fixes(&mut vs, out, compile);
+    let vs =
+        lint_opt_in(path, out, compile, &|_| None).map_err(|_| "the fixed file would not parse")?;
     let mut got: Vec<_> = vs
         .iter()
         .filter(|v| !auto(v) && !within(&new, &v.span))
@@ -435,7 +434,7 @@ fn shape(tree: &Tree, removed: &[Range<usize>]) -> Vec<(u16, Option<u16>, usize)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lint::lint;
+    use crate::lint::{lint, lint_file};
 
     fn fixed(src: &str) -> Fix {
         fix(Path::new("A.groovy"), src, None, |_, _| true)

@@ -119,6 +119,41 @@ pub fn json_with(files: &[FileReport], extra: &[(&str, usize)]) -> String {
     s
 }
 
+/// GitHub Actions workflow-command escaping for property values and messages.
+fn gh_escape(s: &str, property: bool) -> String {
+    let s = s
+        .replace('%', "%25")
+        .replace('\r', "%0D")
+        .replace('\n', "%0A");
+    if property {
+        s.replace(':', "%3A").replace(',', "%2C")
+    } else {
+        s
+    }
+}
+
+/// One `--output-format github` line, a GitHub Actions workflow command:
+/// `::{command} file=F[,line=L,col=C][,title=T]::{message}`, each part escaped as the runner
+/// reads it. `file` and `message` come as the text output shows them (`crate::printable`),
+/// which keeps control characters and `##[` out.
+pub fn github(
+    command: &str,
+    file: &str,
+    at: Option<(usize, usize)>,
+    title: Option<&str>,
+    message: &str,
+) -> String {
+    let mut s = format!("::{command} file={}", gh_escape(file, true));
+    if let Some((line, col)) = at {
+        let _ = write!(s, ",line={line},col={col}");
+    }
+    if let Some(title) = title {
+        let _ = write!(s, ",title={}", gh_escape(title, true));
+    }
+    let _ = write!(s, "::{}", gh_escape(message, false));
+    s
+}
+
 /// A path as a SARIF `artifactLocation.uri`, a relative (or absolute-path) URI reference:
 /// every byte other than unreserved characters and `/` percent-encoded.
 fn uri(path: &str) -> String {
@@ -203,6 +238,89 @@ mod tests {
             format!("\"x##{lb}error]##{lb}#[ ###{lb}\"")
         );
         assert!(!string("##[a]").contains("##["));
+    }
+
+    #[test]
+    fn gh_escape_properties_and_messages() {
+        assert_eq!(gh_escape("a:b,c%\r\n", true), "a%3Ab%2Cc%25%0D%0A");
+        assert_eq!(gh_escape("a:b,c%\n", false), "a:b,c%25%0A");
+    }
+
+    #[test]
+    fn github_lines_escape_properties_and_messages() {
+        assert_eq!(
+            github(
+                "warning",
+                "a:b,c%\r\n.groovy",
+                Some((3, 4)),
+                Some("Rule"),
+                "x: y, 50%\r\nz"
+            ),
+            "::warning file=a%3Ab%2Cc%25%0D%0A.groovy,line=3,col=4,title=Rule::x: y, 50%25%0D%0Az"
+        );
+        assert_eq!(
+            github(
+                "error",
+                "A.groovy",
+                None,
+                None,
+                "Not formatted: parse error"
+            ),
+            "::error file=A.groovy::Not formatted: parse error"
+        );
+        // as main passes them: through `printable`, which escapes controls and `##[`
+        let (name, message) = ("::x##[e]\x1b.groovy", "m ::warning::##[error]\x07\n");
+        let line = github(
+            "warning",
+            &crate::printable(name),
+            Some((1, 2)),
+            Some("could not parse"),
+            &crate::printable(message),
+        );
+        assert_eq!(
+            line,
+            "::warning file=%3A%3Ax##\\[e]\\u{1b}.groovy,line=1,col=2,title=could not parse::m ::warning::##\\[error]\\u{7}\\n"
+        );
+    }
+
+    #[test]
+    fn json_and_sarif_escape_names_and_messages() {
+        let files = [FileReport {
+            path: "::x##[e]\n\x1b.groovy".into(),
+            status: "skipped",
+            reason: Some("::warning::##[error]\r".into()),
+            diagnostics: vec![Diagnostic {
+                rule: PARSE_RULE,
+                message: "::error::##[e]\x07\n".into(),
+                line: 1,
+                col: 1,
+                end_line: 1,
+                end_col: 2,
+                fixable: false,
+            }],
+        }];
+        for doc in [json(&files), sarif(&files, "0")] {
+            assert!(!doc.contains("##["), "{doc}");
+            assert!(!doc.contains('\x1b') && !doc.contains('\x07') && !doc.contains('\r'));
+            assert!(
+                doc.lines().all(|l| !l.trim_start().starts_with("::")),
+                "{doc}"
+            );
+        }
+        let j = json(&files);
+        assert!(
+            j.contains(r#""path":"::x##\u005be]\n\u001b.groovy""#),
+            "{j}"
+        );
+        assert!(
+            j.contains(r#""message":"::error::##\u005be]\u0007\n""#),
+            "{j}"
+        );
+        let s = sarif(&files, "0");
+        assert!(
+            s.contains(r#""uri":"%3A%3Ax%23%23%5Be%5D%0A%1B.groovy""#),
+            "{s}"
+        );
     }
 
     #[test]
