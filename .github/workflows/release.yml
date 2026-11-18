@@ -42,9 +42,11 @@ jobs:
           node-version: 22
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
+          pattern: "*-{linux-musl,apple-darwin,pc-windows-gnu}"
           merge-multiple: true
           path: ${{ runner.temp }}/archives
-      - run: npm ci --no-audit --no-fund
+      # No install scripts: esbuild runs through its JS shim without its postinstall.
+      - run: npm ci --no-audit --no-fund --ignore-scripts
       - name: Package with the archives' checksums
         run: |
           set -euxo pipefail
@@ -67,9 +69,18 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Only the build archives and the two plugin artifacts, by name, so no other job's
+      # artifact can land in the release.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
+          pattern: "*-{linux-musl,apple-darwin,pc-windows-gnu}"
           merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: vscode-extension
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: jetbrains-plugin
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -113,6 +124,7 @@ jobs:
           java-version: 21.0.13
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
+          pattern: "*-{linux-musl,apple-darwin,pc-windows-gnu}"
           merge-multiple: true
           path: ${{ runner.temp }}/archives
       # Dependency verification is on: gradle/verification-metadata.xml checks every download.
@@ -241,6 +253,7 @@ jobs:
           node-version: 24
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
+          pattern: "*-{linux-musl,apple-darwin,pc-windows-gnu}"
           merge-multiple: true
           path: archives
       - run: node npm/build.mjs "$GITHUB_REF_NAME" archives
@@ -276,6 +289,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
+          pattern: "*-linux-musl"
           merge-multiple: true
           path: archives
       - name: Build and push

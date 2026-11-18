@@ -26,7 +26,7 @@ $ groovyfmt --lint --output-format json
 {"version":1,"files":[
 {"path":"A.groovy","status":"unchanged","skip_reason":null,"diagnostics":[{"rule":"UnusedImport","severity":"warning","message":"The [a.b.Unused] import is never referenced","line":1,"column":1,"end_line":1,"end_column":18,"fixable":true}]},
 {"path":"Broken.groovy","status":"skipped","skip_reason":"parse error","diagnostics":[{"rule":"ParseError","severity":"warning","message":"expected `}` to close the `{` on line 1","line":1,"column":10,"end_line":1,"end_column":10,"fixable":false}]}
-],"summary":{"files":2,"unchanged":1,"would_reformat":0,"reformatted":0,"skipped":1,"errors":0,"diagnostics":2}}
+],"summary":{"files":2,"unchanged":1,"would_reformat":0,"reformatted":0,"fixed":0,"skipped":1,"errors":0,"diagnostics":2}}
 ```
 
 The schema is versioned. `version` changes whenever a field is removed or changes meaning. New fields may be added within a version.

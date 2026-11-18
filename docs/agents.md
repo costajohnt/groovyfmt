@@ -14,8 +14,9 @@ After editing a `.groovy`, `.gradle` or `Jenkinsfile`, check it with groovyfmt:
 - `groovyfmt --syntax <file>`: does it parse? Each problem prints as
   `file:line:col: could not parse: <message>`. groovyfmt's grammar is not the Groovy
   compiler, so a few valid files fail; if the code is right, say so instead of rewriting it.
-- `groovyfmt --lint --fix <file>`: removes unused, duplicate and same-package imports and
-  stray semicolons, then lists what is left. `groovyfmt --explain <Rule>` explains a rule.
+- `groovyfmt --lint --fix <file>`: fixes what the rules mark fixable (imports, semicolons,
+  removed Gradle syntax and more), then lists what is left. `groovyfmt --explain <Rule>`
+  explains a rule.
 - Fix the violations your change introduces. Don't add `groovyfmt-ignore` comments,
   `@SuppressWarnings` or baseline entries to silence them unless you are asked to; a
   baseline (`.groovyfmt-baseline.json`) already holds the old ones, so don't rewrite it.
@@ -40,7 +41,7 @@ This [PostToolUse hook](https://code.claude.com/docs/en/hooks) formats every Gro
         "hooks": [
           {
             "type": "command",
-            "command": "f=$(jq -r '.tool_input.file_path // empty'); case \"$f\" in *.groovy|*.gradle|*.gvy|*.gy|*.gsh|*/Jenkinsfile|Jenkinsfile) groovyfmt -- \"$f\" >/dev/null 2>&1; groovyfmt --lint --strict --output-format json -- \"$f\" >&2 || exit 2;; esac"
+            "command": "f=$(jq -r '.tool_input.file_path // empty'); case \"$f\" in *.md|*.txt|*.yml|*.yaml|*.json|*~) ;; *.groovy|*.gradle|*.gvy|*.gy|*.gsh|*.jenkinsfile|*.jenkins|*/Jenkinsfile|Jenkinsfile|*/Jenkinsfile[._-]*|Jenkinsfile[._-]*) groovyfmt -- \"$f\" >/dev/null 2>&1; groovyfmt --lint --strict --output-format json -- \"$f\" >&2 || exit 2;; esac"
           }
         ]
       }
@@ -51,7 +52,7 @@ This [PostToolUse hook](https://code.claude.com/docs/en/hooks) formats every Gro
 
 What it does:
 
-1. It reads the edited path from the `tool_input.file_path` field of its JSON input, and does nothing for other files.
+1. It reads the edited path from the `tool_input.file_path` field of its JSON input, and does nothing for other files. The names are the ones groovyfmt [picks up](usage.md#which-files), less the common non-Groovy suffixes (`Jenkinsfile.md`), which groovyfmt would read as Groovy when named on the command line.
 2. It formats the file in place, which changes nothing when the file doesn't parse.
 3. It lints with `--strict`, so a file groovyfmt couldn't parse fails too.
 4. When anything is found, the JSON report (lint violations, or `ParseError` diagnostics with line and column) goes to stderr and the hook exits 2. For PostToolUse, Claude Code then shows that stderr to Claude next to the tool result.

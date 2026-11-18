@@ -85,9 +85,9 @@ Options:
       --write-baseline[=FILE]
                            With --lint: record the current violations in FILE (default:
                            --baseline, the config's `baseline`, .groovyfmt-baseline.json)
-      --fix                With --lint: remove unused, duplicate and same-package
-                           imports and unnecessary semicolons in place (violations marked
-                           \"(fixable)\"), then report what remains
+      --fix                With --lint: fix in place what docs/lint.md marks fixable
+                           (imports, semicolons, removed Gradle syntax and more; violations
+                           marked \"(fixable)\"), then report what remains
   -v, --verbose            Also report skipped files and directories, where each file
                            failed to parse, and timing
   -h, --help               Print help
@@ -1147,6 +1147,8 @@ fn explain(name: &str, cfg: &Config) -> i32 {
     };
     let fix = if r.fixable {
         "`groovyfmt --lint --fix` fixes it."
+    } else if lint::PARTLY_FIXABLE.contains(&r.name) {
+        "Partly fixed automatically (see lint.md#fixing)."
     } else {
         "Not fixed automatically."
     };

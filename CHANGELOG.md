@@ -8,6 +8,12 @@
 - GradleRemovedApi no longer reports reading a removed convention property that the script tests for with `hasProperty`: `if (!project.hasProperty('mainClassName')) { return }` then `mainClass = project.mainClassName` reads an extra property the subprojects set (`ext.mainClassName = 'x.Y'`), which Gradle 9.9.1 resolves (stackitcloud/stackit-sdk-java's `build.gradle`). Setting the tested name is still reported. ([#248](https://github.com/costajohnt/groovyfmt/issues/248))
 - GradleRemovedApi reports, under a wrapper pinning Gradle 9 or later, an import (static too) of an `org.gradle.util` class Gradle 9.0 removed: `ClosureBackedAction`, `CollectionUtils`, `ConfigureUtil`, `DistributionLocator`, `GFileUtils`, `GUtil`, `NameMatcher`, `NameValidator`, `RelativePathUtil`, `SingleMessageLogger`, `TextUtil`, `VersionNumber` and `WrapUtil`. Each import builds on Gradle 8.14.4 and fails on 9.9.1 with "unable to resolve class"; `GradleVersion`, `Path` and `Configurable` remain (Aiven-Open/transforms-for-apache-kafka-connect's `build.gradle`). ([#248](https://github.com/costajohnt/groovyfmt/issues/248))
 
+### Changed
+
+- `--explain GradleRemovedApi` says the rule is partly fixed automatically, and its description names the classes Groovy 4 moved.
+- The release workflow downloads only the build artifacts each job publishes, and the VS Code extension build runs `npm ci --ignore-scripts`.
+- README: a before/after example, a Gradle 9 lint example, the current rule count and the full `--fix` scope.
+
 ## 0.28.0 (2026-11-18)
 
 ### Added

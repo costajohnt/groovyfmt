@@ -5,6 +5,7 @@
 1. Bump `version` in `Cargo.toml` (and `Cargo.lock`) and in the VS Code extension (`npm version <version> --no-git-tag-version` in `editors/vscode`, which updates `package.json` and `package-lock.json`; CI and the tag check fail when the two differ), add a heading to `editors/vscode/CHANGELOG.md` if the extension itself changed, and to `editors/jetbrains/CHANGELOG.md` if the JetBrains plugin changed (the plugin takes its version from `Cargo.toml`, and its Marketplace change notes are that file's first section), add a `## <version> (<date>)` heading to `CHANGELOG.md`, and update the version pinned in the examples (`costajohnt/groovyfmt@v<version>`, `rev: v<version>`, `version: <version>`, `version = '<version>'`) in `README.md` and `docs/ci.md`; `grep -rnF '<old version>' README.md docs/ci.md` finds them. Merge to `main`.
 2. Run `gh workflow run ci.yml --ref main` and wait for it to pass. Pull requests and pushes skip the two macOS release builds and the macOS action and npm jobs (hosted macOS runners are scarce); this run has them, so a macOS break shows up before the tag does.
 3. Tag the merge commit `v<version>` and push the tag.
+4. When `release` has succeeded, update the [Homebrew](#homebrew) formula.
 
 `release.yml` then checks the tag (`check`), runs all of `ci.yml` on it (`ci`), and creates the GitHub release with the five archives and their `.sha256` files (`release`): a `.tar.gz` for each Linux and macOS target and a `.zip` for Windows, plus the VS Code extension as `groovyfmt-<version>.vsix`. The `jetbrains` job tests and packages the JetBrains plugin before that, and `release` attaches `groovyfmt-jetbrains-<version>.zip` with the rest: releases are immutable, so no asset can be added once one is published, and a failed plugin build stops the release. The pre-commit hooks (`.pre-commit-hooks.yaml`) and the GitHub Action (`action.yml`) need nothing more: they are used straight from the tag.
 
@@ -142,20 +143,16 @@ Artifact attestations ([`actions/attest`](https://docs.github.com/en/actions/how
 
 ## Homebrew
 
-`packaging/homebrew/render.sh <version> <dir>` prints a formula for the release from the four `.sha256` files in `<dir>`. It installs the prebuilt binary for the machine (macOS or Linux, arm64 or x86_64); there are no bottles to build. CI renders it for the latest release and syntax-checks it with `ruby -c`. Brew itself can't install it until the release downloads are public.
+The tap is [costajohnt/homebrew-tap](https://github.com/costajohnt/homebrew-tap). `packaging/homebrew/render.sh <version> <dir>` prints a formula for the release from the four `.sha256` files in `<dir>`. It installs the prebuilt binary for the machine (macOS or Linux, arm64 or x86_64); there are no bottles to build. CI renders it for the latest release and syntax-checks it with `ruby -c`.
 
-To create the tap, once the repository is public:
+After each release, once `release` has succeeded:
 
 ```sh
-gh repo create costajohnt/homebrew-tap --public
-gh repo clone costajohnt/homebrew-tap && mkdir -p homebrew-tap/Formula
 gh release download v<version> --repo costajohnt/groovyfmt --pattern '*.sha256' --dir /tmp/sha
-packaging/homebrew/render.sh v<version> /tmp/sha > homebrew-tap/Formula/groovyfmt.rb
-# commit and push homebrew-tap, then:
-brew install costajohnt/tap/groovyfmt && brew test groovyfmt
+packaging/homebrew/render.sh v<version> /tmp/sha > <homebrew-tap checkout>/Formula/groovyfmt.rb
+# commit "groovyfmt <version>" and push homebrew-tap, then:
+brew upgrade costajohnt/tap/groovyfmt && groovyfmt --version
 ```
-
-For each later release, render the formula again and commit it to the tap.
 
 ## crates.io
 
@@ -167,15 +164,13 @@ For each later release, render the formula again and commit it to the tap.
 
 A version can't be replaced once published, only yanked. Once a CI publish has worked, the crate's "Require trusted publishing for all new versions" setting can be switched on so an API token can no longer publish it.
 
-## Going public, in order
+## Channels not published yet
 
-1. Merge the install-channel changes and cut a release, so a tag carries `action.yml` and `.pre-commit-hooks.yaml`.
-2. Make the repository public. Release downloads, the action, the pre-commit hooks and `cargo install --git` then work without credentials.
-3. npm: claim the scope and set up trusted publishing as above, then set `PUBLISH_NPM`.
-4. Docker: set `PUBLISH_IMAGE`.
-5. Gradle plugin: create the portal account and API key secrets as above, then set `PUBLISH_GRADLE_PLUGIN`.
-   VS Code extension: create the Marketplace publisher and trusted publishing policy and the Open VSX namespace and `OVSX_PAT` as above, then set `PUBLISH_VSCODE` and `PUBLISH_OPENVSX`.
-   JetBrains plugin: create the vendor, upload the first version by hand and store the token (and the signing secrets, if signing) as above, then set `PUBLISH_JETBRAINS`.
-6. Push the next release tag. Check that `publish-npm`, `publish-image` and `publish-gradle-plugin` succeeded, `npx groovyfmt --version` prints the new version, and `docker run --rm ghcr.io/costajohnt/groovyfmt --version` too (after making the package public).
-7. Homebrew: create the tap from that release as above.
-8. In `README.md` (Install) and `docs/ci.md` (Gradle), drop the "not published yet" lines for each channel that is now published.
+The repository, the Homebrew tap, crates.io, npm and the Visual Studio Marketplace are live. To switch on the rest:
+
+1. Docker: set `PUBLISH_IMAGE`. After the next release, make the package public and check that `docker run --rm ghcr.io/costajohnt/groovyfmt --version` prints the new version.
+2. Gradle plugin: create the portal account and API key secrets as above, then set `PUBLISH_GRADLE_PLUGIN`.
+3. Open VSX: create the namespace and `OVSX_PAT` as above, then set `PUBLISH_OPENVSX`.
+4. JetBrains plugin: create the vendor, upload the first version by hand and store the token (and the signing secrets, if signing) as above, then set `PUBLISH_JETBRAINS`.
+5. Push the next release tag and check that the new jobs succeeded.
+6. In `README.md` (Install) and `docs/ci.md` (Gradle), drop the "not published yet" lines for each channel that is now published.
