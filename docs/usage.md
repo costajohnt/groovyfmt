@@ -86,7 +86,7 @@ These files are skipped and listed under `-v` or `--strict`:
 
 ## Parse errors
 
-A file groovyfmt can't parse is never formatted or linted. `--syntax` lists where parsing failed, one line per place, up to 10 per file and then a count of the rest. `-v` and `--strict` show the same lines under each skipped file, and `--stdin` prints them after its error.
+A file groovyfmt can't parse is never formatted or linted. `--syntax` lists where parsing failed, one line per place, up to 10 per file and then a count of the rest. It also lists a shebang (`#!`) after the first line, which parses and is still formatted but which Groovy 2.4, 3 and 4 reject. `-v` and `--strict` show the same lines under each skipped file, and `--stdin` prints them after its error.
 
 ```console
 $ groovyfmt --syntax

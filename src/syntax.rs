@@ -1,6 +1,7 @@
 //! Where a file failed to parse, as messages. They say what groovyfmt could not parse, never
 //! that the code is invalid Groovy: the grammar is not the compiler, and about 0.5% of valid
-//! files fail to parse.
+//! files fail to parse. A few constructs that parse are also reported because Groovy 2.4, 3
+//! and 4 all reject them (`rejected`).
 
 use crate::text;
 use tree_sitter::{Node, Tree};
@@ -18,9 +19,51 @@ pub struct SyntaxError {
     pub message: String,
 }
 
-/// `errors` for source text.
+/// `errors` for source text, and the places that parse but that Groovy 2.4, 3 and 4 all
+/// reject (`rejected`).
 pub fn check(src: &str) -> (Vec<SyntaxError>, usize) {
-    errors(src, &crate::parse(src))
+    let tree = crate::parse(src);
+    let (mut found, mut total) = errors(src, &tree);
+    let extra = rejected(src, &tree);
+    total += extra.len();
+    found.extend(extra);
+    found.sort_by_key(|e| (e.line, e.col));
+    found.truncate(MAX_REPORTED);
+    (found, total)
+}
+
+/// What the grammar takes leniently and Groovy 2.4, 3 and 4 reject: a shebang after the first
+/// line, as after a license comment. Only the top level holds a shebang.
+// ponytail: a primitive type name as a variable's name (`{ char -> }`) is rejected by Groovy
+// too, but where the grammar misreads a valid declaration the name lands on `int` or `boolean`,
+// so checking it reported valid files.
+fn rejected(src: &str, tree: &Tree) -> Vec<SyntaxError> {
+    let root = tree.root_node();
+    let mut c = root.walk();
+    root.children(&mut c)
+        .filter(|n| n.kind() == "shebang" && n.start_position().row > 0)
+        .map(|n| {
+            let (line, col) = position(src, n.start_position());
+            let (end_line, end_col) = position(src, n.end_position());
+            SyntaxError {
+                line,
+                col,
+                end_line,
+                end_col,
+                message: "a shebang (`#!`) must be on the file's first line".into(),
+            }
+        })
+        .collect()
+}
+
+/// A tree-sitter point as a 1-based line and column; tree-sitter columns count bytes, these
+/// count characters, as lint does.
+fn position(src: &str, p: tree_sitter::Point) -> (usize, usize) {
+    let line = src.split('\n').nth(p.row).unwrap_or("");
+    let col = line
+        .get(..p.column)
+        .map_or(p.column, |prefix| prefix.chars().count());
+    (p.row + 1, col + 1)
 }
 
 /// The places in `tree` that did not parse, in document order: the first `MAX_REPORTED`,
@@ -47,14 +90,7 @@ fn describe(src: &str, n: Node) -> SyntaxError {
     } else {
         unexpected(src, n, &context)
     };
-    // tree-sitter columns count bytes; report characters, as lint does
-    let pos = |p: tree_sitter::Point| {
-        let line = src.split('\n').nth(p.row).unwrap_or("");
-        let col = line
-            .get(..p.column)
-            .map_or(p.column, |prefix| prefix.chars().count());
-        (p.row + 1, col + 1)
-    };
+    let pos = |p| position(src, p);
     let (line, col) = pos(at.start_position());
     // an unparsed run can span many lines; only its first token is pointed at
     let end = if at.is_error() {
@@ -231,6 +267,27 @@ mod tests {
         v.iter()
             .map(|e| format!("{}:{}: {}", e.line, e.col, e.message))
             .collect()
+    }
+
+    fn checked(src: &str) -> Vec<String> {
+        check(src)
+            .0
+            .iter()
+            .map(|e| format!("{}:{}: {}", e.line, e.col, e.message))
+            .collect()
+    }
+
+    #[test]
+    fn constructs_groovy_rejects_are_reported() {
+        let shebang = "a shebang (`#!`) must be on the file's first line";
+        assert_eq!(
+            checked("// license\n#!/usr/bin/env groovy\nprintln 1\n"),
+            [format!("2:1: {shebang}")]
+        );
+        assert_eq!(
+            checked("#!/usr/bin/env groovy\nprintln 1\n"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

@@ -344,6 +344,41 @@ static bool skip_parameter_parens(TSLexer *lexer) {
     return false;
 }
 
+// Whether `else` comes next, past whitespace, line breaks and comments.
+static bool else_follows(TSLexer *lexer) {
+    for (;;) {
+        while (is_whitespace(lexer->lookahead)) {
+            advance(lexer);
+        }
+        if (lexer->lookahead != '/') {
+            break;
+        }
+        advance(lexer);
+        if (lexer->lookahead == '/') {
+            while (!lexer->eof(lexer) && lexer->lookahead != '\n') {
+                advance(lexer);
+            }
+        } else if (lexer->lookahead == '*') {
+            advance(lexer);
+            for (;;) {
+                if (lexer->eof(lexer)) {
+                    return false;
+                }
+                int32_t c = lexer->lookahead;
+                advance(lexer);
+                if (c == '*' && lexer->lookahead == '/') {
+                    advance(lexer);
+                    break;
+                }
+            }
+        } else {
+            return false;
+        }
+    }
+    char word[5];
+    return read_word(lexer, word, sizeof(word)) == 4 && memcmp(word, "else", 4) == 0;
+}
+
 static bool skip_whitespace(TSLexer *lexer) {
     bool newline = false;
     while (is_whitespace(lexer->lookahead)) {
@@ -954,6 +989,17 @@ bool tree_sitter_groovy_external_scanner_scan(
                 lexer->result_symbol = COMMAND_LITERAL_START;
                 return true;
             }
+            // `if (b) p.accept f(t())` then `else`: a call as a braceless if
+            // body's one argument, which elsewhere reads as two statements or
+            // a method declaration; only an `else` after it decides.
+            if (lexer->lookahead == '(' && is_name_argument(word, len)) {
+                advance(lexer);
+                if (skip_parens(lexer) && else_follows(lexer)) {
+                    lexer->result_symbol = COMMAND_LITERAL_START;
+                    return true;
+                }
+                return false;
+            }
             // `println as[0]`: a variable named `as` (Groovy 3 and 4), since
             // no type starts with `[`.
             if (len == 2 && memcmp(word, "as", 2) == 0 && lexer->lookahead == '[') {
@@ -1072,8 +1118,23 @@ bool tree_sitter_groovy_external_scanner_scan(
     // expression (`as`, `in`, `instanceof`) or the statement (`else`) is not
     // an argument.
     if (valid_symbols[COMMAND_VALUE_START] && !valid_symbols[ERROR_SENTINEL]) {
-        while (lexer->lookahead == ' ' || lexer->lookahead == '\t') {
-            lexer->advance(lexer, true);
+        // A backslash at the end of the line continues it: `def r = sh \`
+        // then `script: 'x'`.
+        for (;;) {
+            if (lexer->lookahead == ' ' || lexer->lookahead == '\t') {
+                lexer->advance(lexer, true);
+            } else if (lexer->lookahead == '\\') {
+                lexer->advance(lexer, true);
+                if (lexer->lookahead == '\r') {
+                    lexer->advance(lexer, true);
+                }
+                if (lexer->lookahead != '\n') {
+                    return false;
+                }
+                lexer->advance(lexer, true);
+            } else {
+                break;
+            }
         }
         int32_t c = lexer->lookahead;
         if (c == '\'' || c == '"' || (c >= '0' && c <= '9')) {
