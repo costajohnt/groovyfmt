@@ -903,13 +903,18 @@ const TASK_SCOPES: &[&str] = &[
     "tasks",
 ];
 
-/// Blocks a project's `dependencies { }` can sit in and still be the project's.
+/// Blocks a project's `dependencies { }` can sit in and still be the project's, with the
+/// plugin callbacks: `plugins.withType(JavaPlugin) { }`, `pluginManager.withPlugin('java') { }`,
+/// `plugins.withId('java') { }` (datahub-gma).
 const PROJECT_SCOPES: &[&str] = &[
     "allprojects",
     "subprojects",
     "project",
     "configure",
     "afterEvaluate",
+    "withType",
+    "withPlugin",
+    "withId",
 ];
 
 /// The last part of a dotted name: `ShadowJar` of `com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar`.
@@ -1875,6 +1880,9 @@ mod tests {
             "project(':a')",
             "configure(subprojects)",
             "afterEvaluate",
+            "plugins.withType(JavaPlugin)",
+            "pluginManager.withPlugin('java')",
+            "plugins.withId('java')",
         ] {
             let src = format!(
                 "{java}{scope} {{\n    dependencies {{\n        runtime 'a:b:1'\n    }}\n}}\n"
