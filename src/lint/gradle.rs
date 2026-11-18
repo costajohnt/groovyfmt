@@ -2254,11 +2254,24 @@ mod tests {
         let java = "project(':installers:linux:spec') {\n    apply plugin: 'java'\n}\n";
         let uses =
             "dependencies {\n    compile files('a.txt')\n}\ndef f = configurations.compile.files\n";
+        let p = dir.join("build.gradle");
+        // through `Projects`, the scripts above are read once, until `clear`
+        let projects = crate::lint::Projects::new(None);
+        let cached = || -> Vec<_> {
+            crate::lint::lint_with(&p, uses, &projects.spec_base(&p))
+                .unwrap()
+                .into_iter()
+                .filter(|v| v.rule.starts_with("Gradle"))
+                .map(|v| (v.rule, v.line))
+                .collect()
+        };
         let run = |parent: &str| {
             std::fs::write(root.join("build.gradle"), format!("{parent}{java}")).unwrap();
-            let p = dir.join("build.gradle");
             std::fs::write(&p, uses).unwrap();
-            rules(p.to_str().unwrap(), uses)
+            projects.clear();
+            let got = rules(p.to_str().unwrap(), uses);
+            assert_eq!(cached(), got, "{parent}");
+            got
         };
         for parent in [
             "allprojects {\n    apply plugin: 'base'\n    configurations {\n        compile {\n            transitive = false\n        }\n    }\n}\n",
@@ -2277,6 +2290,15 @@ mod tests {
         ] {
             assert_eq!(run(parent), reported, "{parent}");
         }
+        // a cached answer stands until `clear`, as the LSP calls on a save
+        std::fs::write(
+            root.join("build.gradle"),
+            "subprojects { configurations { compile } }\n",
+        )
+        .unwrap();
+        assert_eq!(cached(), reported);
+        projects.clear();
+        assert_eq!(cached(), vec![]);
         std::fs::remove_dir_all(&root).unwrap();
     }
 
