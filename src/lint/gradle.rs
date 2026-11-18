@@ -1159,7 +1159,7 @@ fn removed_api<'a>(
                 call(n, src)
                     .filter(|c| match c.name {
                         "copy" | "sync" => c.args.is_empty(),
-                        "from" | "into" => !c.args.is_empty(),
+                        "from" | "into" => !c.args.is_empty() && in_copy_spec(src, n),
                         _ => false,
                     })
                     .and_then(|c| c.body)
@@ -1218,6 +1218,31 @@ fn removed_api<'a>(
             7,
         ));
     }
+}
+
+/// Whether `n`, a child spec's `from(x) { }` or `into(x) { }`, is in a Gradle copy spec: the
+/// first block around it that is no other child spec is a Copy, Sync or archive task's
+/// (`COPY_TYPES`, `COPY_TASKS`), `copy { }`, `sync { }` or a distribution's `contents { }`.
+/// A plugin's own spec (nebula's `ospackage { from(x) { fileMode 0755 } }`, which builds on
+/// Gradle 9.8.2) is not.
+fn in_copy_spec(src: &str, n: Node) -> bool {
+    let closures =
+        std::iter::successors(n.parent(), |p| p.parent()).filter(|p| p.kind() == "closure");
+    for (cl, name) in closures.zip(owners(n, src)) {
+        if matches!(name, "from" | "into") {
+            continue;
+        }
+        let m = cl.parent().and_then(|p| {
+            if p.kind() == "argument_list" {
+                p.parent()
+            } else {
+                Some(p)
+            }
+        });
+        return matches!(name, "copy" | "sync" | "contents")
+            || m.and_then(|m| task_body(src, m, COPY_TYPES, COPY_TASKS)) == Some(cl);
+    }
+    false
 }
 
 /// The reports of the core tasks' `reports { }` (JaCoCo, Test, Checkstyle, PMD, CodeNarc).
@@ -2687,16 +2712,17 @@ idea {
     }
 }
 idea.module.testSourceDirs += file('it')
+distributions { main { contents { from('bin') { fileMode = 0755 } } } }
 ";
         wrapper("9.9.1");
         assert_eq!(
             lines(src),
             vec![
-                1, 3, 5, 6, 7, 8, 9, 10, 13, 14, 15, 18, 19, 21, 22, 24, 25, 26, 29, 32
+                1, 3, 5, 6, 7, 8, 9, 10, 13, 14, 15, 18, 19, 21, 22, 24, 25, 26, 29, 32, 33
             ]
         );
         wrapper("9.0.0");
-        assert_eq!(lines(src).len(), 20);
+        assert_eq!(lines(src).len(), 21);
         // under Gradle 8, or with no wrapper, quiet: they work there
         wrapper("8.14.4");
         assert_eq!(lines(src), Vec::<usize>::new());
@@ -2717,6 +2743,8 @@ println jacocoTestReport.reports.xml.destination
 publication.destination = file('x')
 html.destination = file('x')
 ospackage { fileMode = 0644 }
+ospackage { from('bin') { fileMode 0755 } }
+from('x') { fileMode 0755 }
 tasks.register('hook', Copy) {
     into { file('x') }
     filePermissions { unix(0775) }

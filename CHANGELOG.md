@@ -12,7 +12,7 @@
   - a removed convention property set in `java { }` other than `sourceCompatibility` and `targetCompatibility` (`java { archivesBaseName = x }`), in a plugin callback (`pluginManager.withPlugin('java-base') { sourceCompatibility = 8 }`, `plugins.withId`, `plugins.withType`), or `archivesBaseName` in an archive task's block (`jar { }`, `tasks.jar { }`), all of which fall through to the project; reading one in `withPlugin` or `withId` too
   - `exec { }` and `javaexec { }` in a settings or init script, not only a build script
   - a report's `destination` set (`html.destination = file(x)`, `xml.destination file(x)`); use `outputLocation`
-  - a copy spec's `fileMode` and `dirMode` in a Copy, Sync or archive task, `copy { }`, `sync { }` or a child `from(x) { }` or `into(x) { }`; use `filePermissions { unix(...) }` and `dirPermissions { unix(...) }`
+  - a copy spec's `fileMode` and `dirMode` in a Copy, Sync or archive task, `copy { }`, `sync { }`, or a child `from(x) { }` or `into(x) { }` in one of those or a distribution's `contents { }`; use `filePermissions { unix(...) }` and `dirPermissions { unix(...) }`
   - the IDEA module's `testSourceDirs` and `testResourceDirs`; use `testSources.from(...)` and `testResources.from(...)`
 
 ## 0.27.1 (2026-11-18)
