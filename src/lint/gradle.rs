@@ -151,7 +151,8 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
         .is_some_and(|f| f != "settings.gradle" && !f.ends_with("init.gradle"));
     // read only for a file that would get a report
     let old_gradle = std::cell::OnceCell::new();
-    let applier = std::cell::OnceCell::new();
+    // configurations a script that applies this one or configures every project makes
+    let parent = std::cell::OnceCell::new();
     let jvm = plugins.iter().any(|p| JVM_PLUGINS.contains(&p.as_str()));
     // the Java plugins may be there: the file applies a script, or declares dependencies in
     // a configuration they make (`implementation`), or a nearby script may apply them
@@ -175,8 +176,8 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
                 && !methods.contains(c.name)
                 && !owners(s, src).any(|o| o == "buildscript")
                 && !*old_gradle.get_or_init(|| wrapper_major(path).is_some_and(|m| m < 7))
-                && !applier
-                    .get_or_init(|| applier_declared(path))
+                && !parent
+                    .get_or_init(|| nearby_declared(path))
                     .contains(c.name)
                 && (java_maybe || *jvm_nearby.get_or_init(|| jvm_plugin_nearby(path)))
             {
@@ -224,7 +225,10 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
         }
     }
     for (n, name) in conf_refs {
-        if !declared.contains(name) && !guarded(src, n, name) {
+        if !declared.contains(name)
+            && !guarded(src, n, name)
+            && !parent.get_or_init(|| nearby_declared(path)).contains(name)
+        {
             let new = REMOVED
                 .iter()
                 .find(|(old, _)| *old == name)
@@ -692,15 +696,17 @@ fn declares(src: &str, n: Node, declared: &mut HashSet<String>) {
     }
 }
 
-/// The most bytes read of a script that may apply the one linted (`applier_declared`).
+/// The most bytes read of a script that may configure the one linted (`nearby_declared`).
 const MAX_SCRIPT_BYTES: u64 = 4 * 1024 * 1024;
 
-/// The configurations made by the `.gradle` scripts that apply `path` with
-/// `apply from: 'deps.gradle'`, as a build script declares `testCompile` and the
-/// `dependencies.gradle` it applies uses it (#217). The scripts looked at are `nearby`'s.
-/// The target must be a plain path to `path` relative to the applying
+/// The configurations that `nearby`'s `.gradle` scripts make for `path`: all those of a
+/// script that applies it with `apply from: 'deps.gradle'`, as a build script declares
+/// `testCompile` and the `dependencies.gradle` it applies uses it (#217), and those any of
+/// them makes in `allprojects { }` or `subprojects { }`, as a root `build.gradle` declares
+/// `compile` for every project and a subproject uses it (#241).
+/// The `apply from:` target must be a plain path to `path` relative to the applying
 /// script's directory: a URL, an interpolated name or a missing file applies nothing here.
-fn applier_declared(path: &Path) -> HashSet<String> {
+fn nearby_declared(path: &Path) -> HashSet<String> {
     let mut declared = HashSet::new();
     nearby(path, |me, dir, src, root| {
         let mut applies = false;
@@ -709,12 +715,26 @@ fn applier_declared(path: &Path) -> HashSet<String> {
                 .is_some_and(|t| dir.join(t).canonicalize().is_ok_and(|t| t == me));
             !applies
         });
-        if applies {
-            crate::preorder(root, |n| {
+        crate::preorder(root, |n| {
+            if applies {
                 declares(src, n, &mut declared);
-                true
-            });
-        }
+                return true;
+            }
+            match call(n, src) {
+                Some(Call {
+                    name: "allprojects" | "subprojects",
+                    body: Some(b),
+                    ..
+                }) => {
+                    crate::preorder(b, |x| {
+                        declares(src, x, &mut declared);
+                        true
+                    });
+                    false
+                }
+                _ => true,
+            }
+        });
         false
     });
     declared
@@ -1900,6 +1920,47 @@ mod tests {
         // the applying script names a missing file
         build("configurations { testCompile }\napply from: 'gone.gradle'\n");
         assert_eq!(run(&root.join("deps.gradle")), 1);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// #241: a root `build.gradle` that makes `compile` for every project (corretto-11).
+    #[test]
+    fn removed_configurations_declared_for_every_project() {
+        let root =
+            std::env::temp_dir().join(format!("groovyfmt-allprojects-{}", std::process::id()));
+        let dir = root.join("installers/linux/spec");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            root.join("settings.gradle"),
+            "include ':installers:linux:spec'\n",
+        )
+        .unwrap();
+        let java = "project(':installers:linux:spec') {\n    apply plugin: 'java'\n}\n";
+        let uses =
+            "dependencies {\n    compile files('a.txt')\n}\ndef f = configurations.compile.files\n";
+        let run = |parent: &str| {
+            std::fs::write(root.join("build.gradle"), format!("{parent}{java}")).unwrap();
+            let p = dir.join("build.gradle");
+            std::fs::write(&p, uses).unwrap();
+            rules(p.to_str().unwrap(), uses)
+        };
+        for parent in [
+            "allprojects {\n    apply plugin: 'base'\n    configurations {\n        compile {\n            transitive = false\n        }\n    }\n}\n",
+            "subprojects {\n    configurations { compile }\n}\n",
+            "subprojects {\n    configurations.create('compile')\n}\n",
+            "allprojects {\n    configurations { create('compile') }\n}\n",
+        ] {
+            assert_eq!(run(parent), vec![], "{parent}");
+        }
+        // the root project's own configuration, another one, or none: reported as before
+        let reported = vec![("GradleRemovedConfiguration", 2), ("GradleRemovedApi", 4)];
+        for parent in [
+            "configurations { compile }\n",
+            "subprojects {\n    configurations { provided }\n}\n",
+            "",
+        ] {
+            assert_eq!(run(parent), reported, "{parent}");
+        }
         std::fs::remove_dir_all(&root).unwrap();
     }
 

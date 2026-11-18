@@ -649,6 +649,28 @@ fn skipped_files_show_where_parsing_failed() {
     );
 }
 
+/// #241: a line ending in `A.<T>` is reported and its file left as it is.
+#[test]
+fn type_arguments_ending_a_line_are_reported_and_not_formatted() {
+    let d = Dir::new("splittype");
+    let src =
+        "androidx {\n    type = LibraryType.<LIBRARY_TYPE>\n    inceptionYear = \"<YEAR>\"\n}\n";
+    d.write("build.gradle", src);
+    let o = run(&d.0, &["--syntax", "build.gradle"], None);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(
+        stdout(&o),
+        "build.gradle:2:24: could not parse: a `.<Type>` must have its name on the same line, `A.<T>name`: the line ends after the type arguments\n"
+    );
+    let o = run(&d.0, &["-v", "build.gradle"], None);
+    assert!(
+        stderr(&o).contains("skipped build.gradle: parse error\n"),
+        "{}",
+        stderr(&o)
+    );
+    assert_eq!(d.read("build.gradle"), src);
+}
+
 #[cfg(unix)]
 #[test]
 fn syntax_messages_escape_names_and_quoted_source() {

@@ -113,7 +113,10 @@ fn format_with(
         };
     }
     let tree = crate::parse(src);
-    if tree.root_node().has_error() {
+    // the grammar joins a line ending in `A.<T>` to the next, which Groovy rejects (#241)
+    if tree.root_node().has_error()
+        || !crate::syntax::split_type_arguments(src, tree.root_node()).is_empty()
+    {
         return Outcome::Skipped("parse error");
     }
     let (out, out_tree, used) = match unwrapped(src, &tree, style, &reindent) {
@@ -1087,6 +1090,15 @@ mod tests {
         assert_eq!(
             format("def x = {\n", &Style::default()),
             Outcome::Skipped("parse error")
+        );
+        // the grammar joins a line ending in `A.<T>` to the next; Groovy rejects it (#241)
+        assert_eq!(
+            format("x {\n    type = A.<T>\n    b = 1\n}\n", &Style::default()),
+            Outcome::Skipped("parse error")
+        );
+        assert_eq!(
+            format("x {\n    type = A.<T>b\n}\n", &Style::default()),
+            Outcome::Unchanged
         );
     }
 

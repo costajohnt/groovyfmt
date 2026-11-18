@@ -36,8 +36,9 @@ pub fn check(src: &str) -> (Vec<SyntaxError>, usize) {
 /// line, as after a license comment (only the top level holds one); a second `package`
 /// statement; a `$` in a double-quoted string that starts no name or `${`, as in `$(` or
 /// `$[`; a backslash in a quoted string that starts no escape, `'a\d+'`; a label on a
-/// `return`'s line, which is a command call as its value, `return readJSON text: x`. The
-/// last three are found from the text, so a file without them costs no walk of the tree.
+/// `return`'s line, which is a command call as its value, `return readJSON text: x`; a line
+/// ending in `A.<T>` (`split_type_arguments`). All but the
+/// first two are found from the text, so a file without them costs no walk of the tree.
 // ponytail: a primitive type name as a variable's name (`{ char -> }`) is rejected by Groovy
 // too, but where the grammar misreads a valid declaration the name lands on `int` or `boolean`,
 // so checking it reported valid files.
@@ -182,6 +183,13 @@ fn rejected(src: &str, tree: &Tree) -> Vec<SyntaxError> {
             ));
         }
     }
+    for t in split_type_arguments(src, root) {
+        out.push(at(
+            src,
+            t,
+            "a `.<Type>` must have its name on the same line, `A.<T>name`: the line ends after the type arguments",
+        ));
+    }
     // A method declared in a closure or block, `{ def f(n) { n } }` (#235): only a script's
     // top level or a class body holds one. Not when the declaration reads as a command
     // call: Groovy 3 and 4 take `foo bar() { }`, `a.B f() { }`, `List<X> f() { }` and
@@ -242,6 +250,27 @@ fn rejected(src: &str, tree: &Tree) -> Vec<SyntaxError> {
         }
     }
     out
+}
+
+/// Type arguments after a dot whose name is on a later line, a line ending in
+/// `LibraryType.<LIBRARY_TYPE>` (#241): Groovy 2.4, 3 and 4 reject it (3 and 4 take
+/// `A.<T>name` on one line), while the grammar takes the next line's first name as the
+/// field, joining the lines. The formatter skips such a file. Found from the `>`s.
+pub(crate) fn split_type_arguments<'a>(src: &str, root: Node<'a>) -> Vec<Node<'a>> {
+    src.match_indices('>')
+        .filter_map(|(i, _)| {
+            let t = root
+                .descendant_for_byte_range(i, i + 1)
+                .filter(|n| n.kind() == ">")?
+                .parent()
+                .filter(|t| t.kind() == "type_arguments")?;
+            t.parent()
+                .filter(|f| f.kind() == "field_access")?
+                .child_by_field_name("field")
+                .filter(|f| f.start_position().row > t.end_position().row)
+                .map(|_| t)
+        })
+        .collect()
 }
 
 /// Whether the text before the `{` at `i` reads `word name(...)`, as a method declaration's
@@ -649,6 +678,26 @@ mod tests {
         assert_eq!(
             checked("def c = {\n    def f(n) { n }\n}\nx = (\n"),
             ["4:5: `(` is never closed at the top level"]
+        );
+    }
+
+    /// #241: Groovy 2.4, 3 and 4 reject a line ending in `A.<T>`, which the grammar joins to
+    /// the next line; 3 and 4 take `A.<T>name` on one line, and the dot ending a line.
+    #[test]
+    fn type_arguments_ending_a_line_are_reported() {
+        let m = "a `.<Type>` must have its name on the same line, `A.<T>name`: the line ends after the type arguments";
+        assert_eq!(
+            checked(
+                "androidx {\n    type = LibraryType.<LIBRARY_TYPE>\n    mavenVersion = LibraryVersions.<GROUPID>\n    inceptionYear = \"<YEAR>\"\n}\n"
+            ),
+            [format!("2:24: {m}"), format!("3:36: {m}")]
+        );
+        assert_eq!(checked("x = A.<B>\n    foo()\n"), [format!("1:7: {m}")]);
+        assert_eq!(
+            checked(
+                "x = A.<B>foo()\ny = A.<B>c\nz = A.\n    <B>c\nList<Map<K, V>> m = Collections.<Map<K, V>>emptyList()\nif (a > b) { c -> c }\n"
+            ),
+            Vec::<String>::new()
         );
     }
 
