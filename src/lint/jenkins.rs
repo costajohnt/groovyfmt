@@ -859,7 +859,9 @@ fn env_identifier(s: &str) -> bool {
 
 /// Entries of `environment { }`: `KEY = value` with a valid, unique key, and a value that
 /// is a literal, a string, a method call, or literals and strings joined with `+`
-/// (ModelParser.parseEnvironment).
+/// (ModelParser.parseEnvironment). A declaration of one variable with a value, `def KEY =
+/// value` or `String KEY = value`, is one too: it is a DeclarationExpression, which is a
+/// BinaryExpression with `=`, and ModelParser reads its variable as the key (#222).
 fn environment(src: &str, body: Node, v: &mut Vec<Violation>) {
     let mut seen = HashSet::new();
     for s in statements(body) {
@@ -870,9 +872,26 @@ fn environment(src: &str, body: Node, v: &mut Vec<Violation>) {
                 a.child_by_field_name("operator")
                     .is_some_and(|o| o.kind() == "=")
             });
+        // `def x = 1` holds its name and value, or one `variable_declarator` that does
+        let d = (s.kind() == "local_variable_declaration")
+            .then(|| {
+                let mut c = s.walk();
+                let ds: Vec<_> = s
+                    .named_children(&mut c)
+                    .filter(|d| d.kind() == "variable_declarator")
+                    .collect();
+                match ds[..] {
+                    [] => Some(s),
+                    [d] => Some(d),
+                    _ => None,
+                }
+            })
+            .flatten();
         let (Some(key), Some(value)) = (
-            a.and_then(|a| a.child_by_field_name("left")),
-            a.and_then(|a| a.child_by_field_name("right")),
+            a.and_then(|a| a.child_by_field_name("left"))
+                .or_else(|| d.and_then(|d| d.child_by_field_name("name"))),
+            a.and_then(|a| a.child_by_field_name("right"))
+                .or_else(|| d.and_then(|d| d.child_by_field_name("value"))),
         ) else {
             v.push(at(
                 s,
@@ -1554,6 +1573,17 @@ mod tests {
             "A = 'b'\nB = \"${env.X}\"\nC = credentials('c')\nD = currentBuild.getNumber()\nE = readFile 'Version'\nF = 'a' + \"b\" + 1\nG = 1\nH = true\nI = '''x\ny'''\n_J = ('k')\nK = -1",
         );
         assert_eq!(rules(&src), vec![]);
+        // #222: a declaration of one variable with a value is an entry (horizon-sdv's
+        // `def kubernetesBasicPodTemplate = \"\"\"...`); its key and value are checked the same
+        let src = env(
+            "def A = \"x\"\nString B = 'y'\nfinal C = credentials('c')\ndef D\ndef E = env.X\ndef (F, G) = ['f', 'g']\ndef H = 1, I = 2\ndef A = 'again'",
+        );
+        assert_eq!(
+            rules(&src),
+            (7..=11)
+                .map(|l| ("JenkinsEnvironmentEntry", l))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

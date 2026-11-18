@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- GradleRemovedApi reports `exec { }` and `javaexec { }` called on the project or build script (bare in a task action, a script method or at the top level, `exec({ })`, `project.exec { }`, `rootProject.javaexec { }`) and `main` set on a JavaExec task (`tasks.register('x', JavaExec) { main = 'a.B' }`, `task x(type: JavaExec)`, `tasks.withType(JavaExec)`, `bootRun { }`), under a wrapper pinning Gradle 9 or later: Gradle 9.0 removed them, and the build fails with "Could not find method exec()" or "Could not set unknown property 'main'". Each was checked to work under Gradle 8.8 and fail under 9.0.0 and 9.9.1. Left alone: ExecOperations and `providers.exec`, which still work there, an Exec task, a call inside a class, and a script that defines its own `exec`. Report only. ([#222](https://github.com/costajohnt/groovyfmt/issues/222))
+
+### Fixed
+
+- A directory walk no longer drops a pipeline named `Jenkinsfile.*`, `Jenkinsfile_*`, `Jenkinsfile-*`, `Jenkinsfile<Name>`, `*-Jenkinsfile`, `*_Jenkinsfile` or `*.jenkins` that doesn't parse: `--syntax`, `--check` and `--strict` report it, as they do a `Jenkinsfile`, so a CI run catches a broken `Jenkinsfile_deploy`. One that reads as something other than Groovy is still left out without a word: a hidden file (a `.jenkins` marker), a first line that is a `#!` for another program, or a syntax error on a line starting with `#` (a `Dockerfile.jenkins`) or a template tag (`{%`, `{#`, `<%`, `{{#`, `{{/`). ([#222](https://github.com/costajohnt/groovyfmt/issues/222))
+- JenkinsEnvironmentEntry no longer reports a declaration in `environment { }`, `def KEY = "value"` or `String KEY = 'value'`: Declarative's ModelParser reads it as `KEY = value` (it is a BinaryExpression with `=`), and its key and value are checked as for one. A declaration without a value or of several variables is still reported. ([#222](https://github.com/costajohnt/groovyfmt/issues/222))
+- GradleRemovedApi no longer reports `configurations.compile` (or another removed configuration) inside an `if` or `?:` that checks for it first, `if (configurations.hasProperty('compile'))` or `configurations.findByName('runtime') ? ... : ...`, which a Gradle without it never evaluates. ([#222](https://github.com/costajohnt/groovyfmt/issues/222))
+
 ## 0.24.0 (2026-11-18)
 
 ### Changed
