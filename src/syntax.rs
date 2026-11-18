@@ -61,11 +61,18 @@ fn rejected(src: &str, tree: &Tree) -> Vec<SyntaxError> {
             }
         }
     }
+    // Not after an unclosed `${` in the string's text: where the grammar takes a `${` for text
+    // (`"""{"a": "${f('$.x')}"}"""`, after a `"` in a triple-quoted string) its code is text too.
     let in_gstring = |i: usize| {
         root.descendant_for_byte_range(i, i + 1)
             .filter(|n| n.kind() == "string_fragment")
             .and_then(|n| n.parent())
-            .is_some_and(|s| s.kind() == "string_literal" && text(s, src).starts_with('"'))
+            .is_some_and(|s| {
+                let before = &src[s.start_byte()..i];
+                s.kind() == "string_literal"
+                    && before.starts_with('"')
+                    && before.rfind("${").is_none_or(|o| before[o..].contains('}'))
+            })
     };
     let mut push = |i: usize, len: usize, message: String| {
         let (line, col) = position(src, byte_point(src, i));
@@ -429,10 +436,19 @@ mod tests {
         let lone = "`$` in a double-quoted string must start a name or `${...}`: write `\\$` for a dollar sign";
         assert_eq!(
             checked("a = \"$[x]\"\nb = \"\"\"cost: $5\"\"\"\nc = \"a$\"\n"),
-            [format!("1:6: {lone}"), format!("2:14: {lone}"), format!("3:7: {lone}")]
+            [
+                format!("1:6: {lone}"),
+                format!("2:14: {lone}"),
+                format!("3:7: {lone}")
+            ]
         );
         assert_eq!(
             checked("a = \"$x ${y} \\$5 $\u{e9}\"\nb = '$5'\nc = /a$/\nd = $/ $5 /$\n"),
+            Vec::<String>::new()
+        );
+        // code in a `${}` the grammar takes for text, after a `"` in a triple-quoted string
+        assert_eq!(
+            checked("a = \"\"\"{\"s\": \"${f('$.x', '\\d')}\"}\"\"\"\n"),
             Vec::<String>::new()
         );
         assert_eq!(
