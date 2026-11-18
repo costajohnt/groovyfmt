@@ -2542,6 +2542,24 @@ fn a_walk_takes_extensionless_groovy_scripts_by_shebang() {
     assert!(stderr(&o).contains("not a Groovy file"), "{}", stderr(&o));
 }
 
+/// #230: `.gsh` is also a GLSL geometry shader extension.
+#[test]
+fn a_walk_skips_gsh_shaders() {
+    let d = Dir::new("gshshader");
+    d.write("a.gsh", UGLY);
+    d.write("version.gsh", &format!("// #version 330\n{UGLY}"));
+    d.write(
+        "shader.gsh",
+        "#version 330 core\nlayout (points) in;\nvoid main() { EmitVertex(); }\n",
+    );
+    d.write("indented.gsh", "\n  #version 150\nvoid main() { }\n");
+    let o = run(&d.0, &["--check", "."], None);
+    assert_eq!(stdout(&o), "a.gsh\nversion.gsh\n", "{}", stderr(&o));
+    // named on the command line: taken whatever it holds
+    let o = run(&d.0, &["--syntax", "shader.gsh"], None);
+    assert!(!o.status.success(), "{}", stdout(&o));
+}
+
 #[test]
 fn jenkinsfile_underscore_and_dash_names_are_pipelines() {
     let d = Dir::new("jfunderscore");

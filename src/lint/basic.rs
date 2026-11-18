@@ -37,6 +37,7 @@ pub(super) const KINDS: &[&str] = &[
     "synchronized_statement",
     "for_statement",
     "instanceof_expression",
+    "membership_expression",
     "parenthesized_type_cast",
     "field_declaration",
     "argument_list",
@@ -130,6 +131,7 @@ pub(super) fn check(src: &str, nodes: &[Node], v: &mut Vec<Violation>) {
                 ));
             }
             "instanceof_expression" => instanceof_not(src, n, v),
+            "membership_expression" => in_not(src, n, v),
             "field_declaration" => random_field(src, n, v),
             "assert_statement" => {
                 if n.named_child(0).is_some_and(|c| constant_truth(src, c)) {
@@ -182,7 +184,9 @@ pub(super) fn check(src: &str, nodes: &[Node], v: &mut Vec<Violation>) {
 /// `String.leftShift` returns a new StringBuffer and leaves the String alone (checked with
 /// Groovy 4.0.24), so the statement does nothing. Only a local declared as `String` or with
 /// a plain string literal, never assigned anything but one, and only where the
-/// statement's value goes nowhere: not the last statement of a closure or method (#212).
+/// statement's value goes nowhere: not the last statement of a closure, method or script
+/// (#212). The message offers fixes without naming one: in geoclimate, `+=` alone would have
+/// built broken SQL from a string later joined to others (#229).
 fn string_left_shift(src: &str, n: Node, v: &mut Vec<Violation>) {
     let Some(stmt) = n.parent().filter(|p| p.kind() == "expression_statement") else {
         return;
@@ -221,28 +225,40 @@ fn string_left_shift(src: &str, n: Node, v: &mut Vec<Violation>) {
         v.push(at(
             stmt,
             "StringLeftShiftDiscarded",
-            format!("`{name}` is a String, so `<<` returns a new StringBuffer and leaves `{name}` unchanged; use `{name} += ...`, or make `{name}` a StringBuilder"),
+            format!("`{name}` is a String: `<<` returns a new StringBuffer and leaves `{name}` unchanged, so the statement has no effect. To collect into `{name}`, make it a StringBuilder or write `{name} += ...`, and check what the code reading `{name}` expects"),
         ));
     }
 }
 
 /// Whether a statement's value can be used: it is, or ends, what a closure (but one passed to
-/// `.each { }` and the like) or a non-void method returns, or the statement isn't in a plain
-/// block or branch.
+/// `.each { }` and the like), a non-void method or a script returns, or the statement isn't in
+/// a plain block or branch.
 fn value_used(src: &str, stmt: Node) -> bool {
     let mut n = stmt;
     while let Some(p) = n.parent() {
         match p.kind() {
-            "block" | "closure" => {
+            "block" | "closure" | "source_file" => {
+                // a script's methods and classes aren't statements: the last statement before
+                // them is the script's result (#230)
                 let mut next = n.next_named_sibling();
-                while next.is_some_and(is_comment) {
+                while next.is_some_and(|x| {
+                    is_comment(x)
+                        || p.kind() == "source_file"
+                            && x.kind().ends_with("_declaration")
+                            && !matches!(
+                                x.kind(),
+                                "local_variable_declaration" | "multi_assignment_declaration"
+                            )
+                }) {
                     next = next.and_then(|x| x.next_named_sibling());
                 }
                 if next.is_some() {
                     return false;
                 }
-                if p.kind() == "closure" {
-                    return !super::spock::discarded(p, src);
+                match p.kind() {
+                    "closure" => return !super::spock::discarded(p, src),
+                    "source_file" => return true,
+                    _ => {}
                 }
             }
             "if_statement" | "try_statement" | "catch_clause" | "labeled_statement" => {}
@@ -1401,6 +1417,29 @@ fn instanceof_not(src: &str, n: Node, v: &mut Vec<Violation>) {
     ));
 }
 
+/// NegatedInCheck: `!x in xs`, which asks whether the boolean `!x` is in `xs` (Groovy 2.4, 3
+/// and 4 all read it so, #230).
+fn in_not(src: &str, n: Node, v: &mut Vec<Violation>) {
+    let Some(e) = n.child_by_field_name("element").filter(|x| is_not(*x)) else {
+        return;
+    };
+    let Some(x) = e.child_by_field_name("operand") else {
+        return;
+    };
+    // the `!in` token takes the character after it, so it is read from the text
+    let op = if src[e.end_byte()..].trim_start().starts_with("!in") {
+        "!in"
+    } else {
+        "in"
+    };
+    let x = text(x, src);
+    v.push(at(
+        n,
+        "NegatedInCheck",
+        format!("`!` applies to `{x}` alone, so this asks whether the boolean `!{x}` is a member; write `!({x} {op} ...)`"),
+    ));
+}
+
 /// UnnecessaryModOne: `x % 1`, which is always 0.
 fn mod_one(src: &str, n: Node, v: &mut Vec<Violation>) {
     let one = n
@@ -1637,9 +1676,20 @@ mod tests {
         assert_eq!(rules(src, rule), vec![5, 7, 10, 12, 15]);
         let src = "def f(cs) {\n  def a = ''\n  def c = { a << 1 }\n  def b = ''\n  b = b << 1\n  b << 2\n  def d = new StringBuilder()\n  d << 1\n  def e = 'x'\n  cs.each { e -> e << 1; println e }\n  def g = 'x'\n  try { } catch (g2) { }\n  x << 1\n  def h = [], k\n  h << 1\n  def (m, n) = ['', '']\n  m << 1\n  StringBuilder p = ''\n  p << 1\n  def q = ''\n  q <<= 1\n  q << 2\n  def gs = \"${x}\"\n  gs << 1\n  def w = ''\n  w = \"$x\"\n  w << 1\n  def r = ''\n  r << 1\n}\n";
         assert_eq!(rules(src, rule), Vec::<usize>::new());
-        // a field, a closure's or a method's result, a script's last statement
+        // a field, a closure's or a method's result, a script's last statement (before its
+        // methods and classes)
         let src = "class K {\n  String s = ''\n  void f() {\n    s << 1\n  }\n  String g() {\n    def t = ''\n    t << 1\n  }\n}\ndef u = ''\nu << 1\n";
         assert_eq!(rules(src, rule), Vec::<usize>::new());
+        let src = "def u = ''\nu << 1 // result\n/* end */\nvoid f() { }\nclass K { }\n";
+        assert_eq!(rules(src, rule), Vec::<usize>::new());
+        // #230: a script's top-level statement that isn't its last; not a binding variable,
+        // or a script method's own
+        let src = "def s = ''\ns << 'x'\nString t = 'a'\nt << 'b'\nb = ''\nb << 1\nvoid f() { s << 1 }\nprintln s + t\n";
+        assert_eq!(rules(src, rule), vec![2, 4]);
+        assert_eq!(
+            msgs(src, rule)[0],
+            "`s` is a String: `<<` returns a new StringBuffer and leaves `s` unchanged, so the statement has no effect. To collect into `s`, make it a StringBuilder or write `s += ...`, and check what the code reading `s` expects"
+        );
     }
 
     #[test]
@@ -1859,6 +1909,22 @@ mod tests {
         let v = msgs(src, "UnnecessaryInstanceOfCheck");
         assert_eq!(v[0], "The result of '!variable' will never be a String");
         assert_eq!(v[1], "The result of '!variable' will always be a Boolean");
+    }
+
+    /// #230: `!x in xs` is `(!x) in xs` in Groovy 2.4, 3 and 4.
+    #[test]
+    fn negated_in_check() {
+        let rule = "NegatedInCheck";
+        let ok = "if (!(name in xs)) { }\ndef a = name !in xs\ndef b = !name\ndef c = (!name) in [true]\ndef d = !(a.b in xs) && !c\nfor (x in xs) { }\n";
+        assert!(rules(ok, rule).is_empty());
+        let src = "def a = !name in ['a', 'b']\nif (!x.simpleName in ['JpaSession']) { }\nassert !f(x) !in xs\n";
+        assert_eq!(rules(src, rule), vec![1, 2, 3]);
+        let v = msgs(src, rule);
+        assert_eq!(
+            v[0],
+            "`!` applies to `name` alone, so this asks whether the boolean `!name` is a member; write `!(name in ...)`"
+        );
+        assert!(v[2].ends_with("write `!(f(x) !in ...)`"), "{}", v[2]);
     }
 
     #[test]
