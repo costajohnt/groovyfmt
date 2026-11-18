@@ -571,13 +571,26 @@ bool tree_sitter_groovy_external_scanner_scan(
         // the comparisons `x < y, z > w`.
         bool tight = lexer->lookahead != ' ' && lexer->lookahead != '\t';
         bool prev_space = false;
+        // A line may break after a `,` or the `<` (`Map<String,` then `Integer> m = x`),
+        // but only a declaration then follows the `>`.
+        bool after_comma = true;
+        bool multiline = false;
         for (unsigned steps = 0; depth > 0; steps++) {
             int32_t c = lexer->lookahead;
             if (steps > 400 || lexer->eof(lexer)) {
                 return false;
             }
             if (c == '\n' || c == '\r') {
-                goto not_type;
+                if (!after_comma || spaced) {
+                    goto not_type;
+                }
+                multiline = true;
+                advance(lexer);
+                prev_space = true;
+                continue;
+            }
+            if (c != ' ' && c != '\t') {
+                after_comma = c == ',' || c == '<';
             }
             if (c == ' ' || c == '\t') {
                 advance(lexer);
@@ -644,7 +657,23 @@ bool tree_sitter_groovy_external_scanner_scan(
         }
         int32_t c = lexer->lookahead;
         bool ok = c == ')' || c == ',' || c == ']';
-        if (spaced) {
+        if (multiline) {
+            ok = false;
+            if (is_ident_start(c)) {
+                while (is_ident_part(lexer->lookahead)) {
+                    advance(lexer);
+                }
+                while (lexer->lookahead == ' ' || lexer->lookahead == '\t') {
+                    advance(lexer);
+                }
+                c = lexer->lookahead;
+                ok = c == ';' || c == '\n' || c == '\r' || lexer->eof(lexer);
+                if (c == '=') {
+                    advance(lexer);
+                    ok = lexer->lookahead != '=' && lexer->lookahead != '~';
+                }
+            }
+        } else if (spaced) {
             // A cast `(List <T>) x`, or a call `new TreeSet <String>()`.
             ok = c == '(' || (c == ')' && tight);
             if (is_ident_start(c)) {

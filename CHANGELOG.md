@@ -2,18 +2,15 @@
 
 ## Unreleased
 
+### Fixed
+- More constructs parse, as Groovy reads them; files with one were skipped ([#226](https://github.com/costajohnt/groovyfmt/issues/226)). A spread argument after a command call's first argument, `commandLine 'gradlew', *args` (Groovy 3 and 4; ballerina-platform's `ballerina-tests/build.gradle`, libsignal's Android `build.gradle`). An elvis as the first of several command-call arguments, `commandLine python ?: 'python3', 'x.py'` (Groovy 2.4, 3 and 4). A line break inside a declaration's type arguments, after a `,` or the `<`: `B<String,` then `Integer> b = null`; only a declaration may follow the `>`, so a comparison across lines is left alone. A typed closure parameter whose default is a call with empty parentheses, `{ File f = d() -> if (f) { 1 } }`, which Groovy 2.4, 3 and 4 read as the parameter's default and the grammar read as a declaration holding a lambda. The grammar pin moves to tree-sitter-groovy 0efd7b9.
+- `--syntax` also reports two more things the grammar takes but Groovy 2.4, 3 and 4 reject: a backslash in a quoted string that starts no escape, `'a\d+'` (write `'a\\d+'` or `/a\d+/`), and a `$` in a double-quoted string that starts no name or `${`, `"$[x]"`, `"cost: $5"`, `"a$"` (write `\$`), which takes in the `$(` reported before. Such files are still formatted. ([#226](https://github.com/costajohnt/groovyfmt/issues/226))
 ### Added
-
 - NegatedInCheck (on by default) reports `!x in xs`. `!` binds tighter than `in`, so Groovy 2.4, 3 and 4 all read it as `(!x) in xs`, asking whether `true` or `false` is in `xs`: `if (!manager.session.getClass().simpleName in ['JpaSession', 'HibernateSession'])` in apache/grails-core's PersistenceEventListenerSpec is never true. Write `!(x in xs)`, or `x !in xs` on Groovy 3 and later. ([#230](https://github.com/costajohnt/groovyfmt/issues/230))
 - `--syntax` reports a dotted map key or named argument, `[a: 1, b.c: 2]` or `f(b.c: 2)`, which the grammar takes and Groovy 2.4, 3 and 4 reject (stubborn-sh/stubborn-contract). Quote it or put it in parentheses. ([#230](https://github.com/costajohnt/groovyfmt/issues/230))
-
 ### Changed
-
 - StringLeftShiftDiscarded reports a script's top-level `s << x` too, unless it is the script's last statement, whose value is the script's result. ([#230](https://github.com/costajohnt/groovyfmt/issues/230))
 - StringLeftShiftDiscarded's message no longer offers `s += ...` as the fix: it says the statement has no effect and offers a StringBuilder or `+=`, either of which changes what later code reading `s` gets. In orbisgis/geoclimate a plain `+=` would have built broken SQL from a string later joined to others. ([#229](https://github.com/costajohnt/groovyfmt/issues/229))
-
-### Fixed
-
 - GradleRemovedConfiguration no longer reports `compile`, `runtime`, `testCompile` or `testRuntime` when nothing shows a Java plugin may be there: neither the script nor another `.gradle` script in its directory or one above it, up to the build's root, applies one or a script (`apply from:`), and the script declares no dependency in a configuration they make (`implementation`, `api`, ...). Then a plugin from elsewhere made the configuration, as tudortimi/gradle-hdvl's SystemVerilog and SVUnit plugins make `compile` and `testCompile`. A subproject whose parent applies java (`subprojects { apply plugin: 'java' }`) is still reported. The Grails Gradle plugins (`org.grails.grails-core`, `-web`, `-plugin`) count as Java plugins, since they apply Groovy's, so `--fix` renames `testCompile` in a Grails build. ([#230](https://github.com/costajohnt/groovyfmt/issues/230))
 - GradleRemovedApi no longer reports `sourceCompatibility` or `targetCompatibility` set in `configure([tasks.compileJava]) { }`, which configures tasks, not the project: `configure` counts as the project only when its argument names one (`subprojects`, `project(':a')`, `rootProject`). ([#230](https://github.com/costajohnt/groovyfmt/issues/230))
 - A directory walk leaves out a `.gsh` whose first line is a `#version` directive: a GLSL geometry shader, not a Groovy shell script (DimDoors, Severed-Chains-Android). ([#230](https://github.com/costajohnt/groovyfmt/issues/230))

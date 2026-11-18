@@ -520,6 +520,9 @@ module.exports = grammar({
     // closure body's assignment; `->` decides.
     [$._expression, $._closure_parameter_name_default, $.closure_parameter],
     [$._value, $.closure_parameter],
+    // `{ File f = d() -> }`: a closure parameter's default call, or a declaration's
+    // lambda command, `{ File f = d () -> 1 }`; prec.dynamic picks the parameter.
+    [$._command_lambda_parameters, $._closure_default_arguments],
 
     // §5.10 — after `{` and a `_line_break`, a closure's parameters or its
     // first statement may follow; in an enum, a constant or a member.
@@ -740,10 +743,12 @@ module.exports = grammar({
     // After the first argument has made the statement a command chain,
     // a later argument is any expression or a named argument:
     // `helper.registerAllowedMethod 'sh', [Map], { m -> }`.
+    // A later argument may be spread, `commandLine 'gradlew', *args`.
     _command_later_argument: $ => seq(',', field('argument', choice(
       $._expression,
       alias($._command_named_argument, $.named_argument),
       alias($._command_quoted_named_argument, $.named_argument),
+      $.spread_arguments,
     ))),
 
     // §5.5 item 3 — named arguments in a parenthesis-free call:
@@ -783,8 +788,9 @@ module.exports = grammar({
       $.binary_expression,
       $.instanceof_expression,
       $.cast_expression,
-      // `menuIcon ext == 'pdf' ? A : B, m`
+      // `menuIcon ext == 'pdf' ? A : B, m`, `exec python ?: 'python3', 'x.py'`
       $.ternary_expression,
+      $.elvis_expression,
       // `assertEquals [:], map`: a list or map whose `[` is on the
       // receiver's line, which the comma after it tells from a subscript.
       alias($._command_list_argument, $.list_literal),
@@ -3029,8 +3035,27 @@ module.exports = grammar({
         optional(choice('def', field('type', choice($._type, $.varargs_type)))),
         field('name', choice($.identifier, alias('as', $.identifier))),
         '=',
-        field('default', $._expression),
+        field('default', choice(
+          $._expression,
+          alias($._closure_default_call, $.method_invocation),
+        )),
       )),
+    ),
+
+    // A call as the default with `->` right after its `)`, `{ File f = d() -> }`:
+    // where a declaration may start, the scanner takes that `(` for a lambda's
+    // (`_command_lambda_open`, as in `File f = d () -> 1`), but Groovy 2.4, 3 and 4
+    // read the closure's parameter. prec.dynamic: it outweighs that reading.
+    _closure_default_call: $ => prec.dynamic(3, seq(
+      field('function', choice($.identifier, $.field_access)),
+      field('arguments', alias($._closure_default_arguments, $.argument_list)),
+    )),
+
+    // ponytail: empty parentheses only, the form seen in real files; `d(x) ->` would need
+    // the arguments to share a conflict with a lambda's parameters.
+    _closure_default_arguments: $ => seq(
+      alias($._command_lambda_open, '('),
+      ')',
     ),
 
     // §5.8 — Java-style lambda (Groovy 3+): `x -> x + 1`, `() -> 42`,
