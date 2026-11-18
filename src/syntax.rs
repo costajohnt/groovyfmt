@@ -185,15 +185,21 @@ fn rejected(src: &str, tree: &Tree) -> Vec<SyntaxError> {
     // A method declared in a closure or block, `{ def f(n) { n } }` (#235): only a script's
     // top level or a class body holds one. Not when the declaration reads as a command
     // call: Groovy 3 and 4 take `foo bar() { }`, `a.B f() { }`, `List<X> f() { }` and
-    // `X[] f() { }` so.
-    crate::preorder(root, |n| {
+    // `X[] f() { }` so. Not in a file that failed to parse, whose methods can land anywhere.
+    // ponytail: a method or constructor's own body is left out too, since the grammar puts
+    // valid methods there (an enum's lone `A() { ... }` constant read as a constructor, a
+    // nested `private static record R(...) { }` read as a method named R); method in method
+    // goes unreported until the grammar reads those.
+    let in_block = |p: Node| match p.kind() {
+        "closure" => true,
+        "block" => p
+            .parent()
+            .is_some_and(|o| !matches!(o.kind(), "method_declaration" | "constructor_declaration")),
+        _ => false,
+    };
+    let mut walk = |n: Node| {
         if n.kind() == "method_declaration"
-            && n.parent().is_some_and(|p| {
-                !matches!(
-                    p.kind(),
-                    "source_file" | "class_body" | "enum_body" | "ERROR"
-                )
-            })
+            && n.parent().is_some_and(in_block)
             && n.child_by_field_name("return_type").is_none_or(|t| {
                 let name = text(t, src);
                 t.kind() == "type_identifier"
@@ -219,7 +225,10 @@ fn rejected(src: &str, tree: &Tree) -> Vec<SyntaxError> {
             ));
         }
         true
-    });
+    };
+    if !root.has_error() {
+        crate::preorder(root, &mut walk);
+    }
     out
 }
 
@@ -581,6 +590,19 @@ mod tests {
                 "def f() { }\nclass A {\n    def g() { }\n    def r = new Runnable() { void run() { } }\n}\nenum E { A; int f() { 1 } }\ndef c = {\n    foo baz() { }\n    a.B f() { }\n    List<X> g() { }\n    X[] h() { }\n}\n"
             ),
             Vec::<String>::new()
+        );
+        // where the grammar puts valid methods in a body: a lone enum constant with
+        // arguments read as a constructor, a nested record with modifiers read as a method
+        assert_eq!(
+            checked(
+                "enum E {\n    A() {\n        def x = 1\n        String f() { 'a' }\n    }\n}\nclass C {\n    private static record R(int a) {\n        boolean f() { true }\n    }\n}\n"
+            ),
+            Vec::<String>::new()
+        );
+        // a file that failed to parse reports only that
+        assert_eq!(
+            checked("def c = {\n    def f(n) { n }\n}\nx = (\n"),
+            ["4:5: `(` is never closed at the top level"]
         );
     }
 
