@@ -80,6 +80,8 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
     let mut methods = HashSet::new();
     // removed convention properties the script sets, and the extra properties it makes
     let (mut conventions, mut ext) = (Vec::new(), HashSet::new());
+    // `exec { }` and `javaexec { }` on the project or script
+    let mut execs = Vec::new();
     crate::preorder(root, |n| {
         plugins.extend(applied_plugin(src, n));
         if n.kind() == "method_declaration"
@@ -88,6 +90,7 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
             methods.insert(text(m, src));
         }
         removed_api(src, n, &mut removed, &mut conf_refs);
+        execs.extend(project_exec(src, n));
         convention(src, n, &mut conventions, &mut ext);
         if let Some(names) = property_scope(src, n)
             && !path
@@ -121,6 +124,10 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
         declares(src, n, &mut declared);
         true
     });
+    let project_script = path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .is_some_and(|f| f != "settings.gradle" && !f.ends_with("init.gradle"));
     // read only for a file that would get a report
     let old_gradle = std::cell::OnceCell::new();
     let applier = std::cell::OnceCell::new();
@@ -174,8 +181,19 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
             }
         }
     }
+    if project_script {
+        for (n, name) in execs {
+            if !methods.contains(name) {
+                removed.push((
+                    n,
+                    format!("`{name} {{ }}` on the project or build script was removed in Gradle 9.0; inject ExecOperations and call its {name}, or use providers.{name} for a value"),
+                    9,
+                ));
+            }
+        }
+    }
     for (n, name) in conf_refs {
-        if !declared.contains(name) {
+        if !declared.contains(name) && !guarded(src, n, name) {
             let new = REMOVED
                 .iter()
                 .find(|(old, _)| *old == name)
@@ -190,10 +208,6 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
     if methods.contains("jcenter") {
         v.retain(|x| x.rule != "GradleJcenter");
     }
-    let project_script = path
-        .file_name()
-        .and_then(|f| f.to_str())
-        .is_some_and(|f| f != "settings.gradle" && !f.ends_with("init.gradle"));
     // only under a wrapper pinning 9 or later: many builds still pin 8, where these work
     if project_script && !conventions.is_empty() && wrapper_major(path).is_some_and(|m| m >= 9) {
         for (s, name, new) in conventions {
@@ -212,8 +226,10 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
     let major = wrapper_major(path);
     for (n, msg, since) in removed {
         // quiet under a wrapper pinning a Gradle that still has it; without a wrapper, a
-        // current Gradle (8 or 9, which have none of these) runs the build
-        if major.is_none_or(|m| m >= since) {
+        // current Gradle (8 or 9, which have none of the pre-9 removals) runs the build. A 9.0
+        // removal needs a wrapper pinning 9 or later, as for the conventions: many builds still
+        // pin 8.
+        if major.is_none_or(|m| m >= since) && (since < 9 || major.is_some()) {
             v.push(at(n, "GradleRemovedApi", msg));
         }
     }
@@ -548,6 +564,13 @@ const ARCHIVE_TASKS: &[&str] = &[
     "bootWar",
     "shadowJar",
 ];
+/// JavaExec's `main`, removed in Gradle 9.0: checked to work under 8.8 and to fail under
+/// 9.0.0 and 9.9.1 ("Could not set unknown property 'main'").
+const JAVA_EXEC_PROPS: &[(&str, &str)] = &[("main", "mainClass")];
+/// Task types that extend JavaExec.
+const JAVA_EXEC_TYPES: &[&str] = &["JavaExec", "BootRun"];
+/// JavaExec tasks that Spring Boot's plugin creates under these names.
+const JAVA_EXEC_TASKS: &[&str] = &["bootRun"];
 /// Blocks a task configuration block can sit in and still mean the task.
 const TASK_SCOPES: &[&str] = &[
     "allprojects",
@@ -590,7 +613,22 @@ fn removed_api<'a>(
             *since,
         ));
     }
-    if let Some(body) = archive_body(src, n) {
+    let bodies = [
+        (
+            task_body(src, n, ARCHIVE_TYPES, ARCHIVE_TASKS),
+            ARCHIVE_PROPS,
+            "archive tasks",
+            8,
+        ),
+        (
+            task_body(src, n, JAVA_EXEC_TYPES, JAVA_EXEC_TASKS),
+            JAVA_EXEC_PROPS,
+            "JavaExec tasks",
+            9,
+        ),
+    ];
+    for (body, props, tasks, since) in bodies {
+        let Some(body) = body else { continue };
         for s in statements(body) {
             let name = match call(s, src) {
                 Some(c) if !c.args.is_empty() && c.body.is_none() => Some(c.name),
@@ -606,13 +644,13 @@ fn removed_api<'a>(
                     .filter(|l| l.kind() == "identifier")
                     .map(|l| text(l, src)),
             };
-            if let Some((old, new)) = name.and_then(|x| ARCHIVE_PROPS.iter().find(|p| p.0 == x)) {
+            if let Some((old, new)) = name.and_then(|x| props.iter().find(|p| p.0 == x)) {
                 out.push((
                     s,
                     format!(
-                        "The `{old}` property of archive tasks was removed in Gradle 8.0; use {new}"
+                        "The `{old}` property of {tasks} was removed in Gradle {since}.0; use {new}"
                     ),
-                    8,
+                    since,
                 ));
             }
         }
@@ -635,6 +673,75 @@ fn removed_api<'a>(
             7,
         ));
     }
+}
+
+/// `exec { }` or `javaexec { }` (also `exec({ })`, `project.exec { }`,
+/// `rootProject.javaexec { }`), which Gradle 9.0 removed from the project and the build
+/// script: in a task action, a script method or at the top level it fails with "Could not
+/// find method exec()" (checked under 8.8, 9.0.0 and 9.9.1). Only with a closure: a bare
+/// `exec()` is an Exec task's own action. Not inside a class, whose own or inherited `exec`
+/// it may be, nor on another receiver (`execOperations.exec { }`, `providers.exec { }`),
+/// nor in a `with { }`, `tap { }` or `identity { }`, which hands the closure another
+/// delegate (gocd's `injected.execOps.with { exec { } }`).
+fn project_exec<'a>(src: &'a str, n: Node<'a>) -> Option<(Node<'a>, &'a str)> {
+    let (name, closure) = match n.kind() {
+        "command_chain" => {
+            let mut c = n.walk();
+            let args: Vec<_> = n.children_by_field_name("argument", &mut c).collect();
+            (
+                n.child_by_field_name("receiver")
+                    .filter(|r| r.kind() == "identifier")?,
+                matches!(args[..], [a] if a.kind() == "closure"),
+            )
+        }
+        "method_invocation" => {
+            let f = n.child_by_field_name("function")?;
+            let name = match f.kind() {
+                "identifier" => f,
+                "field_access"
+                    if f.child_by_field_name("object")
+                        .is_some_and(|o| matches!(text(o, src), "project" | "rootProject")) =>
+                {
+                    f.child_by_field_name("field")?
+                }
+                _ => return None,
+            };
+            let only_closure_arg = n.child_by_field_name("arguments").is_some_and(|a| {
+                a.named_child_count() == 1
+                    && a.named_child(0).is_some_and(|x| x.kind() == "closure")
+            });
+            (
+                name,
+                n.child_by_field_name("closure").is_some() || only_closure_arg,
+            )
+        }
+        _ => return None,
+    };
+    let name = text(name, src);
+    (closure
+        && matches!(name, "exec" | "javaexec")
+        && !std::iter::successors(n.parent(), |p| p.parent()).any(|p| p.kind() == "class_body")
+        && !owners(n, src).any(|o| matches!(o, "with" | "tap" | "identity")))
+    .then_some((n, name))
+}
+
+/// Whether `n`, a `configurations.<name>`, runs only when an `if` or `?:` above it found
+/// the configuration: `if (configurations.hasProperty('compile')) { configurations.compile }`
+/// (or `findByName`), which a Gradle without it never evaluates (#222).
+fn guarded(src: &str, n: Node, name: &str) -> bool {
+    let checks = ["hasProperty", "findByName"]
+        .map(|m| [format!("{m}('{name}')"), format!("{m}(\"{name}\")")]);
+    let mut inner = n;
+    std::iter::successors(n.parent(), |p| p.parent()).any(|p| {
+        let child = std::mem::replace(&mut inner, p);
+        matches!(p.kind(), "if_statement" | "ternary_expression")
+            && p.child_by_field_name("consequence")
+                .is_some_and(|c| c.id() == child.id())
+            && p.child_by_field_name("condition").is_some_and(|c| {
+                let t = text(c, src);
+                checks.iter().flatten().any(|k| t.contains(k.as_str()))
+            })
+    })
 }
 
 /// The plugin id `n` applies: `apply plugin: 'java'` or `apply(plugin: 'java')` (`n` is the
@@ -712,10 +819,10 @@ fn owners<'a>(n: Node<'a>, src: &'a str) -> impl Iterator<Item = &'a str> {
         })
 }
 
-/// The configuration block of an archive task: `jar { }` (where it means the task),
-/// `task x(type: Jar) { }`, `tasks.register('x', Zip) { }`, `tasks.withType(Jar) { }` or
-/// `tasks.withType(Jar).configureEach { }`.
-fn archive_body<'a>(src: &'a str, n: Node<'a>) -> Option<Node<'a>> {
+/// The configuration block of a task of one of `types`: one of the `tasks` names alone
+/// (`jar { }`, where it means the task), `task x(type: Jar) { }`, `tasks.register('x', Zip)
+/// { }`, `tasks.withType(Jar) { }` or `tasks.withType(Jar).configureEach { }`.
+fn task_body<'a>(src: &'a str, n: Node<'a>, types: &[&str], tasks: &[&str]) -> Option<Node<'a>> {
     let typed = |m: Node| {
         let Some(a) = m.child_by_field_name("arguments") else {
             return false;
@@ -732,7 +839,7 @@ fn archive_body<'a>(src: &'a str, n: Node<'a>) -> Option<Node<'a>> {
             };
             x.is_some_and(|x| {
                 matches!(x.kind(), "identifier" | "field_access")
-                    && ARCHIVE_TYPES.contains(&last(text(x, src)))
+                    && types.contains(&last(text(x, src)))
             })
         })
     };
@@ -748,7 +855,7 @@ fn archive_body<'a>(src: &'a str, n: Node<'a>) -> Option<Node<'a>> {
                     && f.child_by_field_name("object")
                         .is_some_and(|o| o.kind() == "method_invocation" && typed(o)))
                 || (f.kind() == "identifier"
-                    && ARCHIVE_TASKS.contains(&text(f, src))
+                    && tasks.contains(&text(f, src))
                     && n.child_by_field_name("arguments")
                         .is_none_or(|a| a.named_child_count() == 0)
                     && in_scope());
@@ -756,7 +863,7 @@ fn archive_body<'a>(src: &'a str, n: Node<'a>) -> Option<Node<'a>> {
         }
         "command_chain" => {
             let c = call(n, src)?;
-            (ARCHIVE_TASKS.contains(&c.name) && c.args.is_empty() && in_scope())
+            (tasks.contains(&c.name) && c.args.is_empty() && in_scope())
                 .then_some(c.body)
                 .flatten()
         }
@@ -1625,6 +1732,66 @@ mod tests {
         std::fs::write(root.join("gradle.properties"), "sourceCompatibilityX=8\n").unwrap();
         assert_eq!(lines(&sub, "build.gradle", src), vec![2]);
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn removed_exec() {
+        // #222: Project/Script exec and javaexec and JavaExec's `main`, removed in 9.0
+        let root = std::env::temp_dir().join(format!("groovyfmt-exec-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("gradle/wrapper")).unwrap();
+        let props = root.join("gradle/wrapper/gradle-wrapper.properties");
+        let wrapper = |v: &str| {
+            std::fs::write(&props, format!("distributionUrl=https\\://services.gradle.org/distributions/gradle-{v}-bin.zip\n")).unwrap()
+        };
+        let lines = |name: &str, src: &str| {
+            rules(root.join(name).to_str().unwrap(), src)
+                .iter()
+                .filter(|r| r.0 == "GradleRemovedApi")
+                .map(|r| r.1)
+                .collect::<Vec<_>>()
+        };
+        let src = "def run() { exec { commandLine 'a' } }\ntasks.register('a') { doLast { exec { commandLine 'a' } } }\ntask b { doLast { javaexec { mainClass = 'X' } } }\ndef r = exec { ignoreExitValue = true }\nexec({ commandLine 'a' })\nproject.exec { commandLine 'a' }\nrootProject.javaexec { mainClass = 'X' }\ntasks.register('c', JavaExec) { main = 'X' }\ntask d(type: JavaExec) {\n    main 'X'\n}\ntasks.withType(JavaExec).configureEach { main = 'X' }\nbootRun { main = 'X' }\n";
+        wrapper("9.0.0");
+        assert_eq!(
+            lines("build.gradle", src),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 13]
+        );
+        wrapper("9.9.1");
+        assert_eq!(
+            lines("build.gradle", src),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 13]
+        );
+        // under Gradle 8, or with no wrapper, quiet: they work there
+        wrapper("8.8");
+        assert_eq!(lines("build.gradle", src), Vec::<usize>::new());
+        assert_eq!(rules("build.gradle", src), vec![]);
+        wrapper("9.0.0");
+        // ExecOperations, providers, an Exec task, a task's own exec(), a class's code, the
+        // script's own exec method, other receivers, JavaExec's mainClass, a settings script
+        let quiet = "interface I { @Inject ExecOperations getOps() }\ndef ops = objects.newInstance(I).ops\ntasks.register('a') { doLast { ops.exec { commandLine 'a' } } }\nexecOperations.javaexec { mainClass = 'X' }\nproviders.exec { commandLine 'a' }\ntasks.register('b', Exec) { commandLine 'a' }\nclass T extends Exec { void run() { exec() } }\nclass U { void run(p) { exec { } } }\nfoo.exec { }\ntasks.register('d') { doLast { injected.execOps.with { exec { commandLine 'a' } } } }\ntasks.register('c', JavaExec) { mainClass = 'X' }\nexec\n";
+        assert_eq!(lines("build.gradle", quiet), Vec::<usize>::new());
+        assert_eq!(
+            lines(
+                "build.gradle",
+                "def exec(Closure c) { }\nexec { commandLine 'a' }\n"
+            ),
+            Vec::<usize>::new()
+        );
+        assert_eq!(
+            lines("settings.gradle", "exec { commandLine 'a' }\n"),
+            Vec::<usize>::new()
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn removed_configuration_reference_guarded_by_a_check() {
+        // #222: WebViewUpgrade publish.gradle, never evaluated on 7+
+        let src = "if (configurations.hasProperty(\"compile\")) {\n    classpath += configurations.compile\n}\nx = configurations.findByName('runtime') ? configurations.runtime : []\nif (configurations.hasProperty('compile')) {\n} else {\n    y = configurations.compile\n}\nif (configurations.hasProperty('runtime')) { z = configurations.compile }\n";
+        assert_eq!(
+            rules("build.gradle", src),
+            vec![("GradleRemovedApi", 7), ("GradleRemovedApi", 9)]
+        );
     }
 
     #[test]

@@ -2523,6 +2523,63 @@ fn jenkinsfile_underscore_and_dash_names_are_pipelines() {
 }
 
 #[test]
+fn a_walk_reports_a_pipeline_name_with_a_syntax_error() {
+    // #222: a suffixed pipeline that doesn't parse is reported, as a `Jenkinsfile` is; one
+    // that reads as something else (a Dockerfile, a shell script, a template, a hidden
+    // marker file) is still left out without a word
+    let d = Dir::new("jbroken");
+    let broken = "pipeline {\n    environment {\n        X = 1,\n    }\n}\n";
+    let names = [
+        "Jenkinsfile.ci",
+        "Jenkinsfile_deploy",
+        "JenkinsfileBase",
+        "ci_Jenkinsfile",
+        "deploy.jenkins",
+    ];
+    for f in names {
+        d.write(f, broken);
+    }
+    d.write(
+        "docker/Dockerfile.jenkins",
+        "FROM jenkins/jenkins:lts\n# plugins\nRUN jenkins-plugin-cli --plugins git\n",
+    );
+    d.write(
+        "Jenkinsfile_run",
+        "#!/bin/bash\nif [ -f x ]; then echo y; fi\n",
+    );
+    d.write(
+        "Jenkinsfile_erb",
+        "pipeline {\n<% if prod %>\n  agent any\n<% end %>\n}\n",
+    );
+    d.write(
+        "Jenkinsfile.hbs-like",
+        "pipeline {\n{{#each stages}}\n  stage('x') { }\n{{/each}}\n}\n",
+    );
+    d.write(
+        ".jenkins",
+        "This file marks the root directory for the test harness.\n",
+    );
+    d.write("Jenkinsfile.md", broken);
+    let o = run(&d.0, &["--syntax", "."], None);
+    assert_eq!(o.status.code(), Some(1), "{}", stderr(&o));
+    let all = format!("{}{}", stdout(&o), stderr(&o));
+    for f in names {
+        assert!(
+            all.contains(&format!("{f}:3:9: could not parse")),
+            "{f}: {all}"
+        );
+    }
+    assert!(all.contains("could not parse 5 of 5 files"), "{all}");
+    // --check counts them as skipped for a parse error, which --strict fails
+    let o = run(&d.0, &["--check", "-v", "."], None);
+    let err = stderr(&o);
+    assert!(err.contains("skipped deploy.jenkins: parse error"), "{err}");
+    assert!(!err.contains("Dockerfile"), "{err}");
+    let o = run(&d.0, &["--strict", "--check", "."], None);
+    assert_ne!(o.status.code(), Some(0));
+}
+
+#[test]
 fn extensionless_jenkinsfile_names_are_pipelines() {
     // #212: corda's JenkinsfileSnykScan, aqa-tests' JenkinsfileBase
     let d = Dir::new("jfnosep");

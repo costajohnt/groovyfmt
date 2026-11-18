@@ -145,9 +145,12 @@ pub fn is_groovy_file(path: &Path) -> bool {
 
 /// Whether a directory walk takes the file at `path`: a name `is_groovy_file` takes, and for
 /// a `Jenkinsfile.*`, `Jenkinsfile_*`, `Jenkinsfile-*`, `Jenkinsfile<Name>`, `*-Jenkinsfile`,
-/// `*_Jenkinsfile` or `*.jenkins` not ending in `.groovy`, contents that parse as Groovy.
-/// Such a name may be a template or a note (`Jenkinsfile.disabled`, `Jenkinsfile_template`) that would
-/// only fail the run; one that doesn't parse is left out without a word, as a `.txt` file is.
+/// `*_Jenkinsfile` or `*.jenkins` not ending in `.groovy`, contents that are Groovy.
+/// Such a name may be a template, a Dockerfile or a note (`Jenkinsfile_template`,
+/// `Dockerfile.jenkins`) that would only fail the run, or a pipeline with a syntax error,
+/// which the run should report (#222). So one that doesn't parse is still taken unless it
+/// reads as something else (`not_groovy`) or is a hidden file (a `.jenkins` marker file);
+/// then it is left out without a word, as a `.txt` is.
 /// Any other file with no extension (and not ending in `~`) is taken when its first line is a
 /// groovy shebang (`is_groovy_shebang`); only its first 256 bytes are read, and files with
 /// other extensions are never opened.
@@ -173,9 +176,33 @@ pub fn is_walked_file(path: &Path) -> bool {
         _ => return true,
     }
     match std::fs::read(path).map(String::from_utf8) {
-        Ok(Ok(src)) => !parse(&src).root_node().has_error(),
+        Ok(Ok(src)) => {
+            let tree = parse(&src);
+            !tree.root_node().has_error() || !(name.starts_with('.') || not_groovy(&src, &tree))
+        }
         _ => true,
     }
+}
+
+/// Whether `src`, which doesn't parse, reads as something other than Groovy: a first line
+/// that is a `#!` for another program (a shell script), or a syntax error (of the first
+/// `syntax::MAX_REPORTED`) on a line starting with `#` (a Dockerfile, shell or YAML comment)
+/// or a template tag (Jinja `{%`, `{#`, ERB/JSP `<%`, Mustache `{{#`, `{{/`). A pipeline
+/// with a typo fails on Groovy code, so it is still reported.
+fn not_groovy(src: &str, tree: &Tree) -> bool {
+    if src.starts_with("#!") && !is_groovy_shebang(src.as_bytes()) {
+        return true;
+    }
+    let (errors, _) = syntax::errors(src, tree);
+    errors
+        .iter()
+        .filter_map(|e| src.lines().nth(e.line - 1))
+        .any(|l| {
+            let l = l.trim_start();
+            ["#", "{%", "{#", "{{#", "{{/", "<%"]
+                .iter()
+                .any(|m| l.starts_with(m))
+        })
 }
 
 /// Whether the first line of the file at `path` is a groovy shebang, reading at most 256 bytes.
