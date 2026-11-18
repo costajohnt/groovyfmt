@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- A backslash line continuation inside a single- or double-quoted string parses in a file with CRLF line endings, `'a,\` then `b'`, as it did with LF; Groovy 2.4, 3 and 4 accept it. Such files were skipped, with the error misreported at line 1 (GaryMilne/Hubitat-TileBuilder's `Tile_Builder_Parent.groovy`). The grammar pin moves to tree-sitter-groovy f510125. ([#235](https://github.com/costajohnt/groovyfmt/issues/235))
+- `--syntax` reports a method declared in a closure or block, `{ def f(n) { n } }` or `if (x) { String g() { } }`, which the grammar takes and Groovy 2.4, 3 and 4 reject (FileBot's `preset_calibre.groovy`). A declaration Groovy 3 and 4 read as a command call or an expression is left alone: `foo bar() { }` with a lowercase type, or a qualified, generic or array type. Such files are still formatted. ([#235](https://github.com/costajohnt/groovyfmt/issues/235))
+
 ## 0.26.0 (2026-11-18)
 
 ### Fixed

@@ -86,7 +86,7 @@ These files are skipped and listed under `-v` or `--strict`:
 
 ## Parse errors
 
-A file groovyfmt can't parse is never formatted or linted. `--syntax` lists where parsing failed, one line per place, up to 10 per file and then a count of the rest. It also lists a shebang (`#!`) after the first line, which parses and is still formatted but which Groovy 2.4, 3 and 4 reject. So is a dotted map key or named argument, `[a: 1, b.c: 2]` or `f(b.c: 2)`, which Groovy wants quoted (`'b.c'`) or in parentheses (`(b.c)`). `-v` and `--strict` show the same lines under each skipped file, and `--stdin` prints them after its error.
+A file groovyfmt can't parse is never formatted or linted. `--syntax` lists where parsing failed, one line per place, up to 10 per file and then a count of the rest. It also lists a shebang (`#!`) after the first line, which parses and is still formatted but which Groovy 2.4, 3 and 4 reject. So is a dotted map key or named argument, `[a: 1, b.c: 2]` or `f(b.c: 2)`, which Groovy wants quoted (`'b.c'`) or in parentheses (`(b.c)`). So is a method declared in a closure or block, `{ def f(n) { n } }`; Groovy takes one only at a script's top level or in a class. `-v` and `--strict` show the same lines under each skipped file, and `--stdin` prints them after its error.
 
 ```console
 $ groovyfmt --syntax
