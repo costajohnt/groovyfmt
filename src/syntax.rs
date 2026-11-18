@@ -34,9 +34,10 @@ pub fn check(src: &str) -> (Vec<SyntaxError>, usize) {
 
 /// What the grammar takes leniently and Groovy 2.4, 3 and 4 reject: a shebang after the first
 /// line, as after a license comment (only the top level holds one); a second `package`
-/// statement; `$(` in a double-quoted string; a label on a `return`'s line, which is a
-/// command call as its value, `return readJSON text: x`. The last two are found from the
-/// text, so a file without them costs no walk of the tree.
+/// statement; a `$` in a double-quoted string that starts no name or `${`, as in `$(` or
+/// `$[`; a backslash in a quoted string that starts no escape, `'a\d+'`; a label on a
+/// `return`'s line, which is a command call as its value, `return readJSON text: x`. The
+/// last three are found from the text, so a file without them costs no walk of the tree.
 // ponytail: a primitive type name as a variable's name (`{ char -> }`) is rejected by Groovy
 // too, but where the grammar misreads a valid declaration the name lands on `int` or `boolean`,
 // so checking it reported valid files.
@@ -60,24 +61,74 @@ fn rejected(src: &str, tree: &Tree) -> Vec<SyntaxError> {
             }
         }
     }
-    for (i, _) in src.match_indices("$(") {
-        let escaped = src[..i].bytes().rev().take_while(|&b| b == b'\\').count() % 2 == 1;
-        let in_gstring = root
-            .descendant_for_byte_range(i, i + 1)
+    let in_gstring = |i: usize| {
+        root.descendant_for_byte_range(i, i + 1)
             .filter(|n| n.kind() == "string_fragment")
             .and_then(|n| n.parent())
-            .is_some_and(|s| s.kind() == "string_literal" && text(s, src).starts_with('"'));
-        if in_gstring && !escaped {
-            let (line, col) = position(src, byte_point(src, i));
-            out.push(SyntaxError {
-                line,
-                col,
-                end_line: line,
-                end_col: col + 2,
-                message:
-                    "`$(` in a double-quoted string: write `${...}`, or `\\$` for a dollar sign"
-                        .into(),
-            });
+            .is_some_and(|s| s.kind() == "string_literal" && text(s, src).starts_with('"'))
+    };
+    let mut push = |i: usize, len: usize, message: String| {
+        let (line, col) = position(src, byte_point(src, i));
+        out.push(SyntaxError {
+            line,
+            col,
+            end_line: line,
+            end_col: col + len,
+            message,
+        });
+    };
+    // A `$` in a double-quoted string that starts no name or `${`: `"$(x)"`, `"$[x]"`, `"a$"`.
+    for (i, _) in src.match_indices('$') {
+        let escaped = src[..i].bytes().rev().take_while(|&b| b == b'\\').count() % 2 == 1;
+        let next = src[i + 1..].chars().next();
+        if escaped
+            || next.is_some_and(|c| c == '{' || c == '_' || c.is_alphabetic())
+            || !in_gstring(i)
+        {
+            continue;
+        }
+        let message = if next == Some('(') {
+            "`$(` in a double-quoted string: write `${...}`, or `\\$` for a dollar sign".into()
+        } else {
+            "`$` in a double-quoted string must start a name or `${...}`: write `\\$` for a dollar sign"
+                .into()
+        };
+        push(i, 1 + usize::from(next == Some('(')), message);
+    }
+    // A backslash in a quoted string that starts no escape: `'a\d+'` (a slashy string,
+    // `/a\d+/`, takes it).
+    let mut after_escape = 0;
+    for (i, _) in src.match_indices('\\') {
+        if i < after_escape {
+            continue;
+        }
+        let rest = &src[i + 1..];
+        let Some(c) = rest.chars().next() else { break };
+        after_escape = i + 1 + c.len_utf8();
+        let valid = match c {
+            'b' | 't' | 'n' | 'f' | 'r' | 's' | '"' | '\'' | '\\' | '$' | '\n' | '\r' => true,
+            '0'..='7' => true,
+            'u' => {
+                let hex = rest.trim_start_matches('u');
+                hex.len() >= 4 && hex.as_bytes()[..4].iter().all(u8::is_ascii_hexdigit)
+            }
+            _ => false,
+        };
+        if valid {
+            continue;
+        }
+        let quoted = root
+            .descendant_for_byte_range(i, i + 1)
+            .is_some_and(|n| n.kind() == "string_literal" && text(n, src).starts_with('\''))
+            || in_gstring(i);
+        if quoted {
+            push(
+                i,
+                2,
+                format!(
+                    "`\\{c}` is not an escape in a quoted string: write `\\\\{c}`, or use a slashy string"
+                ),
+            );
         }
     }
     for (i, _) in src.match_indices("return") {
@@ -373,6 +424,31 @@ mod tests {
         // escaped, single-quoted, slashy, dollar-slashy, in a GString's code: Groovy takes them
         assert_eq!(
             checked("a = \"\\$(x)\"\nb = '$(x)'\nc = /$(x)/\nd = $/ $(x) /$\ne = \"${f('$(')}\"\n"),
+            Vec::<String>::new()
+        );
+        let lone = "`$` in a double-quoted string must start a name or `${...}`: write `\\$` for a dollar sign";
+        assert_eq!(
+            checked("a = \"$[x]\"\nb = \"\"\"cost: $5\"\"\"\nc = \"a$\"\n"),
+            [format!("1:6: {lone}"), format!("2:14: {lone}"), format!("3:7: {lone}")]
+        );
+        assert_eq!(
+            checked("a = \"$x ${y} \\$5 $\u{e9}\"\nb = '$5'\nc = /a$/\nd = $/ $5 /$\n"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            checked("a = 'a\\d+'\nb = '''\\e'''\nc = \"x\\.y\"\nd = \"${'\\w'}\"\n"),
+            [
+                "1:7: `\\d` is not an escape in a quoted string: write `\\\\d`, or use a slashy string",
+                "2:8: `\\e` is not an escape in a quoted string: write `\\\\e`, or use a slashy string",
+                "3:7: `\\.` is not an escape in a quoted string: write `\\\\.`, or use a slashy string",
+                "4:9: `\\w` is not an escape in a quoted string: write `\\\\w`, or use a slashy string",
+            ]
+        );
+        // escapes Groovy takes (`\s` in 3 and 4), a slashy string's backslashes, comments
+        assert_eq!(
+            checked(
+                "a = '\\b\\t\\n\\f\\r\\s\\\"\\'\\\\\\$\\0\\17\\u00e9 \\\\d'\nb = \"\\\\d \\$ \\u0041\"\nc = /a\\d/\nd = $/\\d/$\ne = 'a\\\nb' // \\d\n"
+            ),
             Vec::<String>::new()
         );
         let ret = "a `return` value can't be a command call: put its arguments in parentheses";
