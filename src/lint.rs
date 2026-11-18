@@ -19,6 +19,9 @@ pub struct Rule {
     pub fixable: bool,
 }
 
+/// Rules with `fixable: false` whose reports `--lint --fix` fixes only in some cases.
+pub const PARTLY_FIXABLE: &[&str] = &["GradleRemovedApi"];
+
 /// Every rule, named after its CodeNarc equivalent so existing configs map across.
 pub const RULES: &[Rule] = &[
     Rule {
@@ -708,7 +711,7 @@ pub const RULES: &[Rule] = &[
     Rule {
         name: "GradleRemovedApi",
         default: true,
-        description: "a removed core plugin (maven, findbugs, osgi, ...), the uploadArchives task, archive task properties removed in 8.0, or configurations.compile and the like, unless the Gradle wrapper pins an older Gradle",
+        description: "a removed core plugin (maven, findbugs, osgi, ...), the uploadArchives task, archive task properties removed in 8.0, configurations.compile and the like, or a class Groovy 4 moved out of groovy.util (XmlSlurper, XmlParser, FileNameFinder), unless the Gradle wrapper pins an older Gradle",
         why: "These were removed from Gradle: the `maven` plugin and `uploadArchives` in 7.0 (use maven-publish), findbugs, jdepend, osgi and the announce plugins in 6.0, the `compile`, `runtime`, `testCompile` and `testRuntime` configurations in 7.0, an archive task's `archiveName`, `baseName`, `classifier`, `destinationDir`, `appendix` and `extension` in 8.0 (use archiveFileName, archiveBaseName, archiveClassifier, destinationDirectory and so on), the project's `libsDir` and `distsDir` in 7.0 (read base.libsDirectory), and the plugin conventions' project properties in 9.0, set or read (`sourceCompatibility = 11`, `println project.libsDirName`; use `java { }`, `base { }`, `application { }`), with a report's `destination`, a copy spec's `fileMode` and `dirMode`, the IDEA module's `testSourceDirs` and `exec { }` on a project or script. Gradle 9.0 also runs scripts with Groovy 4, which moved `XmlSlurper`, `XmlParser` and `groovy.util.slurpersupport` to groovy.xml and `FileNameFinder` to groovy.ant (--fix adds the import). The build fails on a Gradle without them. Source: the Gradle upgrade guides for 5.x to 6.0, 6.x to 7.0, 7.x to 8.0 and 8.x to 9.0.",
         bad: "apply plugin: 'java'\n\njar {\n    classifier = 'all'\n}",
         good: "apply plugin: 'java'\n\njar {\n    archiveClassifier = 'all'\n}",
@@ -2301,6 +2304,25 @@ mod tests {
             assert_eq!(bad.iter().all(|v| v.fix.is_some()), r.fixable, "{}", r.name);
             assert!(!r.why.is_empty(), "{}", r.name);
         }
+        for name in PARTLY_FIXABLE {
+            let r = RULES.iter().find(|r| r.name == *name).expect(name);
+            assert!(!r.fixable, "{name}");
+        }
+    }
+
+    #[test]
+    fn docs_rule_counts_match_rules() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        // the crates.io package has no docs/, so the test runs in a checkout only
+        if !root.join("docs").is_dir() {
+            return;
+        }
+        let read = |p: &str| std::fs::read_to_string(root.join(p)).expect(p);
+        let (n, on) = (RULES.len(), RULES.iter().filter(|r| r.default).count());
+        let want = format!("{n} rules, {on} on by default");
+        assert!(read("README.md").contains(&want), "README.md: {want}");
+        let want = format!("has {n} rules, {on} of them on by default");
+        assert!(read("docs/lint.md").contains(&want), "docs/lint.md: {want}");
     }
 
     #[test]
