@@ -4,6 +4,10 @@
 
 use groovyfmt::format::{Outcome, Style, format, shape, tokens};
 
+fn no_space(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
 /// Whether `a` and `b` have the same tokens, byte for byte (strings included; comments
 /// without trailing whitespace), and parse to the same tree shape.
 fn same_code(a: &str, b: &str) -> bool {
@@ -57,7 +61,10 @@ fn check(name: &str, src: &str, style: &Style) -> String {
         Outcome::Formatted(o) => o,
         Outcome::Skipped(why) => panic!("{name}: skipped: {why}"),
     };
-    assert!(same_code(&out, src), "{name}: not whitespace-only");
+    // both: the text check sees what the grammar skips (a `\` line continuation, a BOM),
+    // the token check what deleting whitespace hides (`a - -b` as `a --b`)
+    assert_eq!(no_space(&out), no_space(src), "{name}: not whitespace-only");
+    assert!(same_code(&out, src), "{name}: tokens changed");
     assert_eq!(
         format(&out, style),
         Outcome::Unchanged,

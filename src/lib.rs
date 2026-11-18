@@ -142,7 +142,9 @@ pub fn printable(s: &str) -> String {
 /// than `Jenkinsfile` and `*.jenkinsfile` first, and takes an extensionless script by its
 /// shebang (`is_walked_file`).
 pub fn is_groovy_file(path: &Path) -> bool {
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let name = &*path
+        .file_name()
+        .map_or(std::borrow::Cow::Borrowed(""), |n| n.to_string_lossy());
     [".groovy", ".gradle", ".gvy", ".gy", ".gsh"]
         .iter()
         .any(|ext| name.ends_with(ext))
@@ -169,7 +171,9 @@ pub fn is_groovy_file(path: &Path) -> bool {
 /// `/* */` comments (a license header), is left out (#230, #236, #242).
 /// A file named on the command line is not read here, and is taken whatever it holds.
 pub fn is_walked_file(path: &Path) -> bool {
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let name = &*path
+        .file_name()
+        .map_or(std::borrow::Cow::Borrowed(""), |n| n.to_string_lossy());
     if !is_groovy_file(path) {
         return Path::new(name).extension().is_none()
             && !name.ends_with('~')
@@ -385,7 +389,9 @@ pub fn is_skipped_dir(path: &Path) -> bool {
 
 /// Why `is_skipped_dir` skips `path`, for `-v`.
 pub fn skipped_dir(path: &Path) -> Option<&'static str> {
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let name = &*path
+        .file_name()
+        .map_or(std::borrow::Cow::Borrowed(""), |n| n.to_string_lossy());
     if matches!(name, "build" | "out" | "target") {
         let full = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let mut in_src = false;

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed
+
+- `--lines` and editor range formatting handle files with classic Mac line endings (a lone CR): the lines are reindented and the line endings kept, where the whole file was one line and the last CR became a LF.
+- In a file starting with a UTF-8 BOM, lint and syntax columns on line 1 no longer count the BOM, and `--lint --fix` removes an unused import on line 1 (the BOM stays).
+- File names and paths that aren't UTF-8 (a Latin-1 name from `xargs`) no longer crash the argument parser, and such a file is formatted and linted instead of skipped. `--config=`, `--stdin-filepath=` and `--write-baseline=` take such a path too.
+- A `.groovyfmt.toml` in a git repository that is a symlink must point inside the repository (for a submodule, the superproject), so a committed link can't read a file elsewhere. A config file is read with the same 10 MB cap as a source file; `--config` still reads a pipe.
+- A `[lint]` rule name groovyfmt doesn't know is a warning and is ignored, so a config written for a newer version works with an older one. A name close to a known rule (`UnusedImports`, `unused_import`) is still an error that suggests the rule, and with `--strict` any unknown name is an error.
+
 ### Changed
 
 - `--explain GradleRemovedApi` says the rule is partly fixed automatically, and its description names the classes Groovy 4 moved.

@@ -4442,6 +4442,8 @@ fn arguments_that_are_not_utf8() {
 fn a_config_symlink_stays_in_its_repository() {
     use std::os::unix::fs::symlink;
     let d = Dir::new("config-link");
+    // the repository is `repo`, not the test dir around it
+    std::fs::remove_dir_all(d.0.join(".git")).unwrap();
     d.write("outside/secret.toml", "TOPSECRET\n");
     d.write("repo/.git/HEAD", "");
     d.write("repo/shared/style.toml", "indent = 2\n");
@@ -4508,6 +4510,17 @@ fn an_unknown_rule_is_a_warning_unless_it_looks_like_a_typo() {
         "{}",
         stderr(&o)
     );
+    // case and underscores don't make a rule name new
+    for typo in ["UNUSEDIMPORT", "unused_import"] {
+        d.write(".groovyfmt.toml", &format!("[lint]\n{typo} = false\n"));
+        let o = run(&d.0, &["--lint"], None);
+        assert_eq!(o.status.code(), Some(2), "{typo}: {}", stderr(&o));
+        assert!(
+            stderr(&o).contains("did you mean `UnusedImport`?"),
+            "{}",
+            stderr(&o)
+        );
+    }
 }
 
 #[test]
@@ -4547,5 +4560,133 @@ fn off_regions_are_kept_and_the_rest_formatted() {
     assert_eq!(
         run(&d.0, &["--check", "A.groovy"], None).status.code(),
         Some(0)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn config_symlinks_outside_git_and_into_a_superproject_are_followed() {
+    use std::os::unix::fs::symlink;
+    // no repository at all: a home directory's config linked into a Nix store
+    let d = Dir::new("config-link-nogit");
+    std::fs::remove_dir_all(d.0.join(".git")).unwrap();
+    d.write("store/style.toml", "indent = 2\n");
+    d.write("home/A.groovy", "class A {\ndef f() {}\n}\n");
+    symlink("../store/style.toml", d.0.join("home/.groovyfmt.toml")).unwrap();
+    let o = run(&d.0.join("home"), &["A.groovy"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(d.read("home/A.groovy"), "class A {\n  def f() {}\n}\n");
+    // a submodule's config linked into its superproject (`Dir` makes the superproject)
+    let d = Dir::new("config-link-submodule");
+    d.write("shared/style.toml", "indent = 2\n");
+    d.write("sub/.git", "gitdir: ../.git/modules/sub\n");
+    d.write("sub/A.groovy", "class A {\ndef f() {}\n}\n");
+    symlink("../shared/style.toml", d.0.join("sub/.groovyfmt.toml")).unwrap();
+    let o = run(&d.0.join("sub"), &["A.groovy"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(d.read("sub/A.groovy"), "class A {\n  def f() {}\n}\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_file_name_that_is_not_utf8_is_formatted() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let d = Dir::new("latin1-name");
+    let name = OsStr::from_bytes(b"caf\xe9.groovy");
+    // some file systems (APFS) refuse a name that isn't UTF-8
+    if std::fs::write(d.0.join(name), UGLY).is_err() {
+        return;
+    }
+    let check = Command::new(bin())
+        .arg("--check")
+        .arg(name)
+        .current_dir(&d.0)
+        .output()
+        .unwrap();
+    assert_eq!(check.status.code(), Some(1), "{}", stderr(&check));
+    let lint = Command::new(bin())
+        .args(["--lint", "--strict"])
+        .arg(name)
+        .current_dir(&d.0)
+        .output()
+        .unwrap();
+    assert!(!stderr(&lint).contains("skipped"), "{}", stderr(&lint));
+    let o = Command::new(bin())
+        .arg(name)
+        .current_dir(&d.0)
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(std::fs::read_to_string(d.0.join(name)).unwrap(), PRETTY);
+    // and found by a walk
+    std::fs::write(d.0.join(name), UGLY).unwrap();
+    assert_eq!(run(&d.0, &["--check"], None).status.code(), Some(1));
+}
+
+#[cfg(unix)]
+#[test]
+fn an_option_value_after_an_equals_sign_need_not_be_utf8() {
+    use std::os::unix::ffi::OsStrExt;
+    let d = Dir::new("non-utf8-eq");
+    let arg = |b: &[u8]| std::ffi::OsStr::from_bytes(b).to_os_string();
+    let mut child = Command::new(bin())
+        .arg("--stdin")
+        .arg(arg(b"--stdin-filepath=caf\xe9.groovy"))
+        .current_dir(&d.0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(UGLY.as_bytes())
+        .unwrap();
+    let o = child.wait_with_output().unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(stdout(&o), PRETTY);
+    // read as a path: a missing file, not a refused argument
+    let o = Command::new(bin())
+        .args([arg(b"--config=caf\xe9.toml"), arg(b"--check")])
+        .current_dir(&d.0)
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2));
+    assert!(!stderr(&o).contains("not UTF-8"), "{}", stderr(&o));
+    assert!(stderr(&o).contains(".toml: "), "{}", stderr(&o));
+}
+
+#[cfg(unix)]
+#[test]
+fn config_from_a_pipe() {
+    // `--config <(...)`: a FIFO, not a regular file
+    let d = Dir::new("config-fifo");
+    let fifo = d.0.join("cfg.toml");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let writer = {
+        let fifo = fifo.clone();
+        std::thread::spawn(move || {
+            let _ = std::fs::write(fifo, "indent = 2\n");
+        })
+    };
+    let o = run(&d.0, &["--config", "cfg.toml", "--stdin"], Some(UGLY));
+    // the writer still waits only if nothing opened the pipe: open it so the test ends
+    if !writer.is_finished() {
+        let _ = std::fs::File::open(&fifo);
+    }
+    writer.join().unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(
+        stdout(&o),
+        "class A {\n  def f() {\n    println 'x'\n  }\n}\n"
     );
 }

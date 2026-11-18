@@ -138,11 +138,13 @@ impl Config {
                             continue;
                         }
                         if !RULES.iter().any(|r| r.name == rule) {
+                            // `UNUSEDIMPORT` and `unused_import` are typos too
+                            let norm = |s: &str| s.to_lowercase().replace('_', "");
                             if let Some(near) = RULES
                                 .iter()
                                 .map(|r| r.name)
                                 .chain(["gradle_compile_replacement"])
-                                .find(|r| edits(r, rule) <= 2)
+                                .find(|r| edits(&norm(r), &norm(rule)) <= 2)
                             {
                                 return Err(format!(
                                     "unknown lint rule `{rule}` (did you mean `{near}`?)"
@@ -203,15 +205,13 @@ impl Config {
         Ok((cfg, ignored))
     }
 
-    /// The config file at `path`: a regular file of at most `MAX_FILE_BYTES`. An ignored
+    /// The config file at `path`, of at most `MAX_FILE_BYTES`. An ignored
     /// `[lint]` name (`parse_noting`) is a warning on stderr, once per file and name.
     pub fn load(path: &Path) -> Result<Config, String> {
         let name = crate::display_path(path);
         let err = |e: &dyn std::fmt::Display| format!("{name}: {e}");
+        // no regular-file check: `--config <(...)` is a FIFO; discovery takes only files
         let f = std::fs::File::open(path).map_err(|e| err(&e))?;
-        if !f.metadata().map_err(|e| err(&e))?.is_file() {
-            return Err(err(&"not a regular file"));
-        }
         let mut bytes = Vec::new();
         f.take(crate::MAX_FILE_BYTES + 1)
             .read_to_end(&mut bytes)
@@ -266,19 +266,19 @@ impl Config {
 }
 
 /// A config file found by discovery (not `--config`, the user's choice) that is a symlink
-/// must point inside its repository (the nearest directory above it holding `.git`), or
-/// outside git inside its own directory: a pull request can commit the link, and a read
-/// outside could show another file's content in a parse error. As for the baseline
-/// (`baseline::confined`).
+/// in a repository must point inside it: a pull request can commit the link, and a read
+/// outside could show another file's content in a parse error. The repository is the
+/// outermost directory above the link holding `.git`, so a submodule's link into its
+/// superproject is fine. Outside git there is no pull request, and no check (a home
+/// directory's config linked into a Nix store). As for the baseline (`baseline::confined`).
 fn linked_inside(file: &Path) -> Result<(), String> {
     if !std::fs::symlink_metadata(file).is_ok_and(|m| m.file_type().is_symlink()) {
         return Ok(());
     }
     let dir = file.parent().unwrap_or(file);
-    let root = dir
-        .ancestors()
-        .find(|d| d.join(".git").exists())
-        .unwrap_or(dir);
+    let Some(root) = dir.ancestors().filter(|d| d.join(".git").exists()).last() else {
+        return Ok(());
+    };
     let outside = || {
         format!(
             "{}: a config symlink must point inside the repository",
@@ -611,6 +611,14 @@ mod tests {
                 .unwrap_err()
                 .contains("did you mean `UnusedImport`?")
         );
+        for typo in ["UNUSEDIMPORT", "unused_import", "Unused_Imports"] {
+            assert!(
+                Config::parse(&format!("[lint]\n{typo} = false"))
+                    .unwrap_err()
+                    .contains("did you mean `UnusedImport`?"),
+                "{typo}"
+            );
+        }
         assert_eq!(
             (
                 edits("", "ab"),

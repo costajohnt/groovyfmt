@@ -169,6 +169,23 @@ fn say(line: &str) {
     let _ = writeln!(std::io::stdout().lock(), "{line}");
 }
 
+/// `--flag=value` whose value isn't UTF-8 (a path): the flag, and the value as it is.
+#[cfg(unix)]
+fn flag_and_value(arg: &std::ffi::OsStr) -> Option<(String, OsString)> {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    let b = arg.as_bytes();
+    let eq = b.iter().position(|&c| c == b'=')?;
+    let flag = std::str::from_utf8(&b[..eq]).ok()?;
+    flag.starts_with("--")
+        .then(|| (flag.to_string(), OsString::from_vec(b[eq + 1..].to_vec())))
+}
+
+/// Windows arguments that aren't Unicode can't be split safely: an error, as before.
+#[cfg(not(unix))]
+fn flag_and_value(_: &std::ffi::OsStr) -> Option<(String, OsString)> {
+    None
+}
+
 fn parse_args() -> Args {
     let mut a = Args::default();
     // paths needn't be UTF-8 (a Latin-1 name from `xargs`); options and their text are
@@ -190,30 +207,33 @@ fn parse_args() -> Args {
             a.paths.push(PathBuf::from(arg));
             continue;
         }
-        let arg = match arg.into_string() {
-            Ok(arg) => arg,
-            Err(arg) if arg.to_string_lossy().starts_with('-') => die(format!(
-                "`{}` is not UTF-8 (see --help)",
-                printable(&arg.to_string_lossy())
-            )),
-            Err(path) => {
-                a.paths.push(PathBuf::from(path));
+        let (arg, flag, mut inline) = match arg.into_string() {
+            Ok(arg) if arg == "--" => {
+                only_paths = true;
                 continue;
             }
-        };
-        if arg == "--" {
-            only_paths = true;
-            continue;
-        }
-        let (flag, mut inline) = match arg.split_once('=') {
-            Some((f, v)) if f.starts_with("--") => (f.to_string(), Some(v.to_string())),
-            _ => (arg.clone(), None),
+            Ok(arg) => match arg.split_once('=') {
+                Some((f, v)) if f.starts_with("--") => {
+                    (arg.clone(), f.to_string(), Some(OsString::from(v)))
+                }
+                _ => (arg.clone(), arg, None),
+            },
+            Err(arg) => match flag_and_value(&arg) {
+                Some((f, v)) => (f.clone(), f, Some(v)),
+                None if arg.to_string_lossy().starts_with('-') => die(format!(
+                    "`{}` is not UTF-8 (see --help)",
+                    printable(&arg.to_string_lossy())
+                )),
+                None => {
+                    a.paths.push(PathBuf::from(arg));
+                    continue;
+                }
+            },
         };
         // a path option's value may be any OsString; `text` is for the others
         let mut value = |name: &str| {
             inline
                 .take()
-                .map(OsString::from)
                 .or_else(|| it.next())
                 .unwrap_or_else(|| die(format!("{name} needs a value")))
         };
@@ -589,7 +609,9 @@ static FORCE: AtomicBool = AtomicBool::new(false);
 /// shebang runs groovy (`is_groovy_shebang`). Only files named on the command line can fail this; a Makefile or
 /// YAML file there (`groovyfmt *`) would parse as labels and lose its indentation.
 fn is_groovy(path: &Path, bytes: &[u8]) -> bool {
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let name = &*path
+        .file_name()
+        .map_or(std::borrow::Cow::Borrowed(""), |n| n.to_string_lossy());
     // Windows drops trailing dots and spaces: `A.groovy.` opens A.groovy
     let name = if cfg!(windows) {
         name.trim_end_matches(['.', ' '])
