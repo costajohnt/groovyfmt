@@ -3327,6 +3327,8 @@ module.exports = grammar({
       '\'',
       repeat(choice(
         /[^'\\\n\r]/,
+        // a line continuation; `\[\s\S]` alone would stop at a CRLF's `\n`
+        /\\\r\n/,
         /\\[\s\S]/,
       )),
       '\'',
@@ -3358,6 +3360,7 @@ module.exports = grammar({
 
     _gstring_text: _ => token.immediate(repeat1(choice(
       /[^"\\$\n\r]/,
+      /\\\r\n/,
       /\\[\s\S]/,
     ))),
 

@@ -320,6 +320,9 @@ static bool skip_braces(TSLexer *lexer) {
                 int32_t d = lexer->lookahead;
                 if (d == '\\') {
                     advance(lexer);
+                    if (lexer->lookahead == '\r') {
+                        advance(lexer); // a CRLF line continuation
+                    }
                     advance(lexer);
                     run = 0;
                     continue;
@@ -367,6 +370,9 @@ static bool skip_parens(TSLexer *lexer) {
             while (!lexer->eof(lexer) && lexer->lookahead != c && lexer->lookahead != '\n') {
                 if (lexer->lookahead == '\\') {
                     advance(lexer);
+                    if (lexer->lookahead == '\r') {
+                        advance(lexer); // a CRLF line continuation
+                    }
                 }
                 advance(lexer);
             }

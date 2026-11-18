@@ -189,7 +189,10 @@ fn rejected(src: &str, tree: &Tree) -> Vec<SyntaxError> {
     crate::preorder(root, |n| {
         if n.kind() == "method_declaration"
             && n.parent().is_some_and(|p| {
-                !matches!(p.kind(), "source_file" | "class_body" | "enum_body" | "ERROR")
+                !matches!(
+                    p.kind(),
+                    "source_file" | "class_body" | "enum_body" | "ERROR"
+                )
             })
             && n.child_by_field_name("return_type").is_none_or(|t| {
                 let name = text(t, src);
@@ -197,7 +200,15 @@ fn rejected(src: &str, tree: &Tree) -> Vec<SyntaxError> {
                     && (name.starts_with(|c: char| c.is_uppercase())
                         || matches!(
                             name,
-                            "void" | "boolean" | "byte" | "char" | "short" | "int" | "long" | "float" | "double"
+                            "void"
+                                | "boolean"
+                                | "byte"
+                                | "char"
+                                | "short"
+                                | "int"
+                                | "long"
+                                | "float"
+                                | "double"
                         ))
             })
         {
@@ -541,6 +552,15 @@ mod tests {
         );
     }
 
+    /// #235: a `\` ending a line in a quoted string continues it, with LF or CRLF.
+    #[test]
+    fn string_line_continuations_parse_with_either_line_ending() {
+        let lf =
+            "def s = 'a,\\\nb'\ndef g = \"x $s \\\ny\"\nf('(\\\n)')\nprintln \"${f('a \\\nb')}\"\n";
+        assert_eq!(checked(lf), Vec::<String>::new());
+        assert_eq!(checked(&lf.replace('\n', "\r\n")), Vec::<String>::new());
+    }
+
     /// #235: Groovy 2.4, 3 and 4 reject a method in a closure or block; 3 and 4 read the
     /// second set as command calls or expressions.
     #[test]
@@ -550,7 +570,11 @@ mod tests {
             checked(
                 "def c = {\n    def f(n) { n }\n}\nif (x) {\n    String g() { 'a' }\n}\nx { void h() { } }\n"
             ),
-            [format!("2:5: {m}"), format!("5:5: {m}"), format!("7:5: {m}")]
+            [
+                format!("2:5: {m}"),
+                format!("5:5: {m}"),
+                format!("7:5: {m}")
+            ]
         );
         assert_eq!(
             checked(
