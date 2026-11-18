@@ -2,7 +2,7 @@
   "name": "groovyfmt",
   "displayName": "groovyfmt",
   "description": "Format and lint Groovy, Gradle build scripts and Jenkinsfiles with groovyfmt",
-  "version": "0.24.0",
+  "version": "0.25.0",
   "publisher": "groovyfmt",
   "license": "MIT",
   "icon": "icon.png",
