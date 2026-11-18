@@ -169,12 +169,15 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
             if c.args.is_empty() {
                 continue;
             }
-            // `buildscript { dependencies { } }` only has `classpath`: a `compile` there was
-            // never valid, and `implementation` isn't either
+            // only the project's own `dependencies { }`, at the top level or in a block that
+            // configures a project: `buildscript { dependencies { } }` only has `classpath`
+            // (a `compile` there was never valid, and `implementation` isn't either), and
+            // NeoGradle's `runs { configureEach { dependencies { runtime x } } }` has only
+            // `runtime` (#242)
             if let Some((_, new)) = REMOVED.iter().find(|(old, _)| *old == c.name)
                 && !declared.contains(c.name)
                 && !methods.contains(c.name)
-                && !owners(s, src).any(|o| o == "buildscript")
+                && owners(s, src).skip(1).all(|o| PROJECT_SCOPES.contains(&o))
                 && !*old_gradle.get_or_init(|| wrapper_major(path).is_some_and(|m| m < 7))
                 && !parent
                     .get_or_init(|| nearby_declared(path))
@@ -898,6 +901,15 @@ const TASK_SCOPES: &[&str] = &[
     "configure",
     "afterEvaluate",
     "tasks",
+];
+
+/// Blocks a project's `dependencies { }` can sit in and still be the project's.
+const PROJECT_SCOPES: &[&str] = &[
+    "allprojects",
+    "subprojects",
+    "project",
+    "configure",
+    "afterEvaluate",
 ];
 
 /// The last part of a dotted name: `ShadowJar` of `com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar`.
@@ -1840,6 +1852,43 @@ mod tests {
             rules("build.gradle", "task compile { }\ncompile 'x'\n"),
             vec![]
         );
+    }
+
+    /// #242: only the project's own `dependencies { }`: NeoGradle's run dependencies have
+    /// only `runtime`, so `--fix` must not make it `runtimeOnly`.
+    #[test]
+    fn removed_configurations_only_in_project_dependencies() {
+        let java = "apply plugin: 'java'\n";
+        let neo = format!(
+            "{java}runs {{\n    configureEach {{\n        dependencies {{\n            runtime project.configurations.libraries\n        }}\n    }}\n}}\n"
+        );
+        assert_eq!(rules("build.gradle", &neo), vec![]);
+        assert_eq!(fixed("build.gradle", None, &neo), neo);
+        let suite = format!(
+            "{java}testing {{ suites {{ test {{ dependencies {{ testCompile 'a:b:1' }} }} }} }}\n"
+        );
+        assert_eq!(rules("build.gradle", &suite), vec![]);
+        // a block that configures a project: still reported, and fixed
+        for scope in [
+            "allprojects",
+            "subprojects",
+            "project(':a')",
+            "configure(subprojects)",
+            "afterEvaluate",
+        ] {
+            let src = format!(
+                "{java}{scope} {{\n    dependencies {{\n        runtime 'a:b:1'\n    }}\n}}\n"
+            );
+            assert_eq!(
+                rules("build.gradle", &src),
+                vec![("GradleRemovedConfiguration", 4)],
+                "{scope}"
+            );
+            assert!(
+                fixed("build.gradle", None, &src).contains("runtimeOnly 'a:b:1'"),
+                "{scope}"
+            );
+        }
     }
 
     #[test]

@@ -2564,7 +2564,7 @@ fn a_walk_takes_extensionless_groovy_scripts_by_shebang() {
     assert!(stderr(&o).contains("not a Groovy file"), "{}", stderr(&o));
 }
 
-/// #230, #236: `.gsh` is also a GLSL geometry shader extension.
+/// #230, #236, #242: `.gsh` is also a GLSL geometry shader extension.
 #[test]
 fn a_walk_skips_gsh_shaders() {
     let d = Dir::new("gshshader");
@@ -2581,12 +2581,33 @@ fn a_walk_skips_gsh_shaders() {
         "licensed.gsh",
         &format!("{license}\n// geometry\n#version 330 core\nvoid main() {{ }}\n"),
     );
-    // Groovy after comments, with `#version` only inside one
-    d.write("commented.gsh", &format!("/* #version */\n// x\n{UGLY}"));
+    // #242: other preprocessor directives first (a Veil shader's `#include veil:camera`)
+    for (f, first) in [
+        ("include.gsh", "#include veil:camera"),
+        ("define.gsh", "// x\n#define N 3"),
+        ("ifdef.gsh", "#ifdef GL_ES"),
+        ("ifndef.gsh", "#ifndef X"),
+        (
+            "extension.gsh",
+            "#extension GL_EXT_geometry_shader4 : enable",
+        ),
+    ] {
+        d.write(
+            f,
+            &format!("{first}\nlayout (triangles) in;\nvoid main() {{ }}\n"),
+        );
+    }
+    // Groovy after comments, with `#version` or `#include` only inside one
+    d.write(
+        "commented.gsh",
+        &format!("/* #version */\n// #include x\n{UGLY}"),
+    );
+    // a Groovy shell script's shebang is no directive
+    d.write("shebang.gsh", &format!("#!/usr/bin/env groovy\n{UGLY}"));
     let o = run(&d.0, &["--check", "."], None);
     assert_eq!(
         stdout(&o),
-        "a.gsh\ncommented.gsh\nversion.gsh\n",
+        "a.gsh\ncommented.gsh\nshebang.gsh\nversion.gsh\n",
         "{}",
         stderr(&o)
     );

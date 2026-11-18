@@ -154,8 +154,9 @@ pub fn is_groovy_file(path: &Path) -> bool {
 /// Any other file with no extension (and not ending in `~`) is taken when its first line is a
 /// groovy shebang (`is_groovy_shebang`); only its first 256 bytes are read, and files with
 /// other extensions are never opened.
-/// A `.gsh` is also a GLSL geometry shader: one that starts with a `#version` directive, after
-/// any blank lines and `//` or `/* */` comments (a license header), is left out (#230, #236).
+/// A `.gsh` is also a GLSL geometry shader: one that starts with a `#version`, `#include`,
+/// `#define`, `#ifdef`, `#ifndef` or `#extension` directive, after any blank lines and `//` or
+/// `/* */` comments (a license header), is left out (#230, #236, #242).
 /// A file named on the command line is not read here, and is taken whatever it holds.
 pub fn is_walked_file(path: &Path) -> bool {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -215,7 +216,8 @@ fn has_groovy_shebang(path: &Path) -> bool {
     head(path, 256).is_some_and(|h| is_groovy_shebang(&h))
 }
 
-/// Whether the file at `path` starts with a `#version` directive after any whitespace and
+/// Whether the file at `path` starts with a GLSL preprocessor directive (`#version`,
+/// `#include`, `#define`, `#ifdef`, `#ifndef`, `#extension`) after any whitespace and
 /// `//` or `/* */` comments, reading at most 64 KiB. Groovy has no `#` there, so such a file
 /// is never a Groovy script.
 fn glsl_shader(path: &Path) -> bool {
@@ -236,7 +238,17 @@ fn glsl_shader(path: &Path) -> bool {
             };
             rest = &r[end + 2..];
         } else {
-            return rest.starts_with(b"#version");
+            // a Veil shader starts with `#include veil:camera` (#242)
+            return [
+                &b"#version"[..],
+                b"#include",
+                b"#define",
+                b"#ifdef",
+                b"#ifndef",
+                b"#extension",
+            ]
+            .iter()
+            .any(|d| rest.starts_with(d));
         }
     }
 }
