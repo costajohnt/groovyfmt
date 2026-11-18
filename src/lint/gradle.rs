@@ -21,6 +21,12 @@ use std::collections::HashSet;
 use std::path::Path;
 use tree_sitter::Node;
 
+mod context;
+use context::Build;
+pub(crate) use context::Cache;
+#[cfg(test)]
+use context::MAX_WRAPPER_BYTES;
+
 /// Removed configuration, replacement. Each but `compile` has one replacement, which
 /// `--fix` makes; `compile`'s depends on whether the library's API exposes the dependency,
 /// so it is fixed only with `gradle_compile_replacement` set (`opt_in_compile`).
@@ -80,94 +86,160 @@ const REMOVED: &[(&str, &str)] = &[
     ("testRuntime", "testRuntimeOnly"),
 ];
 
-pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) {
+pub(super) fn check(
+    path: &Path,
+    src: &str,
+    root: Node,
+    cache: Option<&Cache>,
+    v: &mut Vec<Violation>,
+) {
     if path.extension().is_none_or(|e| e != "gradle") {
         return;
     }
-    // A build can still declare its own configuration called `compile`: then it's valid.
-    let mut declared = HashSet::new();
-    let mut deps = Vec::new();
-    // GradleRemovedApi: (node, message, the Gradle major that removed it)
-    let mut removed: Vec<(Node, String, u32)> = Vec::new();
-    let mut conf_refs = Vec::new();
-    let deprecated_space = std::cell::OnceCell::new();
-    let mut plugins = HashSet::new();
-    // the script's own methods: its `compile(x)` or `jcenter()` is no configuration (#192)
-    let mut methods = HashSet::new();
-    // removed convention properties the script sets, and the extra properties it makes
-    let (mut conventions, mut ext) = (Vec::new(), HashSet::new());
-    // reads of removed convention properties (`READS`), and the names the script tests
-    // with `hasProperty('x')`, which it reads as extra properties (#248)
-    let (mut reads, mut tested) = (Vec::new(), HashSet::new());
-    // `exec { }` and `javaexec { }` on the project or script
-    let mut execs = Vec::new();
-    let mut applies_script = false;
-    let mut groovy4 = Groovy4::default();
-    crate::preorder(root, |n| {
-        groovy4.visit(src, n);
-        plugins.extend(applied_plugin(src, n));
-        applies_script |= apply_value(src, n, "from").is_some();
-        if n.kind() == "method_declaration"
-            && let Some(m) = n.child_by_field_name("name")
-        {
-            methods.insert(text(m, src));
-        }
-        removed_api(src, n, &mut removed, &mut conf_refs);
-        execs.extend(project_exec(src, n));
-        convention(src, n, &mut conventions, &mut ext);
-        reads.extend(convention_read(src, n));
-        tested.extend(has_property(src, n));
-        if let Some(names) = property_scope(src, n)
-            && !path
-                .file_name()
-                .and_then(|f| f.to_str())
-                .is_some_and(|f| f == "settings.gradle" || f.ends_with("init.gradle"))
-        {
-            for s in statements(n) {
-                space_assignment(src, s, names, &deprecated_space, path, v);
+    let build = Build::new(path, cache);
+    let mut cx = GradleCtx::gather(src, root, &build, v);
+    dependencies(&cx, v);
+    execs_and_configuration_refs(&mut cx);
+    if cx.methods.contains("jcenter") {
+        v.retain(|x| x.rule != "GradleJcenter");
+    }
+    convention_sets(&mut cx, v);
+    convention_reads(&mut cx);
+    let groovy4 = std::mem::take(&mut cx.groovy4);
+    if !groovy4.uses.is_empty() && build.wrapper_major().is_some_and(|m| m >= 9) {
+        groovy4.report(src, root, v);
+    }
+    removed_api_reports(cx, v);
+}
+
+/// What one pass over a build script gathers for the rules that need the whole script.
+struct GradleCtx<'a> {
+    src: &'a str,
+    build: &'a Build<'a>,
+    /// a settings or init script, which isn't a project's
+    project_script: bool,
+    /// A build can still declare its own configuration called `compile`: then it's valid.
+    declared: HashSet<String>,
+    /// the bodies of `dependencies { }` blocks
+    deps: Vec<Node<'a>>,
+    /// GradleRemovedApi: (node, message, the Gradle major that removed it)
+    removed: Vec<(Node<'a>, String, u32)>,
+    /// `configurations.compile` and the like (`removed_api`)
+    conf_refs: Vec<(Node<'a>, &'a str)>,
+    plugins: HashSet<String>,
+    /// the script's own methods: its `compile(x)` or `jcenter()` is no configuration (#192)
+    methods: HashSet<&'a str>,
+    /// removed convention properties the script sets, and the extra properties it makes
+    conventions: Vec<(Node<'a>, &'a str, &'static str)>,
+    ext: HashSet<&'a str>,
+    /// reads of removed convention properties (`READS`), and the names the script tests
+    /// with `hasProperty('x')`, which it reads as extra properties (#248)
+    reads: Vec<(Node<'a>, &'a str, &'static str, u32)>,
+    tested: HashSet<&'a str>,
+    /// `exec { }` and `javaexec { }` on the project or script
+    execs: Vec<(Node<'a>, &'a str)>,
+    applies_script: bool,
+    groovy4: Groovy4<'a>,
+}
+
+impl<'a> GradleCtx<'a> {
+    /// One preorder pass: gathers the context and reports the rules that look at one node
+    /// (GradleSpaceAssignment, GradleJcenter, GradleTaskLeftShift).
+    fn gather(
+        src: &'a str,
+        root: Node<'a>,
+        build: &'a Build<'a>,
+        v: &mut Vec<Violation>,
+    ) -> GradleCtx<'a> {
+        let name = build.path().file_name().and_then(|f| f.to_str());
+        let mut cx = GradleCtx {
+            src,
+            build,
+            project_script: name
+                .is_some_and(|f| f != "settings.gradle" && !f.ends_with("init.gradle")),
+            declared: HashSet::new(),
+            deps: Vec::new(),
+            removed: Vec::new(),
+            conf_refs: Vec::new(),
+            plugins: HashSet::new(),
+            methods: HashSet::new(),
+            conventions: Vec::new(),
+            ext: HashSet::new(),
+            reads: Vec::new(),
+            tested: HashSet::new(),
+            execs: Vec::new(),
+            applies_script: false,
+            groovy4: Groovy4::default(),
+        };
+        let settings_or_init =
+            name.is_some_and(|f| f == "settings.gradle" || f.ends_with("init.gradle"));
+        let deprecated_space = std::cell::OnceCell::new();
+        crate::preorder(root, |n| {
+            cx.groovy4.visit(src, n);
+            cx.plugins.extend(applied_plugin(src, n));
+            cx.applies_script |= apply_value(src, n, "from").is_some();
+            if n.kind() == "method_declaration"
+                && let Some(m) = n.child_by_field_name("name")
+            {
+                cx.methods.insert(text(m, src));
             }
-        }
-        match n.kind() {
-            "method_invocation" => jcenter(src, n, v),
-            "command_chain" => {
-                jcenter(src, n, v);
-                if n.child_by_field_name("receiver")
-                    .is_some_and(|r| text(r, src) == "task")
-                {
-                    left_shift(src, n, v);
+            removed_api(src, n, &mut cx.removed, &mut cx.conf_refs);
+            cx.execs.extend(project_exec(src, n));
+            convention(src, n, &mut cx.conventions, &mut cx.ext);
+            cx.reads.extend(convention_read(src, n));
+            cx.tested.extend(has_property(src, n));
+            if let Some(names) = property_scope(src, n)
+                && !settings_or_init
+            {
+                for s in statements(n) {
+                    space_assignment(src, s, names, &deprecated_space, build, v);
                 }
             }
-            "expression_statement" if text(n, src) == "task" => left_shift(src, n, v),
-            _ => {}
-        }
-        if let Some(c) = call(n, src)
-            && let Some(b) = c.body
-            && c.name == "dependencies"
-        {
-            deps.push(b);
-        }
-        declares(src, n, &mut declared);
-        true
-    });
-    let project_script = path
-        .file_name()
-        .and_then(|f| f.to_str())
-        .is_some_and(|f| f != "settings.gradle" && !f.ends_with("init.gradle"));
+            match n.kind() {
+                "method_invocation" => jcenter(src, n, v),
+                "command_chain" => {
+                    jcenter(src, n, v);
+                    if n.child_by_field_name("receiver")
+                        .is_some_and(|r| text(r, src) == "task")
+                    {
+                        left_shift(src, n, v);
+                    }
+                }
+                "expression_statement" if text(n, src) == "task" => left_shift(src, n, v),
+                _ => {}
+            }
+            if let Some(c) = call(n, src)
+                && let Some(b) = c.body
+                && c.name == "dependencies"
+            {
+                cx.deps.push(b);
+            }
+            declares(src, n, &mut cx.declared);
+            true
+        });
+        cx
+    }
+}
+
+/// The statements of the `dependencies { }` blocks: GradleRemovedConfiguration, and the
+/// notation rules (GradleDynamicVersion, GradleDependencyParentheses,
+/// GradleDependencyTuple), statement by statement.
+fn dependencies(cx: &GradleCtx, v: &mut Vec<Violation>) {
+    let (src, build) = (cx.src, cx.build);
     // read only for a file that would get a report
     let old_gradle = std::cell::OnceCell::new();
-    // configurations a script that applies this one or configures every project makes
-    let parent = std::cell::OnceCell::new();
-    let jvm = plugins.iter().any(|p| JVM_PLUGINS.contains(&p.as_str()));
+    let jvm = cx.plugins.iter().any(|p| JVM_PLUGINS.contains(&p.as_str()));
     // the Java plugins may be there: the file applies a script, or declares dependencies in
     // a configuration they make (`implementation`), or a nearby script may apply them
     let java_maybe = jvm
-        || applies_script
-        || deps
+        || cx.applies_script
+        || cx
+            .deps
             .iter()
             .flat_map(|b| statements(*b))
             .any(|s| call(s, src).is_some_and(|c| JAVA_CONFIGURATIONS.contains(&c.name)));
     let jvm_nearby = std::cell::OnceCell::new();
-    for b in deps {
+    for &b in &cx.deps {
         for s in statements(b) {
             let Some(c) = call(s, src) else { continue };
             if c.args.is_empty() {
@@ -179,14 +251,12 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
             // NeoGradle's `runs { configureEach { dependencies { runtime x } } }` has only
             // `runtime` (#242)
             if let Some((_, new)) = REMOVED.iter().find(|(old, _)| *old == c.name)
-                && !declared.contains(c.name)
-                && !methods.contains(c.name)
+                && !cx.declared.contains(c.name)
+                && !cx.methods.contains(c.name)
                 && owners(s, src).skip(1).all(|o| PROJECT_SCOPES.contains(&o))
-                && !*old_gradle.get_or_init(|| wrapper_major(path).is_some_and(|m| m < 7))
-                && !parent
-                    .get_or_init(|| nearby_declared(path))
-                    .contains(c.name)
-                && (java_maybe || *jvm_nearby.get_or_init(|| jvm_plugin_nearby(path)))
+                && !*old_gradle.get_or_init(|| build.wrapper_major().is_some_and(|m| m < 7))
+                && !build.declared().contains(c.name)
+                && (java_maybe || *jvm_nearby.get_or_init(|| build.jvm_plugin_nearby()))
             {
                 // the name starts the statement: `testCompile 'a'`, `testCompile('a') { }`
                 let fix =
@@ -220,39 +290,51 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
             }
         }
     }
+}
+
+/// GradleRemovedApi on `exec { }` and `javaexec { }` on the project or script, and on
+/// `configurations.compile` and the other removed configurations, into `cx.removed`.
+fn execs_and_configuration_refs(cx: &mut GradleCtx) {
+    let src = cx.src;
     // every script: a settings or init script's `exec { }` fails on 9.x as a build script's does
-    for (n, name) in execs {
-        if !methods.contains(name) {
-            removed.push((
+    for (n, name) in std::mem::take(&mut cx.execs) {
+        if !cx.methods.contains(name) {
+            cx.removed.push((
                 n,
                 format!("`{name} {{ }}` on the project or build script was removed in Gradle 9.0; inject ExecOperations and call its {name}, or use providers.{name} for a value"),
                 9,
             ));
         }
     }
-    for (n, name) in conf_refs {
-        if !declared.contains(name)
+    for (n, name) in std::mem::take(&mut cx.conf_refs) {
+        if !cx.declared.contains(name)
             && !guarded(src, n, name)
-            && !parent.get_or_init(|| nearby_declared(path)).contains(name)
+            && !cx.build.declared().contains(name)
         {
             let new = REMOVED
                 .iter()
                 .find(|(old, _)| *old == name)
                 .map_or("", |r| r.1);
-            removed.push((
+            cx.removed.push((
                 n,
                 format!("The `{name}` configuration was removed in Gradle 7.0, so `configurations.{name}` fails; use {new}, or a resolvable one such as runtimeClasspath"),
                 7,
             ));
         }
     }
-    if methods.contains("jcenter") {
-        v.retain(|x| x.rule != "GradleJcenter");
-    }
-    // only under a wrapper pinning 9 or later: many builds still pin 8, where these work
-    if project_script && !conventions.is_empty() && wrapper_major(path).is_some_and(|m| m >= 9) {
-        for (s, name, new) in conventions {
-            if !ext.contains(name) && !shadowed(src, s, name) && !gradle_property(path, name) {
+}
+
+/// GradleRemovedApi on the removed convention properties the script sets, only under a
+/// wrapper pinning 9 or later: many builds still pin 8, where these work.
+fn convention_sets(cx: &mut GradleCtx, v: &mut Vec<Violation>) {
+    let build = cx.build;
+    if cx.project_script
+        && !cx.conventions.is_empty()
+        && build.wrapper_major().is_some_and(|m| m >= 9)
+    {
+        for (s, name, new) in std::mem::take(&mut cx.conventions) {
+            if !cx.ext.contains(name) && !shadowed(cx.src, s, name) && !build.gradle_property(name)
+            {
                 v.push(at(
                     s,
                     "GradleRemovedApi",
@@ -261,39 +343,43 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
             }
         }
     }
-    if project_script {
-        // extra properties of these names that a script above this one makes
-        let nearby_ext = std::cell::OnceCell::new();
-        for (n, name, new, since) in reads {
-            if !ext.contains(name)
-                && !tested.contains(name)
-                && !shadowed(src, n, name)
-                && !gradle_property(path, name)
-                && !nearby_ext
-                    .get_or_init(|| nearby_ext_names(path))
-                    .contains(name)
-            {
-                let with = if since == 9 {
-                    " with the plugin conventions"
-                } else {
-                    ""
-                };
-                removed.push((
-                    n,
-                    format!("The project property `{name}` was removed in Gradle {since}.0{with}, so reading it fails; read {new}"),
-                    since,
-                ));
-            }
-        }
-    }
-    if !groovy4.uses.is_empty() && wrapper_major(path).is_some_and(|m| m >= 9) {
-        groovy4.report(src, root, v);
-    }
-    if removed.is_empty() {
+}
+
+/// GradleRemovedApi on reads of removed convention properties, into `cx.removed`; not of
+/// an extra property of the name this script or one above it makes.
+fn convention_reads(cx: &mut GradleCtx) {
+    if !cx.project_script {
         return;
     }
-    let major = wrapper_major(path);
-    for (n, msg, since) in removed {
+    let build = cx.build;
+    for (n, name, new, since) in std::mem::take(&mut cx.reads) {
+        if !cx.ext.contains(name)
+            && !cx.tested.contains(name)
+            && !shadowed(cx.src, n, name)
+            && !build.gradle_property(name)
+            && !build.ext_names().contains(name)
+        {
+            let with = if since == 9 {
+                " with the plugin conventions"
+            } else {
+                ""
+            };
+            cx.removed.push((
+                n,
+                format!("The project property `{name}` was removed in Gradle {since}.0{with}, so reading it fails; read {new}"),
+                since,
+            ));
+        }
+    }
+}
+
+/// The GradleRemovedApi reports gathered in `cx.removed`, by the wrapper's version.
+fn removed_api_reports(cx: GradleCtx, v: &mut Vec<Violation>) {
+    if cx.removed.is_empty() {
+        return;
+    }
+    let major = cx.build.wrapper_major();
+    for (n, msg, since) in cx.removed {
         // quiet under a wrapper pinning a Gradle that still has it; without a wrapper, a
         // current Gradle (8 or 9, which have none of the pre-9 removals) runs the build. A 9.0
         // removal needs a wrapper pinning 9 or later, as for the conventions: many builds still
@@ -779,49 +865,6 @@ fn untyped_task(src: &str, cl: Node) -> bool {
     }
 }
 
-/// The names the `.gradle` scripts `nearby` (the ones in the directories above, which may
-/// configure this one with `allprojects { }`) make extra properties of.
-fn nearby_ext_names(path: &Path) -> HashSet<String> {
-    let mut names = HashSet::new();
-    nearby(path, |_, _, src, root| {
-        let mut ext = HashSet::new();
-        crate::preorder(root, |n| {
-            convention(src, n, &mut Vec::new(), &mut ext);
-            true
-        });
-        names.extend(ext.into_iter().map(str::to_string));
-        false
-    });
-    names
-}
-
-/// Whether a `gradle.properties` in the script's directory, or one above it up to the
-/// wrapper's, sets `name`: then it is a project property, which a build can still set
-/// (checked with Gradle 9.9.1).
-fn gradle_property(path: &Path, name: &str) -> bool {
-    let dir = path
-        .parent()
-        .filter(|d| !d.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-    for d in dir.ancestors() {
-        let sets = read_small(&d.join("gradle.properties"), MAX_WRAPPER_BYTES).is_some_and(|p| {
-            p.lines().any(|l| {
-                l.trim_start()
-                    .strip_prefix(name)
-                    .is_some_and(|r| r.is_empty() || r.starts_with([' ', '\t', '=', ':']))
-            })
-        });
-        if sets {
-            return true;
-        }
-        if d.join("gradle/wrapper/gradle-wrapper.properties").is_file() {
-            return false;
-        }
-    }
-    false
-}
-
 /// Adds to `declared` the configurations `n` makes: the names a `configurations { }` block
 /// (`n`) makes or reads, or `configurations.create('compile')` and the like.
 fn declares(src: &str, n: Node, declared: &mut HashSet<String>) {
@@ -872,106 +915,10 @@ fn declares(src: &str, n: Node, declared: &mut HashSet<String>) {
     }
 }
 
-/// The most bytes read of a script that may configure the one linted (`nearby_declared`).
-const MAX_SCRIPT_BYTES: u64 = 4 * 1024 * 1024;
-
-/// The configurations that `nearby`'s `.gradle` scripts make for `path`: all those of a
-/// script that applies it with `apply from: 'deps.gradle'`, as a build script declares
-/// `testCompile` and the `dependencies.gradle` it applies uses it (#217), and those any of
-/// them makes in `allprojects { }` or `subprojects { }`, as a root `build.gradle` declares
-/// `compile` for every project and a subproject uses it (#241).
-/// The `apply from:` target must be a plain path to `path` relative to the applying
-/// script's directory: a URL, an interpolated name or a missing file applies nothing here.
-fn nearby_declared(path: &Path) -> HashSet<String> {
-    let mut declared = HashSet::new();
-    nearby(path, |me, dir, src, root| {
-        let mut applies = false;
-        crate::preorder(root, |n| {
-            applies |= apply_argument(src, n, "from")
-                .is_some_and(|t| dir.join(t).canonicalize().is_ok_and(|t| t == me));
-            !applies
-        });
-        crate::preorder(root, |n| {
-            if applies {
-                declares(src, n, &mut declared);
-                return true;
-            }
-            match call(n, src) {
-                Some(Call {
-                    name: "allprojects" | "subprojects",
-                    body: Some(b),
-                    ..
-                }) => {
-                    crate::preorder(b, |x| {
-                        declares(src, x, &mut declared);
-                        true
-                    });
-                    false
-                }
-                _ => true,
-            }
-        });
-        false
-    });
-    declared
-}
-
-/// Whether one of `nearby`'s scripts may apply a Java plugin: it applies one from
-/// `JVM_PLUGINS` (a subproject's `compile` comes from its parent's
-/// `subprojects { apply plugin: 'java' }`) or applies a script (`apply from:`), which may.
-/// Where none does, a plugin from elsewhere made the configuration (gradle-hdvl's
-/// SystemVerilog plugin makes `compile` and `testCompile`, #230). A script that isn't on disk
-/// (`--stdin` without a real `--stdin-filepath`) can't be told, so it counts as one that does.
-fn jvm_plugin_nearby(path: &Path) -> bool {
-    path.canonicalize().is_err()
-        || nearby(path, |_, _, src, root| {
-            let mut jvm = false;
-            crate::preorder(root, |n| {
-                jvm |= may_apply_java(src, n);
-                !jvm
-            });
-            jvm
-        })
-}
-
 /// Whether `n` applies a plugin from `JVM_PLUGINS` or a script, which may apply one.
 fn may_apply_java(src: &str, n: Node) -> bool {
     applied_plugin(src, n).is_some_and(|p| JVM_PLUGINS.contains(&p.as_str()))
         || apply_value(src, n, "from").is_some()
-}
-
-/// Calls `f(path, dir, source, root)` on each other `.gradle` script in the directory of
-/// `path` and the ones above it, up to the build's root (the nearest directory with
-/// `settings.gradle`, `settings.gradle.kts` or `.git`; without one, only the script's own
-/// directory), until `f` returns true; returns whether it did. `path` is canonical.
-fn nearby(path: &Path, mut f: impl FnMut(&Path, &Path, &str, Node) -> bool) -> bool {
-    let Ok(me) = path.canonicalize() else {
-        return false;
-    };
-    let root = me.ancestors().skip(1).find(|d| {
-        ["settings.gradle", "settings.gradle.kts", ".git"]
-            .iter()
-            .any(|f| d.join(f).exists())
-    });
-    for dir in me.ancestors().skip(1) {
-        let scripts = std::fs::read_dir(dir).into_iter().flatten().flatten();
-        for p in scripts.map(|e| e.path()) {
-            if p.extension().is_none_or(|e| e != "gradle") || p == me {
-                continue;
-            }
-            let Some(src) = read_small(&p, MAX_SCRIPT_BYTES) else {
-                continue;
-            };
-            let tree = crate::parse(&src);
-            if f(&me, dir, &src, tree.root_node()) {
-                return true;
-            }
-        }
-        if root.is_none_or(|r| r == dir) {
-            break;
-        }
-    }
-    false
 }
 
 /// Core plugins removed from Gradle: id, the major that removed it, the replacement. From
@@ -1585,67 +1532,6 @@ fn task_body<'a>(src: &'a str, n: Node<'a>, types: &[&str], tasks: &[&str]) -> O
     }
 }
 
-/// The major Gradle version of the nearest `gradle/wrapper/gradle-wrapper.properties` in
-/// the script's directory or above it (`distributionUrl=.../gradle-6.9-bin.zip` is 6). A
-/// build pinned below 7.0 runs a Gradle that still has the removed configurations. Like the
-/// search for `.groovyfmt.toml`, the walk goes up to the filesystem root, so a wrapper in a
-/// directory above the project counts when the project has none. A path that doesn't exist
-/// (an unsaved editor buffer) is walked as written.
-fn wrapper_major(path: &Path) -> Option<u32> {
-    wrapper_version(path).map(|v| v.0)
-}
-
-/// The nearest wrapper's Gradle version as (major, minor), as for `wrapper_major`.
-fn wrapper_version(path: &Path) -> Option<(u32, u32)> {
-    let dir = path
-        .parent()
-        .filter(|d| !d.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-    let props = dir
-        .ancestors()
-        .map(|d| d.join("gradle/wrapper/gradle-wrapper.properties"))
-        .find(|p| p.is_file())?;
-    version(&read_small(&props, MAX_WRAPPER_BYTES)?)
-}
-
-/// The real file is a few hundred bytes.
-const MAX_WRAPPER_BYTES: u64 = 64 * 1024;
-
-/// `p` if it is a regular file of at most `max` bytes, in UTF-8. A FIFO or device
-/// is never opened (opening a FIFO waits for a writer); one swapped in between the check and
-/// the open is the race the source reads accept too (see `write_in_place`).
-fn read_small(p: &Path, max: u64) -> Option<String> {
-    use std::io::Read;
-    let ok = |m: std::fs::Metadata| m.is_file() && m.len() <= max;
-    if !std::fs::metadata(p).is_ok_and(ok) {
-        return None;
-    }
-    let f = std::fs::File::open(p).ok()?;
-    if !f.metadata().is_ok_and(ok) {
-        return None;
-    }
-    let mut bytes = Vec::new();
-    f.take(max + 1).read_to_end(&mut bytes).ok()?;
-    if bytes.len() as u64 > max {
-        return None;
-    }
-    String::from_utf8(bytes).ok()
-}
-
-/// `gradle-8.12.1-bin.zip` is (8, 12), `gradle-7.0-rc-1-bin.zip` (7, 0), `gradle-9-bin.zip` (9, 0).
-fn version(props: &str) -> Option<(u32, u32)> {
-    let url = props
-        .lines()
-        .find_map(|l| l.trim().strip_prefix("distributionUrl"))?;
-    let mut parts = url.rsplit("gradle-").next()?.split(['.', '-']);
-    let major = parts.next()?.parse().ok()?;
-    Some((
-        major,
-        parts.next().and_then(|m| m.parse().ok()).unwrap_or(0),
-    ))
-}
-
 /// `jcenter()` or `jcenter { ... }` in a repositories block. A plain `jcenter()` statement
 /// in a `repositories { }` block is fixed: it becomes `mavenCentral()`, or its line goes
 /// when the block already has a plain `mavenCentral()`.
@@ -1992,7 +1878,7 @@ fn space_assignment(
     s: Node,
     names: &[&str],
     deprecated: &std::cell::OnceCell<bool>,
-    path: &Path,
+    build: &Build,
     v: &mut Vec<Violation>,
 ) {
     let Some(c) = call(s, src) else { return };
@@ -2015,7 +1901,7 @@ fn space_assignment(
             .trim()
             .is_empty()
         || !alone(src, s.start_byte(), arg.end_byte())
-        || !*deprecated.get_or_init(|| wrapper_version(path).is_none_or(|v| v >= (8, 12)))
+        || !*deprecated.get_or_init(|| build.wrapper_version().is_none_or(|v| v >= (8, 12)))
         || shadowed(src, s, c.name)
     {
         return;

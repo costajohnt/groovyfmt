@@ -801,7 +801,7 @@ mod spock;
 mod suppress;
 mod unused;
 
-pub use elsewhere::Projects;
+pub use elsewhere::{Context, Projects};
 pub(crate) use gradle::{same_assignment, same_call};
 
 #[derive(Debug, PartialEq)]
@@ -846,16 +846,12 @@ pub fn opt_in_fixes(vs: &mut [Violation], src: &str, compile: Option<&str>) {
 
 /// Lint `src` as the file at `path`, whose name decides the Jenkinsfile and Gradle rules.
 pub fn lint_file(path: &Path, src: &str) -> Result<Vec<Violation>, &'static str> {
-    lint_with(path, src, &|_| None)
+    lint_with(path, src, &Context::new(|_| None))
 }
 
 /// `lint_file`, with `base` telling whether a superclass declared elsewhere is a Spock spec
-/// (`Projects::spec_base`).
-pub fn lint_with(
-    path: &Path,
-    src: &str,
-    base: &dyn Fn(&str) -> Option<bool>,
-) -> Result<Vec<Violation>, &'static str> {
+/// and caching the Gradle files around a build script (`Projects::spec_base`).
+pub fn lint_with(path: &Path, src: &str, base: &Context) -> Result<Vec<Violation>, &'static str> {
     let tree = crate::parse(src);
     if tree.root_node().has_error() {
         return Err("parse error");
@@ -865,7 +861,7 @@ pub fn lint_with(
     let local = std::cell::OnceCell::new();
     imports(src, &tree, &mut v);
     jenkins::check(path, src, tree.root_node(), &mut v);
-    gradle::check(path, src, tree.root_node(), &mut v);
+    gradle::check(path, src, tree.root_node(), base.gradle, &mut v);
     let mut nodes = Vec::new();
     crate::preorder(tree.root_node(), |n| {
         nodes.push(n);
@@ -930,7 +926,7 @@ pub fn lint_with(
             "map_literal" => duplicate_map_key(src, n, &mut v),
             "switch_block" => duplicate_case(src, n, &mut v),
             "binary_expression" => comparison_with_self(src, n, &mut v),
-            "class_declaration" => spock::class(src, n, &local, base, &mut v),
+            "class_declaration" => spock::class(src, n, &local, &*base.spec_base, &mut v),
             _ => {}
         }
     }

@@ -741,10 +741,14 @@ mod tests {
         // a base in another file: as the project tells (`Projects::spec_base`)
         let src = format!("class T extends Base {{\n{feature}}}\n");
         for (verdict, want) in [(Some(true), vec![4]), (Some(false), vec![]), (None, vec![])] {
-            let vs = crate::lint::lint_with(std::path::Path::new(""), &src, &|n| {
-                assert_eq!(n, "Base");
-                verdict
-            });
+            let vs = crate::lint::lint_with(
+                std::path::Path::new(""),
+                &src,
+                &crate::lint::Context::new(|n| {
+                    assert_eq!(n, "Base");
+                    verdict
+                }),
+            );
             let got: Vec<_> = vs.unwrap().into_iter().map(|v| v.line).collect();
             assert_eq!(got, want, "{verdict:?}");
         }
