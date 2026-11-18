@@ -182,6 +182,33 @@ fn rejected(src: &str, tree: &Tree) -> Vec<SyntaxError> {
             ));
         }
     }
+    // A method declared in a closure or block, `{ def f(n) { n } }` (#235): only a script's
+    // top level or a class body holds one. Not when the declaration reads as a command
+    // call: Groovy 3 and 4 take `foo bar() { }`, `a.B f() { }`, `List<X> f() { }` and
+    // `X[] f() { }` so.
+    crate::preorder(root, |n| {
+        if n.kind() == "method_declaration"
+            && n.parent().is_some_and(|p| {
+                !matches!(p.kind(), "source_file" | "class_body" | "enum_body" | "ERROR")
+            })
+            && n.child_by_field_name("return_type").is_none_or(|t| {
+                let name = text(t, src);
+                t.kind() == "type_identifier"
+                    && (name.starts_with(|c: char| c.is_uppercase())
+                        || matches!(
+                            name,
+                            "void" | "boolean" | "byte" | "char" | "short" | "int" | "long" | "float" | "double"
+                        ))
+            })
+        {
+            out.push(at(
+                src,
+                n,
+                "a method can't be declared in a closure or block: declare it at the top level or in a class, or assign a closure",
+            ));
+        }
+        true
+    });
     out
 }
 
@@ -509,6 +536,25 @@ mod tests {
         assert_eq!(
             checked(
                 "m = [(b.c): 1, 'b.c': 2, b: 3, (f()): 4]\nx = c ? a.b : d\nswitch (x) { case A.B: break }\nf a: b.c\n"
+            ),
+            Vec::<String>::new()
+        );
+    }
+
+    /// #235: Groovy 2.4, 3 and 4 reject a method in a closure or block; 3 and 4 read the
+    /// second set as command calls or expressions.
+    #[test]
+    fn methods_in_closures_and_blocks_are_reported() {
+        let m = "a method can't be declared in a closure or block: declare it at the top level or in a class, or assign a closure";
+        assert_eq!(
+            checked(
+                "def c = {\n    def f(n) { n }\n}\nif (x) {\n    String g() { 'a' }\n}\nx { void h() { } }\n"
+            ),
+            [format!("2:5: {m}"), format!("5:5: {m}"), format!("7:5: {m}")]
+        );
+        assert_eq!(
+            checked(
+                "def f() { }\nclass A {\n    def g() { }\n    def r = new Runnable() { void run() { } }\n}\nenum E { A; int f() { 1 } }\ndef c = {\n    foo baz() { }\n    a.B f() { }\n    List<X> g() { }\n    X[] h() { }\n}\n"
             ),
             Vec::<String>::new()
         );
