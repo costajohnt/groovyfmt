@@ -333,7 +333,7 @@ fn position(src: &str, p: tree_sitter::Point) -> (usize, usize) {
     let line = src.split('\n').nth(p.row).unwrap_or("");
     let col = line
         .get(..p.column)
-        .map_or(p.column, |prefix| prefix.chars().count());
+        .map_or(p.column, |prefix| crate::chars_before(prefix, p.row));
     (p.row + 1, col + 1)
 }
 
@@ -766,6 +766,11 @@ mod tests {
         assert_eq!(snippet("ab  \n"), "`ab`");
         assert_eq!(
             msgs("def f() { x = }\n"),
+            ["1:13: unexpected `=` in a block"]
+        );
+        // a BOM isn't a column
+        assert_eq!(
+            msgs("\u{feff}def f() { x = }\n"),
             ["1:13: unexpected `=` in a block"]
         );
     }

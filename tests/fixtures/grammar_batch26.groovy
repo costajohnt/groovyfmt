@@ -13,7 +13,7 @@ if (h(c, "("))
 // Read field
 else if (ctx.fieldSig())
     processor.accept fieldUsage(ctx.fieldSig(), UsageKind.DATA_READ)
-/* Phi */
+    /* Phi */
 else
     h()
 

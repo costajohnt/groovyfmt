@@ -23,8 +23,31 @@
 use crate::format::Style;
 use crate::lint::RULES;
 use std::collections::{BTreeMap, HashMap};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// `--strict`: a `[lint]` name groovyfmt doesn't know is an error, not a warning.
+pub static STRICT: AtomicBool = AtomicBool::new(false);
+
+/// The Levenshtein distance between `a` and `b`, by character.
+fn edits(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut diag = row[0];
+        row[0] = i + 1;
+        for (j, &cb) in b.iter().enumerate() {
+            let next = (diag + usize::from(ca != cb))
+                .min(row[j] + 1)
+                .min(row[j + 1] + 1);
+            diag = row[j + 1];
+            row[j + 1] = next;
+        }
+    }
+    row[b.len()]
+}
 
 pub const FILE_NAMES: [&str; 2] = [".groovyfmt.toml", "groovyfmt.toml"];
 
@@ -57,6 +80,14 @@ impl Config {
     }
 
     pub fn parse(text: &str) -> Result<Config, String> {
+        Config::parse_noting(text).map(|(cfg, _)| cfg)
+    }
+
+    /// `parse`, and the `[lint]` names it ignored: not a rule this version knows, nor
+    /// within two edits of one (a likely typo, an error). A newer groovyfmt's rule shouldn't
+    /// break an older binary reading the same config, unless `STRICT`.
+    fn parse_noting(text: &str) -> Result<(Config, Vec<String>), String> {
+        let mut ignored = Vec::new();
         let table: toml::Table = text
             .parse()
             .map_err(|e: toml::de::Error| e.message().to_string())?;
@@ -107,11 +138,25 @@ impl Config {
                             continue;
                         }
                         if !RULES.iter().any(|r| r.name == rule) {
-                            let known: Vec<_> = RULES.iter().map(|r| r.name).collect();
-                            return Err(format!(
-                                "unknown lint rule `{rule}` (known: {})",
-                                known.join(", ")
-                            ));
+                            if let Some(near) = RULES
+                                .iter()
+                                .map(|r| r.name)
+                                .chain(["gradle_compile_replacement"])
+                                .find(|r| edits(r, rule) <= 2)
+                            {
+                                return Err(format!(
+                                    "unknown lint rule `{rule}` (did you mean `{near}`?)"
+                                ));
+                            }
+                            if STRICT.load(Ordering::Relaxed) {
+                                let known: Vec<_> = RULES.iter().map(|r| r.name).collect();
+                                return Err(format!(
+                                    "unknown lint rule `{rule}` (known: {})",
+                                    known.join(", ")
+                                ));
+                            }
+                            ignored.push(rule.clone());
+                            continue;
                         }
                         let Some(on) = on.as_bool() else {
                             return Err(format!("`lint.{rule}` must be true or false"));
@@ -155,13 +200,39 @@ impl Config {
                 }
             }
         }
-        Ok(cfg)
+        Ok((cfg, ignored))
     }
 
+    /// The config file at `path`: a regular file of at most `MAX_FILE_BYTES`. An ignored
+    /// `[lint]` name (`parse_noting`) is a warning on stderr, once per file and name.
     pub fn load(path: &Path) -> Result<Config, String> {
         let name = crate::display_path(path);
-        let text = std::fs::read_to_string(path).map_err(|e| format!("{name}: {e}"))?;
-        let mut cfg = Config::parse(&text).map_err(|e| format!("{name}: {e}"))?;
+        let err = |e: &dyn std::fmt::Display| format!("{name}: {e}");
+        let f = std::fs::File::open(path).map_err(|e| err(&e))?;
+        if !f.metadata().map_err(|e| err(&e))?.is_file() {
+            return Err(err(&"not a regular file"));
+        }
+        let mut bytes = Vec::new();
+        f.take(crate::MAX_FILE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| err(&e))?;
+        if bytes.len() as u64 > crate::MAX_FILE_BYTES {
+            return Err(err(&"config file is too large (over 10 MB)"));
+        }
+        let text = String::from_utf8(bytes).map_err(|_| err(&"not UTF-8"))?;
+        let (mut cfg, ignored) = Config::parse_noting(&text).map_err(|e| err(&e))?;
+        // the LSP server reads the config again for each request: say it once
+        static WARNED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let mut warned = WARNED.lock().unwrap_or_else(|e| e.into_inner());
+        for rule in ignored {
+            let w = format!(
+                "groovyfmt: warning: {name}: unknown lint rule `{rule}` ignored (from a newer groovyfmt? --strict makes it an error)"
+            );
+            if !warned.contains(&w) {
+                eprintln!("{w}");
+                warned.push(w);
+            }
+        }
         let abs = normalize(&std::env::current_dir().unwrap_or_default().join(path));
         cfg.root = abs.parent().map(Path::to_path_buf).unwrap_or_default();
         cfg.file = Some(path.to_path_buf());
@@ -191,6 +262,35 @@ impl Config {
                 .collect();
             (1..=segs.len()).any(|n| glob(&pat, &segs[..n]))
         })
+    }
+}
+
+/// A config file found by discovery (not `--config`, the user's choice) that is a symlink
+/// must point inside its repository (the nearest directory above it holding `.git`), or
+/// outside git inside its own directory: a pull request can commit the link, and a read
+/// outside could show another file's content in a parse error. As for the baseline
+/// (`baseline::confined`).
+fn linked_inside(file: &Path) -> Result<(), String> {
+    if !std::fs::symlink_metadata(file).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Ok(());
+    }
+    let dir = file.parent().unwrap_or(file);
+    let root = dir
+        .ancestors()
+        .find(|d| d.join(".git").exists())
+        .unwrap_or(dir);
+    let outside = || {
+        format!(
+            "{}: a config symlink must point inside the repository",
+            crate::display_path(file)
+        )
+    };
+    let real_root = std::fs::canonicalize(root).map_err(|_| outside())?;
+    let real = std::fs::canonicalize(file).map_err(|_| outside())?;
+    if real.starts_with(&real_root) {
+        Ok(())
+    } else {
+        Err(outside())
     }
 }
 
@@ -350,6 +450,7 @@ impl Resolver {
         if let Some(c) = self.loaded.get(file) {
             return Ok(c.clone());
         }
+        linked_inside(file)?;
         let cfg = self.finish(Config::load(file)?);
         self.loaded.insert(file.to_path_buf(), cfg.clone());
         Ok(cfg)
@@ -474,6 +575,13 @@ mod tests {
         let cfg = Config::load(&dir.join("sub/.groovyfmt.toml")).unwrap();
         assert_eq!(cfg.baseline, Some(cfg.root.join("b.json")));
         assert!(cfg.root.ends_with("sub"));
+        // a config is read with the same cap as a source file
+        let big = dir.join("big.toml");
+        let mut text = "#".repeat(crate::MAX_FILE_BYTES as usize);
+        text.push('\n');
+        std::fs::write(&big, text).unwrap();
+        let e = Config::load(&big).unwrap_err();
+        assert!(e.contains("too large"), "{e}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -492,6 +600,25 @@ mod tests {
                 .contains("unknown lint rule")
         );
         assert!(Config::parse("[lint]\nUnusedImport = 1").is_err());
+        // a name far from every rule is one a newer groovyfmt has: ignored, not an error
+        let (cfg, ignored) = Config::parse_noting("[lint]\nSomeFutureRule = true").unwrap();
+        assert_eq!(
+            (cfg.rules.len(), ignored),
+            (0, vec!["SomeFutureRule".to_string()])
+        );
+        assert!(
+            Config::parse("[lint]\nunusedimport = false")
+                .unwrap_err()
+                .contains("did you mean `UnusedImport`?")
+        );
+        assert_eq!(
+            (
+                edits("", "ab"),
+                edits("kitten", "sitting"),
+                edits("ab", "ab")
+            ),
+            (2, 3, 0)
+        );
         assert!(Config::parse("[lint]\ngradle_compile_replacement = \"runtimeOnly\"").is_err());
         assert_eq!(
             Config::parse("[lint]\ngradle_compile_replacement = \"api\"")

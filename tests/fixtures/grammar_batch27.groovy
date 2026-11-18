@@ -21,18 +21,18 @@ def m() {
 
 properties(
     [
-    buildDiscarder
-        (logRotator (
-            daysToKeepStr: '14',
-            numToKeepStr: '10'
-        ) ),
-    disableConcurrentBuilds()
+        buildDiscarder
+            (logRotator (
+                daysToKeepStr: '14',
+                numToKeepStr: '10'
+            ) ),
+        disableConcurrentBuilds()
     ]
 )
 def l = [ a.b
     (1), f
-    (2)
-    (3), g(4) ]
+        (2)
+        (3), g(4) ]
 
 stream.withCloseable { InputStream in ->
     Files.copy(in, target)

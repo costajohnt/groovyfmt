@@ -75,17 +75,25 @@ impl Style {
 /// Format `src`. Lines between `// groovyfmt: off` and `// groovyfmt: on` stay as they are
 /// (see `diff::off_lines`), which formats the rest as `--lines` does.
 pub fn format(src: &str, style: &Style) -> Outcome {
-    // classic Mac line endings (a lone `\r`, no `\n`): formatted as `\n`, kept as `\r`
-    if src.contains('\r') && !src.contains('\n') {
-        return match format(&src.replace('\r', "\n"), style) {
-            Outcome::Formatted(out) => Outcome::Formatted(out.replace('\n', "\r")),
-            other => other,
-        };
+    lone_cr(src, |src| {
+        if crate::diff::off_lines(src).is_empty() {
+            format_with(src, style, None, reindent)
+        } else {
+            crate::diff::format_lines(src, style, &[(1, usize::MAX)])
+        }
+    })
+}
+
+/// `f(src)`, but a file with classic Mac line endings (a lone `\r`, no `\n`) is formatted
+/// as `\n` and kept as `\r`, so its lines are lines to every entry point (`format`,
+/// `--lines`, LSP range formatting).
+pub(crate) fn lone_cr(src: &str, f: impl FnOnce(&str) -> Outcome) -> Outcome {
+    if !(src.contains('\r') && !src.contains('\n')) {
+        return f(src);
     }
-    if crate::diff::off_lines(src).is_empty() {
-        format_with(src, style, None, reindent)
-    } else {
-        crate::diff::format_lines(src, style, &[(1, usize::MAX)])
+    match f(&src.replace('\r', "\n")) {
+        Outcome::Formatted(out) => Outcome::Formatted(out.replace('\n', "\r")),
+        other => other,
     }
 }
 
@@ -196,7 +204,8 @@ fn wrapped(
 
 /// Every node's kind and number of children, in document order: equal for two trees of
 /// the same shape. Spacing can keep the tokens and still change the parse (`a [1]`).
-pub(crate) fn shape(tree: &Tree) -> Vec<(u16, usize)> {
+#[doc(hidden)]
+pub fn shape(tree: &Tree) -> Vec<(u16, usize)> {
     let mut v = Vec::new();
     crate::preorder(tree.root_node(), |n| {
         v.push((n.kind_id(), n.child_count()));
@@ -585,7 +594,8 @@ fn last_operand(n: Node, parent: Node) -> bool {
 /// Leaf tokens as (kind, text). Only comments are compared without trailing whitespace,
 /// since stripping it from a line comment is a legitimate change; any other leaf, string
 /// fragments included, must match exactly.
-pub(crate) fn tokens<'a>(src: &'a str, tree: &Tree) -> Vec<(u16, &'a str)> {
+#[doc(hidden)]
+pub fn tokens<'a>(src: &'a str, tree: &Tree) -> Vec<(u16, &'a str)> {
     let mut v = Vec::new();
     let mut c = tree.walk();
     'outer: loop {

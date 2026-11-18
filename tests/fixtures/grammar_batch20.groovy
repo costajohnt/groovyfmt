@@ -24,9 +24,9 @@ record Fruit(String name) {
 def p = (1.plus 2 plus 3)
 
 def a = new Object()
-    { int y = 1 }
+{ int y = 1 }
 def b = new Object()
-    { }
+{ }
 def c = new Object() { -> 3 }
 
 def d = { u, e = x + i -> e }

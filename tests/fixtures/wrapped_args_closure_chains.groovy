@@ -2,9 +2,9 @@
 f.entry(title: 'Override Hook URL') {
     g.blockWrapper {
         f.optionalBlock(title: 'Specify another hook URL',
-                name: 'isOverrideHookUrl',
-                inline: true,
-                checked: instance.isOverrideHookUrl()) {
+            name: 'isOverrideHookUrl',
+            inline: true,
+            checked: instance.isOverrideHookUrl()) {
             f.entry(field: 'hookUrl') {
                 f.textbox(checkMethod: 'post', name: 'hookUrl')
             }

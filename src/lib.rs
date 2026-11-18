@@ -106,6 +106,16 @@ pub fn display_path(p: &Path) -> String {
     s
 }
 
+/// The characters in `prefix`, line `row` (0-based) up to a byte column: a column as editors
+/// count it, so without a UTF-8 BOM at the start of the file, which they don't show.
+pub fn chars_before(prefix: &str, row: usize) -> usize {
+    let prefix = match row {
+        0 => prefix.strip_prefix('\u{feff}').unwrap_or(prefix),
+        _ => prefix,
+    };
+    prefix.chars().count()
+}
+
 /// Control characters escaped, so a crafted file name or file content (lint messages quote
 /// source text) can't break a report line or inject CI workflow commands such as `::set-env`.
 /// The GitHub Actions runner also takes the older `##[command]` form anywhere in a line, so
