@@ -34,9 +34,9 @@ pub fn check(src: &str) -> (Vec<SyntaxError>, usize) {
 
 /// What the grammar takes leniently and Groovy 2.4, 3 and 4 reject: a shebang after the first
 /// line, as after a license comment (only the top level holds one); a second `package`
-/// statement; `$(` in a double-quoted string; more on a `return`'s line, which is a command
-/// call as its value, `return readJSON text: x`. The last two are found from the text, so a
-/// file without them costs no walk of the tree.
+/// statement; `$(` in a double-quoted string; a label on a `return`'s line, which is a
+/// command call as its value, `return readJSON text: x`. The last two are found from the
+/// text, so a file without them costs no walk of the tree.
 // ponytail: a primitive type name as a variable's name (`{ char -> }`) is rejected by Groovy
 // too, but where the grammar misreads a valid declaration the name lands on `int` or `boolean`,
 // so checking it reported valid files.
@@ -89,10 +89,13 @@ fn rejected(src: &str, tree: &Tree) -> Vec<SyntaxError> {
         else {
             continue;
         };
+        // Only a label: a name argument (`return foo x`) is rejected too, but where the grammar
+        // misreads a valid value (`return pipeline { }`, `return y.new X()`) a statement
+        // follows the same way.
         if let Some(next) = r.next_sibling().filter(|n| {
-            n.is_named()
-                && !n.kind().ends_with("comment")
+            n.kind() == "labeled_statement"
                 && n.start_position().row == r.end_position().row
+                && !src[r.start_byte()..n.start_byte()].trim_end().ends_with(';')
         }) {
             out.push(at(
                 src,
@@ -372,12 +375,12 @@ mod tests {
         );
         let ret = "a `return` value can't be a command call: put its arguments in parentheses";
         assert_eq!(
-            checked("def f(x) {\n    return readJSON text: x\n}\ndef g(x) { return foo x }\n"),
+            checked("def f(x) {\n    return readJSON text: x\n}\ndef g(x) { return foo a: x }\n"),
             [format!("2:21: {ret}"), format!("4:23: {ret}")]
         );
         assert_eq!(
             checked(
-                "def f(x) {\n    if (x) return 1 else return 2\n    return x; // y\n}\nreturnValue x\n"
+                "def f(x) {\n    if (x) return 1 else return 2\n    return x; a: y\n    return pipeline { }\n    return y.new X()\n}\nreturnValue x\n"
             ),
             Vec::<String>::new()
         );
