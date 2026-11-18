@@ -332,7 +332,10 @@ fn baseline_of(doc: &Doc, cfg: &Config) -> Result<Option<(Baseline, String)>, St
         return Ok(None);
     };
     crate::baseline::confined(&cfg.root, f)?;
-    let rel = crate::baseline::relative(&doc.path, f.parent().unwrap_or(Path::new("")));
+    let Some(rel) = crate::baseline::relative(&doc.path, f.parent().unwrap_or(Path::new("")))
+    else {
+        return Ok(None);
+    };
     Ok(Some((Baseline::load(f)?, rel)))
 }
 

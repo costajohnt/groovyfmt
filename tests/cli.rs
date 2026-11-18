@@ -4725,3 +4725,63 @@ fn config_from_a_pipe() {
         "class A {\n  def f() {\n    println 'x'\n  }\n}\n"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn a_config_above_the_governing_one_that_links_out_is_passed_over() {
+    use std::os::unix::fs::symlink;
+    // home is a dotfiles repository (`Dir`), its config a link into a store outside it
+    let home = Dir::new("dotfiles-home");
+    let store = Dir::new("dotfiles-store");
+    store.write("style.toml", "indent = 2\n");
+    symlink(store.0.join("style.toml"), home.0.join(".groovyfmt.toml")).unwrap();
+    home.write("proj/.git/HEAD", "");
+    home.write("proj/.groovyfmt.toml", "indent = 4\n");
+    home.write("proj/A.groovy", UGLY);
+    // a project with its own config: home's is read only for excludes, and passed over
+    let o = run(&home.0.join("proj"), &["--check", "A.groovy"], None);
+    assert_eq!(o.status.code(), Some(1), "{}", stderr(&o));
+    assert_eq!(stdout(&o), "A.groovy\n");
+    // where home's config governs, it is still an error
+    home.write("B.groovy", UGLY);
+    let o = run(&home.0, &["--check", "B.groovy"], None);
+    assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains("a config symlink must point inside the repository"),
+        "{}",
+        stderr(&o)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn files_whose_names_are_not_utf8_share_no_baseline_key() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let d = Dir::new("latin1-baseline");
+    let (e9, e8) = (
+        OsStr::from_bytes(b"caf\xe9.groovy"),
+        OsStr::from_bytes(b"caf\xe8.groovy"),
+    );
+    // some file systems (APFS) refuse a name that isn't UTF-8
+    if std::fs::write(d.0.join(e9), "import a.B\nx = 1\n").is_err() {
+        return;
+    }
+    let o = run(&d.0, &["--lint", "--write-baseline"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert!(stderr(&o).contains("isn't UTF-8"), "{}", stderr(&o));
+    // another file whose lossy name is the same: its violation is reported
+    std::fs::write(d.0.join(e8), "import a.C\nx = 1\n").unwrap();
+    let o = run(
+        &d.0,
+        &["--lint", "--baseline", ".groovyfmt-baseline.json"],
+        None,
+    );
+    assert_eq!(o.status.code(), Some(1), "{}", stderr(&o));
+    assert_eq!(
+        stdout(&o).matches("UnusedImport").count(),
+        2,
+        "{}",
+        stdout(&o)
+    );
+}

@@ -1454,16 +1454,23 @@ fn lint_files(
         // writing: the whole of every file is recorded, relative to the file written
         Some(target) => files
             .iter()
-            .map(|p| {
-                let rel = baseline::relative(p, &dir(target));
-                (p.as_path(), (Arc::new(Baseline::default()), rel))
+            .filter_map(|p| {
+                let Some(rel) = baseline::relative(p, &dir(target)) else {
+                    eprintln!(
+                        "groovyfmt: warning: {}: the name isn't UTF-8, so its violations aren't recorded in the baseline",
+                        shown(p)
+                    );
+                    return None;
+                };
+                Some((p.as_path(), (Arc::new(Baseline::default()), rel)))
             })
             .collect(),
+        // a file whose name isn't UTF-8 has no entries: all of its violations are reported
         None => files
             .iter()
             .filter_map(|p| {
                 let f = baseline_file(a, &cfgs[p])?;
-                Some((p.as_path(), (load(&f), baseline::relative(p, &dir(&f)))))
+                Some((p.as_path(), (load(&f), baseline::relative(p, &dir(&f))?)))
             })
             .collect(),
     };

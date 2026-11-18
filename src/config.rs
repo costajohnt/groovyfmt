@@ -444,7 +444,13 @@ impl Resolver {
             dir = root.parent().map(Path::to_path_buf);
             chain.push((file, std::mem::replace(&mut target, root)));
         }
-        for (file, target) in chain.iter().rev() {
+        for (i, (file, target)) in chain.iter().enumerate().rev() {
+            // a config above the one governing `path` is read only for its excludes: one
+            // whose symlink leads out of its repository (a dotfiles repository's link into a
+            // Nix store) is passed over, as it governs nothing here
+            if i > 0 && linked_inside(file).is_err() {
+                continue;
+            }
             if self.load(file)?.excluded(target) {
                 return Ok(true);
             }
