@@ -433,6 +433,15 @@ pub const RULES: &[Rule] = &[
         fixable: false,
     },
     Rule {
+        name: "NegatedInCheck",
+        default: true,
+        description: "`!x in xs`, which tests whether the boolean `!x` is in xs",
+        why: "`!` binds tighter than `in`, so `!name in ['a', 'b']` asks whether `true` or `false` is in the list: false for this list, whatever `name` is. Groovy 2.4, 3 and 4 all read it so. Put the membership test in parentheses, or use `!in` (Groovy 3 and later).",
+        bad: "if (!name in ['admin', 'root']) {\n    allow(name)\n}",
+        good: "if (!(name in ['admin', 'root'])) {\n    allow(name)\n}",
+        fixable: false,
+    },
+    Rule {
         name: "RandomDoubleCoercedToZero",
         default: false,
         description: "Math.random() cast to int or long, or assigned to an int or long field or returned from a method returning one (off by default: real code gave nothing to measure it on)",
@@ -664,7 +673,7 @@ pub const RULES: &[Rule] = &[
         name: "GradleRemovedConfiguration",
         default: true,
         description: "compile, runtime, testCompile or testRuntime dependencies (removed in Gradle 7.0), unless the Gradle wrapper pins an older Gradle",
-        why: "`compile`, `runtime`, `testCompile` and `testRuntime` were removed in Gradle 7.0; the build fails on a current Gradle. `--fix` renames `testCompile` to testImplementation, `runtime` to runtimeOnly and `testRuntime` to testRuntimeOnly. `compile` becomes implementation for most builds but api for a dependency a library's own API exposes, so `--fix` replaces it only with `gradle_compile_replacement = \"implementation\"` (or `\"api\"`) in the config's `[lint]` table. The new configurations come from the Java plugins, so a rename is fixed only in a file that applies one (java, java-library, groovy, scala, application, war, java-gradle-plugin or Kotlin JVM, with `apply plugin:` or in `plugins { }`); a file whose plugins come from elsewhere (a parent's allprojects, a convention plugin) is only reported, and the message says so. `api` comes only with the java-library plugin, so `compile` becomes api only in a file that applies it. Source: the Gradle upgrade guide for 6.x to 7.0, and the Java Library plugin chapter.",
+        why: "`compile`, `runtime`, `testCompile` and `testRuntime` were removed in Gradle 7.0; the build fails on a current Gradle. `--fix` renames `testCompile` to testImplementation, `runtime` to runtimeOnly and `testRuntime` to testRuntimeOnly. `compile` becomes implementation for most builds but api for a dependency a library's own API exposes, so `--fix` replaces it only with `gradle_compile_replacement = \"implementation\"` (or `\"api\"`) in the config's `[lint]` table. The new configurations come from the Java plugins, so a rename is fixed only in a file that applies one (java, java-library, groovy, scala, application, war, java-gradle-plugin or Kotlin JVM, with `apply plugin:` or in `plugins { }`); a file whose plugins come from elsewhere (a parent's allprojects, a convention plugin) is only reported, and the message says so. Where nothing shows a Java plugin may be there (neither the file nor another `.gradle` script in its directory or above it applies one or a script, and the file uses no configuration they make, such as `implementation`), a plugin from elsewhere made the configuration (gradle-hdvl's SystemVerilog plugin makes `compile` and `testCompile`), so nothing is reported. `api` comes only with the java-library plugin, so `compile` becomes api only in a file that applies it. Source: the Gradle upgrade guide for 6.x to 7.0, and the Java Library plugin chapter.",
         bad: "plugins {\n    id 'java'\n}\ndependencies {\n    testCompile 'junit:junit:4.13.2'\n}",
         good: "plugins {\n    id 'java'\n}\ndependencies {\n    testImplementation 'junit:junit:4.13.2'\n}",
         fixable: true,
@@ -773,7 +782,7 @@ pub const RULES: &[Rule] = &[
         name: "StringLeftShiftDiscarded",
         default: true,
         description: "`s << x` as a statement on a local String, which builds a new StringBuffer and leaves s unchanged",
-        why: "On a String, `<<` returns a new StringBuffer holding both values and never changes the String, so `s << x` on its own line does nothing: whatever it was meant to collect is lost (a test that gathers failures into `s` this way never reports them). Reported only for a local declared `String` or with a plain string literal and never assigned anything else, when the statement's value isn't returned. Write `s += x`, or start from `new StringBuilder()`.",
+        why: "On a String, `<<` returns a new StringBuffer holding both values and never changes the String, so `s << x` on its own line does nothing: whatever it was meant to collect is lost (a test that gathers failures into `s` this way never reports them). Reported only for a local declared `String` or with a plain string literal and never assigned anything else, when the statement's value isn't returned (by a closure, a method or a script). To collect into `s`, start from `new StringBuilder()` or write `s += x`; either changes what later code reading `s` gets, so check it (a string later joined to others may need a separator).",
         bad: "def missing = ''\nfor (name in names) {\n    if (!found(name)) {\n        missing << name << '\\n'\n    }\n}\nif (missing) {\n    throw new IllegalStateException(\"missing:\\n$missing\")\n}",
         good: "def missing = new StringBuilder()\nfor (name in names) {\n    if (!found(name)) {\n        missing << name << '\\n'\n    }\n}\nif (missing) {\n    throw new IllegalStateException(\"missing:\\n$missing\")\n}",
         fixable: false,
@@ -2061,7 +2070,7 @@ mod tests {
         let jenkins = "pipeline {\n agent foo\n agent none\n def x = 1\n bogus { }\n options { parameters([]) }\n stages {\n  stage(\"${x}\") {\n   when { onBranch 'x' }\n   steps { if (x) { } }\n  }\n  stage('a') { }\n  stage('a') { steps { echo 1 } }\n }\n}\n";
         let gradle = "repositories { jcenter() }\ndependencies { compile 'a:b:+' }\ntask t << { }\nversion '1'\ndependencies {\n implementation('a:b:1')\n implementation group: 'a', name: 'b'\n}\n";
         let spock = "class S extends Specification {\n def f() {\n  when:\n  f()\n  then: 'x'\n  where:\n  a | b\n  2 | 3 | 4\n }\n def g() {\n  then:\n  x\n }\n def h() {\n  expect:\n  xs.each { it > 0 }\n }\n}\n";
-        let more = "package p\nimport p.Q\nimport java.util.Date\nclass K {\n private int pf\n private void m() { }\n static { }\n { }\n boolean equals(Object o) { true }\n int hashcode() { 1 }\n String toString() { null }\n}\nclass L {\n boolean equals(String s) { true }\n}\ndef g() {\n def u = 1\n return 1\n f()\n}\ntry { f() } finally { return 1; throw new E(); assert x }\nswitch (x) { }\ndef s = [1, 1] as Set\ndef t = true ? 1 : 2\nassert true\nif (1 == 2) { f() }\nif (x != null || x.a) { f() }\nif (x % 2 == 1) { f() }\nl.removeAll(l)\nthrow RuntimeException()\nvoid h() { try { f() } catch (e) { new BadException(e) } }\nDate d = new Q()\ndef bd = new BigDecimal(1.5)\nif (a | b) { f() }\ndef nn = !!x\nsynchronized (l) { }\nfor (; c;) { f() }\nInteger.getInteger('p')\ndef r = (int) Math.random()\ndef io = !x instanceof String\ndef m1 = y % 1\nf(a,,b)\nvoid sl(l) {\n def sx = ''\n for (c in l) { sx << c }\n}\n";
+        let more = "package p\nimport p.Q\nimport java.util.Date\nclass K {\n private int pf\n private void m() { }\n static { }\n { }\n boolean equals(Object o) { true }\n int hashcode() { 1 }\n String toString() { null }\n}\nclass L {\n boolean equals(String s) { true }\n}\ndef g() {\n def u = 1\n return 1\n f()\n}\ntry { f() } finally { return 1; throw new E(); assert x }\nswitch (x) { }\ndef s = [1, 1] as Set\ndef t = true ? 1 : 2\nassert true\nif (1 == 2) { f() }\nif (x != null || x.a) { f() }\nif (x % 2 == 1) { f() }\nl.removeAll(l)\nthrow RuntimeException()\nvoid h() { try { f() } catch (e) { new BadException(e) } }\nDate d = new Q()\ndef bd = new BigDecimal(1.5)\nif (a | b) { f() }\ndef nn = !!x\nsynchronized (l) { }\nfor (; c;) { f() }\nInteger.getInteger('p')\ndef r = (int) Math.random()\ndef io = !x instanceof String\ndef ni = !x in xs\ndef m1 = y % 1\nf(a,,b)\nvoid sl(l) {\n def sx = ''\n for (c in l) { sx << c }\n}\n";
         for (name, src) in [
             ("A.groovy", more),
             ("B.groovy", "// groovyfmt-ignore DeadCode\nprintln 1\n"),

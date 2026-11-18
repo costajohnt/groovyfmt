@@ -1020,7 +1020,7 @@ impl Import {
             }
         }
         if self.defines_set {
-            o += "# groovyfmt's Jenkins, Gradle and Spock rules, UnusedSuppression, Groovy24EmptyElement and StringLeftShiftDiscarded keep their defaults.\n";
+            o += "# groovyfmt's Jenkins, Gradle and Spock rules, UnusedSuppression, Groovy24EmptyElement, StringLeftShiftDiscarded and NegatedInCheck keep their defaults.\n";
         }
 
         let mut list = |title: &str, items: Vec<String>| {
@@ -1565,7 +1565,10 @@ mod tests {
                 .any(|p| r.name.starts_with(p))
                 || matches!(
                     r.name,
-                    "UnusedSuppression" | "Groovy24EmptyElement" | "StringLeftShiftDiscarded"
+                    "UnusedSuppression"
+                        | "Groovy24EmptyElement"
+                        | "StringLeftShiftDiscarded"
+                        | "NegatedInCheck"
                 );
             assert_eq!(known(r.name), !ours, "{}", r.name);
         }

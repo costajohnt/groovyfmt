@@ -164,6 +164,24 @@ fn rejected(src: &str, tree: &Tree) -> Vec<SyntaxError> {
             ));
         }
     }
+    // A dotted name as a map key or named argument, `[a: 1, b.c: 2]` (#230): Groovy takes a
+    // name, a literal or a parenthesized expression there. Found from the `:`s.
+    for (i, _) in src.match_indices(':') {
+        if let Some(key) = root
+            .descendant_for_byte_range(i, i + 1)
+            .filter(|n| n.kind() == ":")
+            .and_then(|n| n.parent())
+            .filter(|e| matches!(e.kind(), "map_entry" | "named_argument"))
+            .and_then(|e| e.child_by_field_name("key"))
+            .filter(|k| k.kind() == "field_access" && k.end_byte() <= i)
+        {
+            out.push(at(
+                src,
+                key,
+                "a dotted map key must be quoted or in parentheses: `'a.b': x` or `(a.b): x`",
+            ));
+        }
+    }
     out
 }
 
@@ -475,6 +493,22 @@ mod tests {
         assert_eq!(
             checked(
                 "def f(x) {\n    if (x) return 1 else return 2\n    return x; a: y\n    return pipeline { }\n    return y.new X()\n}\nreturnValue x\n"
+            ),
+            Vec::<String>::new()
+        );
+    }
+
+    /// #230: Groovy 2.4, 3 and 4 reject each.
+    #[test]
+    fn dotted_map_keys_are_reported() {
+        let key = "a dotted map key must be quoted or in parentheses: `'a.b': x` or `(a.b): x`";
+        assert_eq!(
+            checked("m = [a: 1, b.c: 2]\nf(a: 1, this.x: 2)\n"),
+            [format!("1:12: {key}"), format!("2:9: {key}")]
+        );
+        assert_eq!(
+            checked(
+                "m = [(b.c): 1, 'b.c': 2, b: 3, (f()): 4]\nx = c ? a.b : d\nswitch (x) { case A.B: break }\nf a: b.c\n"
             ),
             Vec::<String>::new()
         );

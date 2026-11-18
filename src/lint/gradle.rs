@@ -45,9 +45,25 @@ const JVM_PLUGINS: &[&str] = &[
     "com.android.library",
     "com.android.dynamic-feature",
     "com.android.test",
+    // extend the Groovy plugin (GrailsGradlePlugin extends GroovyPlugin, grails-gradle-plugin 6.2)
+    "org.grails.grails-core",
+    "org.grails.grails-web",
+    "org.grails.grails-plugin",
     // apply java (and groovy), per the Ratpack manual's Gradle chapter
     "io.ratpack.ratpack-java",
     "io.ratpack.ratpack-groovy",
+];
+
+/// Configurations the Java plugins make, which a file declaring dependencies in shows it has.
+const JAVA_CONFIGURATIONS: &[&str] = &[
+    "implementation",
+    "api",
+    "compileOnly",
+    "runtimeOnly",
+    "testImplementation",
+    "testCompileOnly",
+    "testRuntimeOnly",
+    "annotationProcessor",
 ];
 
 /// The message when a rename isn't fixed for want of a plugin from `JVM_PLUGINS`.
@@ -82,8 +98,10 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
     let (mut conventions, mut ext) = (Vec::new(), HashSet::new());
     // `exec { }` and `javaexec { }` on the project or script
     let mut execs = Vec::new();
+    let mut applies_script = false;
     crate::preorder(root, |n| {
         plugins.extend(applied_plugin(src, n));
+        applies_script |= apply_value(src, n, "from").is_some();
         if n.kind() == "method_declaration"
             && let Some(m) = n.child_by_field_name("name")
         {
@@ -132,6 +150,15 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
     let old_gradle = std::cell::OnceCell::new();
     let applier = std::cell::OnceCell::new();
     let jvm = plugins.iter().any(|p| JVM_PLUGINS.contains(&p.as_str()));
+    // the Java plugins may be there: the file applies a script, or declares dependencies in
+    // a configuration they make (`implementation`), or a nearby script may apply them
+    let java_maybe = jvm
+        || applies_script
+        || deps
+            .iter()
+            .flat_map(|b| statements(*b))
+            .any(|s| call(s, src).is_some_and(|c| JAVA_CONFIGURATIONS.contains(&c.name)));
+    let jvm_nearby = std::cell::OnceCell::new();
     for b in deps {
         for s in statements(b) {
             let Some(c) = call(s, src) else { continue };
@@ -148,6 +175,7 @@ pub(super) fn check(path: &Path, src: &str, root: Node, v: &mut Vec<Violation>) 
                 && !applier
                     .get_or_init(|| applier_declared(path))
                     .contains(c.name)
+                && (java_maybe || *jvm_nearby.get_or_init(|| jvm_plugin_nearby(path)))
             {
                 // the name starts the statement: `testCompile 'a'`, `testCompile('a') { }`
                 let fix =
@@ -322,7 +350,16 @@ fn convention<'a>(
                         }
                     })
                     .and_then(|m| match m.kind() {
-                        "method_invocation" => m.child_by_field_name("function"),
+                        // `configure([tasks.compileJava]) { }` configures tasks, which have a
+                        // sourceCompatibility (#230)
+                        // ponytail: an argument naming no project (`configure(libs)`) is skipped
+                        // too; follow the variable if that loses real hits
+                        "method_invocation" => m.child_by_field_name("function").filter(|f| {
+                            text(*f, src) != "configure"
+                                || m.child_by_field_name("arguments").is_some_and(|a| {
+                                    text(a, src).to_ascii_lowercase().contains("project")
+                                })
+                        }),
                         // `allprojects { }`
                         "command_chain" => m.child_by_field_name("receiver"),
                         _ => None,
@@ -434,15 +471,60 @@ const MAX_SCRIPT_BYTES: u64 = 4 * 1024 * 1024;
 
 /// The configurations made by the `.gradle` scripts that apply `path` with
 /// `apply from: 'deps.gradle'`, as a build script declares `testCompile` and the
-/// `dependencies.gradle` it applies uses it (#217). The scripts looked at are those in the
-/// script's directory and the ones above it, up to the build's root (the nearest directory
-/// with `settings.gradle`, `settings.gradle.kts` or `.git`; without one, only the script's
-/// own directory). The target must be a plain path to `path` relative to the applying
+/// `dependencies.gradle` it applies uses it (#217). The scripts looked at are `nearby`'s.
+/// The target must be a plain path to `path` relative to the applying
 /// script's directory: a URL, an interpolated name or a missing file applies nothing here.
 fn applier_declared(path: &Path) -> HashSet<String> {
     let mut declared = HashSet::new();
+    nearby(path, |me, dir, src, root| {
+        let mut applies = false;
+        crate::preorder(root, |n| {
+            applies |= apply_argument(src, n, "from")
+                .is_some_and(|t| dir.join(t).canonicalize().is_ok_and(|t| t == me));
+            !applies
+        });
+        if applies {
+            crate::preorder(root, |n| {
+                declares(src, n, &mut declared);
+                true
+            });
+        }
+        false
+    });
+    declared
+}
+
+/// Whether one of `nearby`'s scripts may apply a Java plugin: it applies one from
+/// `JVM_PLUGINS` (a subproject's `compile` comes from its parent's
+/// `subprojects { apply plugin: 'java' }`) or applies a script (`apply from:`), which may.
+/// Where none does, a plugin from elsewhere made the configuration (gradle-hdvl's
+/// SystemVerilog plugin makes `compile` and `testCompile`, #230). A script that isn't on disk
+/// (`--stdin` without a real `--stdin-filepath`) can't be told, so it counts as one that does.
+fn jvm_plugin_nearby(path: &Path) -> bool {
+    path.canonicalize().is_err()
+        || nearby(path, |_, _, src, root| {
+            let mut jvm = false;
+            crate::preorder(root, |n| {
+                jvm |= may_apply_java(src, n);
+                !jvm
+            });
+            jvm
+        })
+}
+
+/// Whether `n` applies a plugin from `JVM_PLUGINS` or a script, which may apply one.
+fn may_apply_java(src: &str, n: Node) -> bool {
+    applied_plugin(src, n).is_some_and(|p| JVM_PLUGINS.contains(&p.as_str()))
+        || apply_value(src, n, "from").is_some()
+}
+
+/// Calls `f(path, dir, source, root)` on each other `.gradle` script in the directory of
+/// `path` and the ones above it, up to the build's root (the nearest directory with
+/// `settings.gradle`, `settings.gradle.kts` or `.git`; without one, only the script's own
+/// directory), until `f` returns true; returns whether it did. `path` is canonical.
+fn nearby(path: &Path, mut f: impl FnMut(&Path, &Path, &str, Node) -> bool) -> bool {
     let Ok(me) = path.canonicalize() else {
-        return declared;
+        return false;
     };
     let root = me.ancestors().skip(1).find(|d| {
         ["settings.gradle", "settings.gradle.kts", ".git"]
@@ -459,24 +541,15 @@ fn applier_declared(path: &Path) -> HashSet<String> {
                 continue;
             };
             let tree = crate::parse(&src);
-            let mut applies = false;
-            crate::preorder(tree.root_node(), |n| {
-                applies |= apply_argument(&src, n, "from")
-                    .is_some_and(|t| dir.join(t).canonicalize().is_ok_and(|t| t == me));
-                !applies
-            });
-            if applies {
-                crate::preorder(tree.root_node(), |n| {
-                    declares(&src, n, &mut declared);
-                    true
-                });
+            if f(&me, dir, &src, tree.root_node()) {
+                return true;
             }
         }
         if root.is_none_or(|r| r == dir) {
             break;
         }
     }
-    declared
+    false
 }
 
 /// Core plugins removed from Gradle: id, the major that removed it, the replacement. From
@@ -766,6 +839,11 @@ fn applied_plugin(src: &str, n: Node) -> Option<String> {
 /// The string the named argument `n` passes to `apply` as `key`: `apply plugin: 'java'`,
 /// `apply(from: 'deps.gradle')`.
 fn apply_argument(src: &str, n: Node, key: &str) -> Option<String> {
+    apply_value(src, n, key).and_then(|v| constant_value(v, src))
+}
+
+/// The string literal the named argument `n` passes to `apply` as `key`, interpolated or not.
+fn apply_value<'a>(src: &str, n: Node<'a>, key: &str) -> Option<Node<'a>> {
     if n.kind() != "named_argument" {
         return None;
     }
@@ -787,7 +865,7 @@ fn apply_argument(src: &str, n: Node, key: &str) -> Option<String> {
                     .or_else(|| p.child_by_field_name("function"))
             })
             .is_some_and(|f| text(f, src) == "apply");
-    applies.then(|| constant_value(val, src)).flatten()
+    applies.then_some(val)
 }
 
 /// Calls in a `configurations { }` block (or on `configurations.`) that make or name a
@@ -1569,7 +1647,13 @@ mod tests {
             std::fs::write(p, uses).unwrap();
             rules(p.to_str().unwrap(), uses).len()
         };
-        let build = |s: &str| std::fs::write(root.join("build.gradle"), s).unwrap();
+        let build = |s: &str| {
+            std::fs::write(
+                root.join("build.gradle"),
+                format!("apply plugin: 'java'\n{s}"),
+            )
+            .unwrap()
+        };
         build(
             "configurations { testCompile }\napply from: 'deps.gradle'\napply(from: 'gradle/sub.gradle')\n",
         );
@@ -1590,6 +1674,61 @@ mod tests {
         // the applying script names a missing file
         build("configurations { testCompile }\napply from: 'gone.gradle'\n");
         assert_eq!(run(&root.join("deps.gradle")), 1);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// #230: gradle-hdvl's SystemVerilog plugin makes `compile` and `testCompile`.
+    #[test]
+    fn removed_configurations_need_a_java_plugin_nearby() {
+        let root = std::env::temp_dir().join(format!("groovyfmt-hdvl-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("proj1")).unwrap();
+        std::fs::create_dir_all(root.join("tb")).unwrap();
+        std::fs::write(root.join("settings.gradle"), "include 'proj1', 'tb'\n").unwrap();
+        let parent = |s: &str| std::fs::write(root.join("build.gradle"), s).unwrap();
+        let run = |dir: &str, src: &str| {
+            let p = root.join(dir).join("build.gradle");
+            std::fs::write(&p, src).unwrap();
+            rules(p.to_str().unwrap(), src)
+        };
+        let proj1 = "dependencies {\n    compile project(':proj0')\n}\n";
+        let tb = "plugins {\n    id 'com.verificationgentleman.gradle.hdvl.systemverilog'\n}\ndependencies {\n    testCompile 'org.svunit:svunit:v3.34.2'\n}\n";
+        parent(
+            "plugins {\n    id 'com.verificationgentleman.gradle.hdvl.systemverilog' apply false\n}\nsubprojects {\n    apply plugin: 'com.verificationgentleman.gradle.hdvl.systemverilog'\n    dependencies {\n        testCompile 'a:b:1'\n    }\n}\n",
+        );
+        assert_eq!(run("proj1", proj1), vec![]);
+        assert_eq!(run("tb", tb), vec![]);
+        assert_eq!(
+            run(
+                ".",
+                &std::fs::read_to_string(root.join("build.gradle")).unwrap()
+            ),
+            vec![]
+        );
+        // the file applies a script, or uses a configuration the Java plugins make: they may
+        // be there
+        let applies = "apply from: \"${rootDir}/gradle/java.gradle\"\ndependencies {\n    compile 'a:b:1'\n}\n";
+        assert_eq!(
+            run("proj1", applies),
+            vec![("GradleRemovedConfiguration", 3)]
+        );
+        let uses = "dependencies {\n    compile project(':sdk')\n    implementation 'a:b:1'\n}\n";
+        assert_eq!(run("proj1", uses), vec![("GradleRemovedConfiguration", 2)]);
+        // a Grails plugin applies the Groovy plugin, so the rename is fixed
+        let grails =
+            "apply plugin: 'org.grails.grails-web'\ndependencies {\n    testCompile 'a:b:1'\n}\n";
+        let fixed = lint_file(&root.join("tb/build.gradle"), grails).unwrap();
+        assert!(
+            fixed
+                .iter()
+                .any(|v| v.rule == "GradleRemovedConfiguration" && v.fix.is_some())
+        );
+        // a parent that applies java makes them, so they are reported, unfixed
+        parent("subprojects {\n    apply plugin: 'java'\n}\n");
+        assert_eq!(run("proj1", proj1), vec![("GradleRemovedConfiguration", 2)]);
+        assert_eq!(run("tb", tb), vec![("GradleRemovedConfiguration", 5)]);
+        // or applies a script, which may
+        parent("subprojects {\n    apply from: \"$rootDir/gradle/java.gradle\"\n}\n");
+        assert_eq!(run("proj1", proj1), vec![("GradleRemovedConfiguration", 2)]);
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -1716,8 +1855,11 @@ mod tests {
         wrapper("9.9.1");
         // the new forms, a task's own properties, a read, an extra property the script
         // makes, a local variable, a class's code, a settings script
-        let quiet = "java {\n    sourceCompatibility = 11\n    targetCompatibility = 11\n}\napplication {\n    mainClass = 'a.B'\n    applicationName = 'x'\n    executableDir = 'b'\n}\nbase { archivesName = 'x' }\ncompileJava { sourceCompatibility = 11 }\ntasks.withType(JavaCompile) { targetCompatibility = 11 }\ntasks.named('x').configure { sourceCompatibility = 11 }\nshadowJar { mainClassName = 'a.B' }\njar { manifest { attributes 'Main-Class': mainClassName } }\next.executableDir = 'b'\nexecutableDir = 'c'\next {\n    webAppDirName = 'w'\n}\nwebAppDirName = 'v'\ndef appDirName = 'a'\nappDirName = 'z'\nclass C { def f() { libDirName = 1 } }\nfoo.mainClassName = 'x'\n";
+        let quiet = "java {\n    sourceCompatibility = 11\n    targetCompatibility = 11\n}\napplication {\n    mainClass = 'a.B'\n    applicationName = 'x'\n    executableDir = 'b'\n}\nbase { archivesName = 'x' }\ncompileJava { sourceCompatibility = 11 }\ntasks.withType(JavaCompile) { targetCompatibility = 11 }\ntasks.named('x').configure { sourceCompatibility = 11 }\nshadowJar { mainClassName = 'a.B' }\njar { manifest { attributes 'Main-Class': mainClassName } }\next.executableDir = 'b'\nexecutableDir = 'c'\next {\n    webAppDirName = 'w'\n}\nwebAppDirName = 'v'\ndef appDirName = 'a'\nappDirName = 'z'\nclass C { def f() { libDirName = 1 } }\nfoo.mainClassName = 'x'\nconfigure([tasks.compileJava]) {\n    sourceCompatibility = 25\n}\nconfigure(compileTestJava) { targetCompatibility = 11 }\n";
         assert_eq!(lines(&root, "build.gradle", quiet), Vec::<usize>::new());
+        // #230: `configure` on projects is still the project
+        let src = "configure(subprojects.findAll { it.name != 'a' }) {\n    sourceCompatibility = 11\n}\nconfigure(rootProject) { archivesBaseName = 'x' }\n";
+        assert_eq!(lines(&root, "build.gradle", src), vec![2, 4]);
         assert_eq!(
             lines(&root, "settings.gradle", "sourceCompatibility = 1"),
             Vec::<usize>::new()

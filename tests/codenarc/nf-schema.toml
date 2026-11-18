@@ -53,7 +53,7 @@ ClassNameSameAsFilename = true
 UnusedPrivateField = true
 UnusedPrivateMethod = true
 UnusedVariable = true
-# groovyfmt's Jenkins, Gradle and Spock rules, UnusedSuppression, Groovy24EmptyElement and StringLeftShiftDiscarded keep their defaults.
+# groovyfmt's Jenkins, Gradle and Spock rules, UnusedSuppression, Groovy24EmptyElement, StringLeftShiftDiscarded and NegatedInCheck keep their defaults.
 
 # Enabled in the source, no groovyfmt equivalent yet (100):
 #   AssignmentToStaticFieldFromInstanceMethod, BooleanGetBoolean,
