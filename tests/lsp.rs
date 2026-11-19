@@ -932,3 +932,74 @@ fn specs_whose_base_is_in_another_file_are_checked() {
     srv.notify("exit", "null");
     srv.finish();
 }
+
+/// The CLI's `--lint` lines for the diagnostics `ds` of the file named `name`.
+fn as_cli_lines(name: &str, ds: &[Value]) -> Vec<String> {
+    ds.iter()
+        .map(|d| {
+            let start = d.get("range").get("start");
+            format!(
+                "{name}:{}:{}: {}: {}",
+                start.get("line").u32().unwrap() + 1,
+                start.get("character").u32().unwrap() + 1,
+                d.get("code").str().unwrap(),
+                d.get("message").str().unwrap()
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn diagnostics_and_quick_fixes_go_through_the_cli_pipeline() {
+    let d = Dir::new("pipeline");
+    d.write(".git/HEAD", "");
+    d.write(
+        ".groovyfmt.toml",
+        "[lint]\ngradle_compile_replacement = \"api\"\n",
+    );
+    // the config's opt-in fix changes the message, as on the command line
+    let gradle = "plugins {\n    id 'java-library'\n}\ndependencies {\n    compile 'a:b:1'\n}\n";
+    let build = d.write("build.gradle", gradle);
+    // a private member another file of the project uses is not reported
+    let a = "class A {\n    private void run() { }\n    private int count\n}\n";
+    let a_path = d.write("src/A.groovy", a);
+    d.write("src/B.groovy", "class B {\n    def f(A a) { a.run() }\n}\n");
+    let mut srv = Server::start(&d.0);
+    srv.initialize("[]");
+    for (name, path, text) in [
+        ("build.gradle", &build, gradle),
+        ("src/A.groovy", &a_path, a),
+    ] {
+        let ds = srv.open(&uri(path), text);
+        let (_, lint) = cli(&d.0, &["--lint", name], "");
+        let want: Vec<&str> = lint
+            .lines()
+            .map(|l| l.strip_suffix(" (fixable)").unwrap_or(l))
+            .collect();
+        assert_eq!(as_cli_lines(name, &ds), want, "{name}");
+    }
+    let ds = srv.open(&uri(&build), gradle);
+    assert!(
+        ds[0]
+            .get("message")
+            .str()
+            .is_some_and(|m| m.contains("use api (`gradle_compile_replacement`)")),
+        "{ds:?}"
+    );
+    // the quick fix names the violation as the diagnostic does
+    let range = "{\"start\":{\"line\":4,\"character\":4},\"end\":{\"line\":4,\"character\":4}}";
+    let actions = srv.result(
+        "textDocument/codeAction",
+        &format!(
+            "{{\"textDocument\":{{\"uri\":{}}},\"range\":{range},\"context\":{{\"diagnostics\":[],\"only\":[\"quickfix\"]}}}}",
+            js(&uri(&build))
+        ),
+    );
+    let fix = actions.arr().first().expect("a quick fix");
+    assert_eq!(
+        fix.get("diagnostics").arr()[0].get("message").str(),
+        ds[0].get("message").str()
+    );
+    srv.notify("exit", "null");
+    srv.finish();
+}

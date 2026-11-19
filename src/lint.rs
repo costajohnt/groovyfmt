@@ -844,6 +844,39 @@ pub fn opt_in_fixes(vs: &mut [Violation], src: &str, compile: Option<&str>) {
     }
 }
 
+/// `lint_with`, then `opt_in_fixes`: every violation, enabled or not, judged without the
+/// project's Spock base classes. What `fix` checks its edits against; `run` adds the
+/// config's and the project's filters.
+pub fn lint_opt_in(
+    path: &Path,
+    src: &str,
+    compile: Option<&str>,
+    base: &Context,
+) -> Result<Vec<Violation>, &'static str> {
+    let mut vs = lint_with(path, src, base)?;
+    opt_in_fixes(&mut vs, src, compile);
+    Ok(vs)
+}
+
+/// What `src`, the text of the file at `path`, reports under `cfg`: the one pipeline for
+/// `--lint`, `--lint --fix`, the language server's diagnostics and its code actions. Its
+/// violations (`lint_opt_in`, Spock bases from the project) of the rules `cfg` enables, less
+/// the unused private members another file of the project uses. `real` is where the file is
+/// (a named link's target), which decides its project. The baseline is the caller's.
+pub fn run(
+    path: &Path,
+    real: &Path,
+    src: &str,
+    cfg: &crate::config::Config,
+    projects: &Projects,
+) -> Result<Vec<Violation>, &'static str> {
+    let compile = cfg.gradle_compile_replacement.as_deref();
+    let mut vs = lint_opt_in(path, src, compile, &projects.spec_base(real))?;
+    vs.retain(|v| cfg.rule_enabled(v.rule));
+    projects.filter(real, src, &mut vs);
+    Ok(vs)
+}
+
 /// Lint `src` as the file at `path`, whose name decides the Jenkinsfile and Gradle rules.
 pub fn lint_file(path: &Path, src: &str) -> Result<Vec<Violation>, &'static str> {
     lint_with(path, src, &Context::new(|_| None))

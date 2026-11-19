@@ -107,9 +107,8 @@ struct Args {
     config: Option<PathBuf>,
     stdin_filepath: Option<PathBuf>,
     indent: Option<usize>,
-    github: bool,
-    /// `--output-format json` or `sarif`: one document on stdout instead of report lines
-    machine: Option<Machine>,
+    /// `--output-format`
+    format: OutputFormat,
     /// `--lint --fix`
     fix: bool,
     /// `--diff`: print patches instead of names (with `--check`) or writing (`--lint --fix`)
@@ -126,8 +125,13 @@ struct Args {
     write_baseline: Option<Option<PathBuf>>,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Machine {
+/// `--output-format`: report lines as text or as GitHub Actions workflow commands, or one
+/// JSON or SARIF document on stdout instead.
+#[derive(Clone, Copy, Default, PartialEq)]
+enum OutputFormat {
+    #[default]
+    Text,
+    Github,
     Json,
     Sarif,
 }
@@ -303,10 +307,10 @@ fn parse_args() -> Args {
                 );
             }
             "--output-format" => match text("--output-format", value("--output-format")).as_str() {
-                "text" => (a.github, a.machine) = (false, None),
-                "github" => (a.github, a.machine) = (true, None),
-                "json" => (a.github, a.machine) = (false, Some(Machine::Json)),
-                "sarif" => (a.github, a.machine) = (false, Some(Machine::Sarif)),
+                "text" => a.format = OutputFormat::Text,
+                "github" => a.format = OutputFormat::Github,
+                "json" => a.format = OutputFormat::Json,
+                "sarif" => a.format = OutputFormat::Sarif,
                 other => die(format!(
                     "unknown --output-format `{other}` (text, github, json or sarif)"
                 )),
@@ -327,14 +331,14 @@ fn parse_args() -> Args {
     if a.mode == Mode::Stdin && !a.paths.is_empty() {
         die("--stdin reads stdin and takes no paths (name the file with --stdin-filepath)");
     }
-    match (a.machine, &a.mode) {
-        (Some(Machine::Json), Mode::Write | Mode::Check | Mode::Lint | Mode::Syntax)
-        | (Some(Machine::Sarif), Mode::Lint | Mode::Syntax)
-        | (None, _) => {}
-        (Some(Machine::Json), _) => {
+    match (a.format, &a.mode) {
+        (OutputFormat::Json, Mode::Write | Mode::Check | Mode::Lint | Mode::Syntax)
+        | (OutputFormat::Sarif, Mode::Lint | Mode::Syntax)
+        | (OutputFormat::Text | OutputFormat::Github, _) => {}
+        (OutputFormat::Json, _) => {
             die("--output-format json works with --check, --lint, --syntax and formatting in place")
         }
-        (Some(Machine::Sarif), _) => die("--output-format sarif works with --lint and --syntax"),
+        (OutputFormat::Sarif, _) => die("--output-format sarif works with --lint and --syntax"),
     }
     if a.fix && a.mode != Mode::Lint {
         die("--fix needs --lint");
@@ -342,13 +346,13 @@ fn parse_args() -> Args {
     if (a.baseline.is_some() || a.write_baseline.is_some()) && a.mode != Mode::Lint {
         die("--baseline and --write-baseline need --lint");
     }
-    if a.write_baseline.is_some() && (a.fix || a.machine.is_some() || a.github) {
+    if a.write_baseline.is_some() && (a.fix || a.format != OutputFormat::Text) {
         die("--write-baseline can't be combined with --fix or --output-format");
     }
     if a.diff && !(a.mode == Mode::Check || a.fix) {
         die("--diff works with --check and --lint --fix");
     }
-    if a.diff && (a.github || a.machine.is_some()) {
+    if a.diff && a.format != OutputFormat::Text {
         die("--diff prints a patch and can't be combined with --output-format");
     }
     if !a.lines.is_empty()
@@ -839,19 +843,6 @@ fn shown(p: &Path) -> String {
     }
 }
 
-/// GitHub Actions workflow-command escaping for property values and messages.
-fn gh_escape(s: &str, property: bool) -> String {
-    let s = s
-        .replace('%', "%25")
-        .replace('\r', "%0D")
-        .replace('\n', "%0A");
-    if property {
-        s.replace(':', "%3A").replace(',', "%2C")
-    } else {
-        s
-    }
-}
-
 /// Where a file failed to parse: the first places, and how many there are in all.
 type Diag = (Vec<SyntaxError>, usize);
 
@@ -870,13 +861,8 @@ fn report_syntax(name: &str, (shown_errs, total): &Diag, github: bool, out: fn(&
     for e in shown_errs {
         let message = printable(&e.message);
         out(&if github {
-            format!(
-                "::warning file={},line={},col={},title=could not parse::{}",
-                gh_escape(name, true),
-                e.line,
-                e.col,
-                gh_escape(&message, false)
-            )
+            let at = Some((e.line, e.col));
+            report::github("warning", name, at, Some("could not parse"), &message)
         } else {
             format!("{name}:{}:{}: could not parse: {message}", e.line, e.col)
         });
@@ -884,10 +870,8 @@ fn report_syntax(name: &str, (shown_errs, total): &Diag, github: bool, out: fn(&
     let more = total - shown_errs.len();
     if more > 0 {
         out(&if github {
-            format!(
-                "::warning file={},title=could not parse::{more} more places not shown",
-                gh_escape(name, true)
-            )
+            let message = format!("{more} more places not shown");
+            report::github("warning", name, None, Some("could not parse"), &message)
         } else {
             format!("{name}: {more} more places groovyfmt could not parse")
         });
@@ -1021,12 +1005,12 @@ fn lint_diagnostic(v: lint::Violation) -> Diagnostic {
     }
 }
 
-/// Where a run's results go. As text, each mode prints its own lines as it goes and the
-/// summary line here; with `--output-format json` or `sarif`, the files are collected and
-/// printed as one document on stdout instead, with no summary line (errors still go to
-/// stderr).
+/// Where a run's results go. As text (or GitHub lines), each mode prints its own lines as it
+/// goes and the summary line here; with `--output-format json` or `sarif`, the files are
+/// collected and printed as one document on stdout instead, with no summary line (errors
+/// still go to stderr).
 struct Out {
-    machine: Option<Machine>,
+    format: OutputFormat,
     files: Vec<FileReport>,
     /// More counts for the JSON summary
     extra: Vec<(&'static str, usize)>,
@@ -1035,14 +1019,15 @@ struct Out {
 impl Out {
     fn new(a: &Args) -> Out {
         Out {
-            machine: a.machine,
+            format: a.format,
             files: Vec::new(),
             extra: Vec::new(),
         }
     }
 
+    /// Report lines, as text or GitHub workflow commands, rather than one document.
     fn text(&self) -> bool {
-        self.machine.is_none()
+        matches!(self.format, OutputFormat::Text | OutputFormat::Github)
     }
 
     fn file(
@@ -1069,10 +1054,10 @@ impl Out {
     }
 
     fn summary(self, line: &str) {
-        let doc = match self.machine {
-            None => return eprintln!("{line}"),
-            Some(Machine::Json) => report::json_with(&self.files, &self.extra),
-            Some(Machine::Sarif) => report::sarif(&self.files, env!("CARGO_PKG_VERSION")),
+        let doc = match self.format {
+            OutputFormat::Text | OutputFormat::Github => return eprintln!("{line}"),
+            OutputFormat::Json => report::json_with(&self.files, &self.extra),
+            OutputFormat::Sarif => report::sarif(&self.files, env!("CARGO_PKG_VERSION")),
         };
         let _ = std::io::stdout().lock().write_all(doc.as_bytes());
     }
@@ -1276,16 +1261,14 @@ fn stdin(res: &mut Resolver, a: &Args) -> i32 {
         Outcome::Formatted(out) => out,
         Outcome::Skipped(why) => {
             let name = path.map_or_else(|| "<stdin>".to_string(), shown);
-            if a.github {
-                eprintln!(
-                    "::error file={}::Not formatted: {}",
-                    gh_escape(&name, true),
-                    gh_escape(why, false)
-                );
+            let github = a.format == OutputFormat::Github;
+            if github {
+                let message = format!("Not formatted: {why}");
+                eprintln!("{}", report::github("error", &name, None, None, &message));
             } else {
                 eprintln!("groovyfmt: {name}: not formatted: {why}");
             }
-            report_syntax(&name, &syntax::check(&src), a.github, to_stderr);
+            report_syntax(&name, &syntax::check(&src), github, to_stderr);
             std::process::exit(2);
         }
     };
@@ -1361,11 +1344,9 @@ fn fmt(files: &[PathBuf], links: &HashMap<PathBuf, PathBuf>, cfgs: &Configs, a: 
                         "reformatted"
                     };
                     out.file(path, status, None, Vec::new());
-                } else if check && a.github {
-                    say(&format!(
-                        "::error file={}::File is not formatted. Run groovyfmt to fix.",
-                        gh_escape(&shown(path), true)
-                    ));
+                } else if check && a.format == OutputFormat::Github {
+                    let message = "File is not formatted. Run groovyfmt to fix.";
+                    say(&report::github("error", &shown(path), None, None, message));
                 } else if check {
                     say(&shown(path));
                 }
@@ -1411,20 +1392,7 @@ struct Linted {
 /// The baseline file for a file governed by `cfg`: `--baseline` (`''` for none), else the
 /// config's, which must stay in the config's directory (an error, exit 2, otherwise).
 fn baseline_file(a: &Args, cfg: &Config) -> Option<PathBuf> {
-    match &a.baseline {
-        Some(f) if f.as_os_str().is_empty() => None,
-        Some(f) => Some(f.clone()),
-        None => {
-            let f = cfg.baseline.clone()?;
-            baseline::confined(&cfg.root, &f).unwrap_or_else(|e| die(e));
-            Some(f)
-        }
-    }
-}
-
-/// The text of line `n` (1-based) of `text`.
-fn line_of(text: &str, n: usize) -> &str {
-    text.split('\n').nth(n.saturating_sub(1)).unwrap_or("")
+    baseline::file_for(cfg, a.baseline.as_deref()).unwrap_or_else(|e| die(e))
 }
 
 fn lint_files(
@@ -1449,13 +1417,12 @@ fn lint_files(
             .or_insert_with(|| Arc::new(Baseline::load(f).unwrap_or_else(|e| die(e))))
             .clone()
     };
-    let dir = |f: &Path| f.parent().map(Path::to_path_buf).unwrap_or_default();
     let bases: HashMap<&Path, (Arc<Baseline>, String)> = match writing {
         // writing: the whole of every file is recorded, relative to the file written
         Some(target) => files
             .iter()
             .filter_map(|p| {
-                let Some(rel) = baseline::relative(p, &dir(target)) else {
+                let Some(rel) = baseline::name_in(p, target) else {
                     eprintln!(
                         "groovyfmt: warning: {}: the name isn't UTF-8, so its violations aren't recorded in the baseline",
                         shown(p)
@@ -1470,7 +1437,7 @@ fn lint_files(
             .iter()
             .filter_map(|p| {
                 let f = baseline_file(a, &cfgs[p])?;
-                Some((p.as_path(), (load(&f), baseline::relative(p, &dir(&f))?)))
+                Some((p.as_path(), (load(&f), baseline::name_in(p, &f)?)))
             })
             .collect(),
     };
@@ -1483,12 +1450,9 @@ fn lint_files(
             Ok(read) => read,
             Err(why) => return Ok(Err((why, Diag::default()))),
         };
-        let compile = cfgs[p].gradle_compile_replacement.as_deref();
-        let violations = match lint::lint_with(p, &src, &projects.spec_base(real)) {
-            Ok(mut vs) => {
-                lint::opt_in_fixes(&mut vs, &src, compile);
-                vs
-            }
+        let cfg = &cfgs[p];
+        let violations = match lint::run(p, real, &src, cfg, &projects) {
+            Ok(vs) => vs,
             Err(why) => return Ok(Err((why, diag_if(want_diag, &src)))),
         };
         let mut r = Linted {
@@ -1503,14 +1467,13 @@ fn lint_files(
         };
         let mut new_text: Option<String> = None;
         if a.fix {
-            let cfg = &cfgs[p];
             // a violation the baseline has on a line like this one is left alone
             let base = bases.get(&p);
             let wanted = |v: &lint::Violation, text: &str| {
                 cfg.rule_enabled(v.rule)
-                    && !base
-                        .is_some_and(|(b, rel)| b.covers_line(rel, v.rule, line_of(text, v.line)))
+                    && !base.is_some_and(|(b, rel)| b.covers_line(rel, v.rule, text, v.line))
             };
+            let compile = cfg.gradle_compile_replacement.as_deref();
             match fix::fix(p, &src, compile, wanted) {
                 Fix::Nothing => {}
                 Fix::Refused(why) => r.refused = Some(why),
@@ -1522,9 +1485,8 @@ fn lint_files(
                     }
                     if r.written.is_ok() {
                         // the fix checked that the fixed text lints
-                        r.violations = lint::lint_with(p, &text, &projects.spec_base(real))
-                            .unwrap_or_default();
-                        lint::opt_in_fixes(&mut r.violations, &text, compile);
+                        r.violations =
+                            lint::run(p, real, &text, cfg, &projects).unwrap_or_default();
                         r.fixed = fixed;
                         new_text = Some(text);
                     }
@@ -1532,9 +1494,6 @@ fn lint_files(
             }
         }
         let text = new_text.as_deref().unwrap_or(&src);
-        let cfg = &cfgs[p];
-        r.violations.retain(|v| cfg.rule_enabled(v.rule));
-        projects.filter(real, text, &mut r.violations);
         if let Some((b, rel)) = bases.get(&p) {
             if writing.is_some() {
                 r.keys = Some((rel.clone(), baseline::keys(text, &r.violations)));
@@ -1595,12 +1554,7 @@ fn lint_files(
                 if let Some(patch) = &r.patch {
                     print_raw(patch);
                 }
-                let cfg = &cfgs[path];
-                let vs: Vec<_> = r
-                    .violations
-                    .into_iter()
-                    .filter(|v| cfg.rule_enabled(v.rule))
-                    .collect();
+                let vs = r.violations;
                 total += vs.len();
                 for v in &vs {
                     *by_rule.entry(v.rule).or_default() += 1;
@@ -1621,15 +1575,9 @@ fn lint_files(
                         continue;
                     }
                     let message = printable(&v.message);
-                    say(&if a.github {
-                        format!(
-                            "::warning file={},line={},col={},title={}::{}",
-                            gh_escape(&shown(path), true),
-                            v.line,
-                            v.col,
-                            v.rule,
-                            gh_escape(&message, false)
-                        )
+                    say(&if a.format == OutputFormat::Github {
+                        let at = Some((v.line, v.col));
+                        report::github("warning", &shown(path), at, Some(v.rule), &message)
                     } else {
                         let fixable = if v.fix.is_some() { " (fixable)" } else { "" };
                         format!(
@@ -1767,7 +1715,7 @@ fn syntax(files: &[PathBuf], a: &Args) -> i32 {
             Ok(Ok(diag)) => {
                 bad += 1;
                 if out.text() {
-                    report_syntax(&shown(path), &diag, a.github, say);
+                    report_syntax(&shown(path), &diag, a.format == OutputFormat::Github, say);
                 }
                 out.file(path, "skipped", Some(PARSE_ERROR), parse_diagnostics(diag));
             }
@@ -2089,8 +2037,7 @@ mod tests {
             let p = printable(s);
             for out in [
                 shown(Path::new(s)),
-                gh_escape(&p, true),
-                gh_escape(&p, false),
+                report::github("warning", &p, None, Some("t"), &p),
             ] {
                 assert!(!out.contains("##["), "{out}");
             }
@@ -2411,11 +2358,5 @@ mod tests {
                 "{line:?}"
             );
         }
-    }
-
-    #[test]
-    fn gh_escape_properties_and_messages() {
-        assert_eq!(gh_escape("a:b,c%\r\n", true), "a%3Ab%2Cc%25%0D%0A");
-        assert_eq!(gh_escape("a:b,c%\n", false), "a:b,c%25%0A");
     }
 }

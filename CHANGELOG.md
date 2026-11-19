@@ -10,6 +10,10 @@
 
 - `--lint` and the language server read and parse each Gradle wrapper file and each nearby `.gradle` script once per run (until a save, in the editor), not once per build script that needs them. On a build of 400 subprojects under a 1 MB root `build.gradle`, `--lint` went from 67 s to 1.2 s; results are unchanged.
 
+### Fixed
+
+- The language server's diagnostics now match `--lint`: with `gradle_compile_replacement` set, a `compile` dependency's GradleRemovedConfiguration message names the configured replacement, where the editor showed the generic message. The command line, `--lint --fix`, the editor's diagnostics and its code actions now share one lint pipeline, so they can't drift apart again.
+
 ## 0.29.0 (2026-11-18)
 
 ### Fixed
