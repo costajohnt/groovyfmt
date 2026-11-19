@@ -84,22 +84,13 @@ The Gradle plugin (`gradle-plugin/`) adds three tasks:
 
 It downloads the release binary for the machine (Linux or macOS, x86_64 or arm64, or Windows x86_64) into `~/.gradle/groovyfmt/<version>/<target>/`, checks it against its `.sha256` before unpacking it, and reuses it after that. It needs Gradle 7.6 or later on Java 11 or later, and works with the configuration cache.
 
-### Applying it from a checkout
-
-The plugin is not on the Gradle Plugin Portal yet. Until it is, build it from a checkout of this repository with `includeBuild`:
-
-```groovy
-// settings.gradle
-pluginManagement {
-    includeBuild '../groovyfmt/gradle-plugin'  // path to the checkout
-}
-```
+### Applying it
 
 ```groovy
 // build.gradle
 plugins {
     id 'base'  // or any plugin that adds check, such as java
-    id 'io.github.costajohnt.groovyfmt'
+    id 'io.github.costajohnt.groovyfmt' version '0.30.0'
 }
 
 groovyfmt {
@@ -110,7 +101,16 @@ groovyfmt {
 }
 ```
 
-Once it is published, drop `includeBuild` and write `id 'io.github.costajohnt.groovyfmt' version '<version>'`.
+Then `./gradlew check` checks formatting and runs lint, and `./gradlew groovyfmtFormat` formats in place.
+
+To use an unreleased plugin, build it from a checkout of this repository with `includeBuild` and drop `version` from the `plugins` line:
+
+```groovy
+// settings.gradle
+pluginManagement {
+    includeBuild '../groovyfmt/gradle-plugin'  // path to the checkout
+}
+```
 
 ### Behavior
 

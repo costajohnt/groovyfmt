@@ -61,7 +61,7 @@ tasks.named('check') {
 }
 
 gradlePlugin {
-    website = 'https://github.com/costajohnt/groovyfmt'
+    website = 'https://github.com/costajohnt/groovyfmt/tree/main/gradle-plugin'
     vcsUrl = 'https://github.com/costajohnt/groovyfmt'
     plugins {
         groovyfmt {

@@ -56,7 +56,7 @@ docker run --rm -v "$PWD:/src" -w /src ghcr.io/costajohnt/groovyfmt --check
 
 Prebuilt binaries for Linux (static musl), macOS and Windows, each with a `.sha256`, are on every [release](https://github.com/costajohnt/groovyfmt/releases). See also [Windows](https://github.com/costajohnt/groovyfmt/blob/main/docs/windows.md).
 
-Not published yet: the Gradle plugin on the Gradle Plugin Portal (it works from a checkout).
+In a Gradle build, the [Gradle plugin](https://github.com/costajohnt/groovyfmt/tree/main/gradle-plugin) adds `groovyfmtCheck` and `groovyfmtLint` to `check`: `id 'io.github.costajohnt.groovyfmt' version '0.30.0'`.
 
 ## Usage
 
