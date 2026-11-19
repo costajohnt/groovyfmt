@@ -8,10 +8,41 @@
 //! uses are found by binary search over the positions of its name.
 
 use super::basic::{annotations, has_modifier, is_method};
-use super::{Violation, at, words};
+use super::{Rule, Violation, at, words};
 use crate::text;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
+
+pub(super) const RULES: &[Rule] = &[
+    // Unused code (src/lint/unused.rs)
+    Rule {
+        name: "UnusedPrivateField",
+        default: true,
+        description: "a private field whose name appears nowhere else in the file, nor in another file of the project that names its class (not one with an annotation, serialVersionUID, or in a class whose annotation reads fields)",
+        why: "A private field nothing reads is dead state: left over from a refactoring, or a sign that the code meant to use it doesn't. A private member used only by a DSL script run with the class as its delegate (a `DelegatingScript`, a builder) looks unused here; mark it `@SuppressWarnings('UnusedPrivateField')` (or the class, for all of them), since removing it breaks the script. A method at the top level of a `.gradle` script is also its project's, which another build script can call (`rootProject.f()`), so one whose name another `.gradle` script of the project mentions is not reported.",
+        bad: "class Client {\n    private int retries = 3\n    def get(url) { url.toURL().text }\n}",
+        good: "class Client {\n    def get(url) { url.toURL().text }\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "UnusedPrivateMethod",
+        default: true,
+        description: "a private method whose name appears nowhere else in the file (for getX/isX/setX, nor the property x), nor in another file of the project that names its class",
+        why: "A private method nothing calls is dead code that still has to be read and maintained. A private member used only by a DSL script run with the class as its delegate (a `DelegatingScript`, a builder) looks unused here; mark it `@SuppressWarnings('UnusedPrivateMethod')` (or the class, for all of them), since removing it breaks the script.",
+        bad: "class Client {\n    def get(url) { url.toURL().text }\n    private String trimmed(s) { s.trim() }\n}",
+        good: "class Client {\n    def get(url) { url.toURL().text }\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "UnusedVariable",
+        default: true,
+        description: "a local variable whose name never appears after its declaration in its block (not a script's top-level variable, `_`, `ignored`, Spock's `E e = thrown()`, an annotated one, or a `def (a, b)` tuple)",
+        why: "A variable nothing reads is dead code, or the sign of a typo: the code meant to use it and uses something else.",
+        bad: "def total(items) {\n    def count = items.size()\n    items.sum()\n}",
+        good: "def total(items) {\n    items.sum()\n}",
+        fixable: false,
+    },
+];
 
 /// The node kinds `check` looks at: declarations and scopes.
 pub(super) const KINDS: &[&str] = &[

@@ -8,11 +8,35 @@
 //! class of the same name, which one file can't show, so that rule reports but doesn't fix.
 //! Only capitalized names: Groovy resolves a lowercase class name through imports alone.
 
-use super::{Violation, at, dotted, hubitat_include, import_has, import_name, own_lines, rebound};
+use super::{
+    Rule, Violation, at, dotted, hubitat_include, import_has, import_name, own_lines, rebound,
+};
 use crate::text;
 use std::collections::HashSet;
 use std::path::Path;
 use tree_sitter::Node;
+
+pub(super) const RULES: &[Rule] = &[
+    // Imports (src/lint/imports.rs)
+    Rule {
+        name: "UnnecessaryGroovyImport",
+        default: true,
+        description: "an import from java.lang, java.util, java.io, java.net, groovy.lang or groovy.util, or of BigDecimal or BigInteger, which Groovy imports by default (not in *.gradle files)",
+        why: "Groovy imports these packages into every file, so the import is noise. It can be needed only to beat a class of the same name in the file's own package, which is why --fix leaves it to you.",
+        bad: "import java.util.concurrent.TimeUnit\nimport java.util.List\n\nList<TimeUnit> units = []",
+        good: "import java.util.concurrent.TimeUnit\n\nList<TimeUnit> units = []",
+        fixable: false,
+    },
+    Rule {
+        name: "ImportFromSamePackage",
+        default: true,
+        description: "an import of a class from the file's own package",
+        why: "Classes of the file's own package need no import: Groovy looks there right after the imports, so the line does nothing.",
+        bad: "package com.example.build\n\nimport com.example.build.Versions\n\ndef v = Versions.KOTLIN",
+        good: "package com.example.build\n\ndef v = Versions.KOTLIN",
+        fixable: true,
+    },
+];
 
 /// Packages Groovy imports into every file, and the two single classes.
 const DEFAULT_PACKAGES: &[&str] = &[

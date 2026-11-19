@@ -15,9 +15,22 @@
 //! Without a rule list a directive covers every rule. Either comment form works (`//` or
 //! `/* */`). A report is suppressed by where it starts.
 
-use super::{RULES, Violation, at};
+use super::{Rule, Violation, at};
 use crate::text;
 use tree_sitter::Node;
+
+pub(super) const RULES: &[Rule] = &[
+    // Suppressions (src/lint/suppress.rs)
+    Rule {
+        name: "UnusedSuppression",
+        default: false,
+        description: "a groovyfmt-ignore comment that suppresses nothing, or a codenarc-disable comment or @SuppressWarnings naming a groovyfmt rule it doesn't suppress (off by default: a suppression can be kept for code that comes and goes)",
+        why: "A suppression that matches nothing hides the next real report on that line, and a misspelled rule name in it suppresses nothing at all.",
+        bad: "// groovyfmt-ignore UnusedImport\nprintln 'hello'",
+        good: "import a.Unused // groovyfmt-ignore UnusedImport -- loaded for its side effect\nprintln 'hello'",
+        fixable: false,
+    },
+];
 
 /// The node kinds `apply` looks at.
 pub(super) const KINDS: &[&str] = &["line_comment", "block_comment", "annotation"];
@@ -110,7 +123,9 @@ pub(super) fn apply(src: &str, nodes: &[Node], v: &mut Vec<Violation>) {
             Rules::Some(names) => names
                 .iter()
                 .filter(|(n, used)| {
-                    !used && (d.family == Family::Groovyfmt || RULES.iter().any(|r| r.name == n))
+                    !used
+                        && (d.family == Family::Groovyfmt
+                            || super::RULES.iter().any(|r| r.name == n))
                 })
                 .map(|(n, _)| n.as_str())
                 .collect(),

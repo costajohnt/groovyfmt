@@ -7,9 +7,49 @@
 //! `WhereBlockRewriter.splitRow` does it: on every `|` and `||`, through parentheses, since
 //! Groovy's AST has none.
 
-use super::{Violation, at, has_interpolation};
+use super::{Rule, Violation, at, has_interpolation};
 use crate::text;
 use tree_sitter::Node;
+
+pub(super) const RULES: &[Rule] = &[
+    // Spock specifications (src/lint/spock.rs)
+    Rule {
+        name: "SpockBlockOrder",
+        default: true,
+        description: "feature method blocks in an order Spock rejects, or a label Spock doesn't know",
+        why: "Spock refuses to compile feature blocks out of order (`then:` without a `when:` before it), so the spec fails to build.",
+        bad: "class MathSpec extends Specification {\n    def 'adds'() {\n        then:\n        1 + 1 == 2\n    }\n}",
+        good: "class MathSpec extends Specification {\n    def 'adds'() {\n        expect:\n        1 + 1 == 2\n    }\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "SpockEmptyBlock",
+        default: false,
+        description: "an empty then: or expect: block (off by default: Spock allows it, and its own tests use empty blocks on purpose)",
+        why: "A `then:` or `expect:` block with only a description checks nothing, so the feature passes whatever happens.",
+        bad: "class MathSpec extends Specification {\n    def 'runs'() {\n        when:\n        run()\n        then: 'it does not throw'\n    }\n}",
+        good: "class MathSpec extends Specification {\n    def 'runs'() {\n        when:\n        run()\n        then: 'it does not throw'\n        noExceptionThrown()\n    }\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "SpockDataTableColumns",
+        default: true,
+        description: "a data table row with a different number of columns than the row above",
+        why: "A data table row with a missing or extra cell is a compile error, or shifts the values into the wrong variables.",
+        bad: "class MathSpec extends Specification {\n    def 'max'() {\n        expect:\n        Math.max(a, b) == c\n        where:\n        a | b | c\n        1 | 2\n    }\n}",
+        good: "class MathSpec extends Specification {\n    def 'max'() {\n        expect:\n        Math.max(a, b) == c\n        where:\n        a | b | c\n        1 | 2 | 2\n    }\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "SpockUnassertedCondition",
+        default: true,
+        description: "a comparison, a predicate call (xs.contains(x), s.startsWith(p), m.isEmpty(), ...) or a property read (x.done, xs[0].valid) in a then: or expect: block nested in an if, loop, switch, try or a .each { } (eachWithIndex, reverseEach, forEach, times) closure, which Spock never asserts",
+        why: "Spock turns only the top-level expression statements of a then: or expect: block into conditions. A comparison, a predicate call such as `xs.contains(x)` or `!m.isEmpty()`, or a property read such as `xs[0].valid`, inside `if`/`else`, a loop, a `switch` case, `try` or a closure passed to `each` is evaluated and thrown away, so the check can never fail. Write `assert` in front of it, or check a collection with `verifyEach` or `verifyAll { }` (Spock asserts conditions nested in `with { }`, `verifyAll { }`, `verifyEach` and `@Verify` helpers, so those aren't reported). Checked against Spock 2.4.",
+        bad: "class ResultSpec extends Specification {\n    def 'parses'() {\n        when:\n        def r = parse(input)\n\n        then:\n        if (valid) {\n            r.value == 42\n        }\n        r.items.each { it.size() > 0 }\n    }\n}",
+        good: "class ResultSpec extends Specification {\n    def 'parses'() {\n        when:\n        def r = parse(input)\n\n        then:\n        if (valid) {\n            assert r.value == 42\n        }\n        r.items.every { it.size() > 0 }\n    }\n}",
+        fixable: false,
+    },
+];
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum B {

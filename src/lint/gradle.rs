@@ -15,7 +15,7 @@
 //! conventions removed in 9.0, "Removal of conventions").
 
 use super::jenkins::{Call, call, statements};
-use super::{Edit, Violation, at, constant_value, has_interpolation, own_lines};
+use super::{Edit, Rule, Violation, at, constant_value, has_interpolation, own_lines};
 use crate::text;
 use std::collections::HashSet;
 use std::path::Path;
@@ -26,6 +26,82 @@ use context::Build;
 pub(crate) use context::Cache;
 #[cfg(test)]
 use context::MAX_WRAPPER_BYTES;
+
+pub(super) const RULES: &[Rule] = &[
+    // Gradle build scripts (src/lint/gradle.rs)
+    Rule {
+        name: "GradleRemovedConfiguration",
+        default: true,
+        description: "compile, runtime, testCompile or testRuntime dependencies (removed in Gradle 7.0), unless the Gradle wrapper pins an older Gradle",
+        why: "`compile`, `runtime`, `testCompile` and `testRuntime` were removed in Gradle 7.0; the build fails on a current Gradle. `--fix` renames `testCompile` to testImplementation, `runtime` to runtimeOnly and `testRuntime` to testRuntimeOnly. `compile` becomes implementation for most builds but api for a dependency a library's own API exposes, so `--fix` replaces it only with `gradle_compile_replacement = \"implementation\"` (or `\"api\"`) in the config's `[lint]` table. The new configurations come from the Java plugins, so a rename is fixed only in a file that applies one (java, java-library, groovy, scala, application, war, java-gradle-plugin or Kotlin JVM, with `apply plugin:` or in `plugins { }`); a file whose plugins come from elsewhere (a parent's allprojects, a convention plugin) is only reported, and the message says so. Where nothing shows a Java plugin may be there (neither the file nor another `.gradle` script in its directory or above it applies one or a script, and the file uses no configuration they make, such as `implementation`), a plugin from elsewhere made the configuration (gradle-hdvl's SystemVerilog plugin makes `compile` and `testCompile`), so nothing is reported. `api` comes only with the java-library plugin, so `compile` becomes api only in a file that applies it. Source: the Gradle upgrade guide for 6.x to 7.0, and the Java Library plugin chapter.",
+        bad: "plugins {\n    id 'java'\n}\ndependencies {\n    testCompile 'junit:junit:4.13.2'\n}",
+        good: "plugins {\n    id 'java'\n}\ndependencies {\n    testImplementation 'junit:junit:4.13.2'\n}",
+        fixable: true,
+    },
+    Rule {
+        name: "GradleJcenter",
+        default: true,
+        description: "the jcenter() repository (removed in Gradle 9.0)",
+        why: "JCenter is read-only and `jcenter()` was removed in Gradle 9.0. `--fix` turns a plain `jcenter()` line in a repositories block into mavenCentral(), or removes it when the block already has mavenCentral(); `jcenter { ... }` is left to you. A dependency published only to JCenter still needs another home. Source: the Gradle upgrade guides for 6.x to 7.0 and 8.x to 9.0.",
+        bad: "repositories {\n    jcenter()\n}",
+        good: "repositories {\n    mavenCentral()\n}",
+        fixable: true,
+    },
+    Rule {
+        name: "GradleLeftShiftTask",
+        default: true,
+        description: "task name << { } (removed in Gradle 5.0)",
+        why: "`task name << { }` was removed in Gradle 5.0; the build fails on a current Gradle. `--fix` writes `task name { doLast { ... } }`, keeping the action as written (`task 'name' << { }` is left to you). Source: the Gradle upgrade guide for 4.x to 5.0.",
+        bad: "task hello << {\n    println 'hello'\n}",
+        good: "task hello { doLast {\n    println 'hello'\n} }",
+        fixable: true,
+    },
+    Rule {
+        name: "GradleDynamicVersion",
+        default: false,
+        description: "a + or latest.* dependency version (off by default: a policy choice)",
+        why: "A `+` or `latest.*` version resolves to whatever is newest at build time, so the same commit can build differently tomorrow.",
+        bad: "dependencies {\n    implementation 'org.slf4j:slf4j-api:2.+'\n}",
+        good: "dependencies {\n    implementation 'org.slf4j:slf4j-api:2.0.9'\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "GradleRemovedApi",
+        default: true,
+        description: "a removed core plugin (maven, findbugs, osgi, ...), the uploadArchives task, archive task properties removed in 8.0, configurations.compile and the like, a class Groovy 4 moved out of groovy.util (XmlSlurper, XmlParser, FileNameFinder), or an org.gradle.util class Gradle 9.0 removed (VersionNumber, ...), unless the Gradle wrapper pins an older Gradle",
+        why: "These were removed from Gradle: the `maven` plugin and `uploadArchives` in 7.0 (use maven-publish), findbugs, jdepend, osgi and the announce plugins in 6.0, the `compile`, `runtime`, `testCompile` and `testRuntime` configurations in 7.0, an archive task's `archiveName`, `baseName`, `classifier`, `destinationDir`, `appendix` and `extension` in 8.0 (use archiveFileName, archiveBaseName, archiveClassifier, destinationDirectory and so on), the project's `libsDir` and `distsDir` in 7.0 (read base.libsDirectory), and the plugin conventions' project properties in 9.0, set or read (`sourceCompatibility = 11`, `println project.libsDirName`; use `java { }`, `base { }`, `application { }`), with a report's `destination`, a copy spec's `fileMode` and `dirMode`, the IDEA module's `testSourceDirs`, `exec { }` on a project or script and internal `org.gradle.util` classes such as `VersionNumber` and `DistributionLocator` (an import fails). Gradle 9.0 also runs scripts with Groovy 4, which moved `XmlSlurper`, `XmlParser` and `groovy.util.slurpersupport` to groovy.xml and `FileNameFinder` to groovy.ant (--fix adds the import). The build fails on a Gradle without them. Source: the Gradle upgrade guides for 5.x to 6.0, 6.x to 7.0, 7.x to 8.0 and 8.x to 9.0.",
+        bad: "apply plugin: 'java'\n\njar {\n    classifier = 'all'\n}",
+        good: "apply plugin: 'java'\n\njar {\n    archiveClassifier = 'all'\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "GradleSpaceAssignment",
+        default: true,
+        description: "`description 'x'`, `group 'x'` or `version 'x'` setting the project's property (at the top level or in allprojects, subprojects or project(':x')), or `description 'x'` or `group 'x'` in a task's block: Groovy DSL space assignment, deprecated in Gradle 8.12, unless the Gradle wrapper pins an older Gradle",
+        why: "Gradle 8.12 deprecated setting a property as `name value`, a method Gradle generates for each property, and Gradle 10 removes it: write `name = value`. Real methods keep working (`apply plugin: 'java'`, `id 'x' version '1'`, `implementation 'a:b:1'`), so only properties known to have no method of the name are reported, where the script's delegate is known: the project's `description`, `group` and `version`, and a task's `description` and `group`. `--fix` writes `name = value`. Source: the Gradle upgrade guide for 8.11 to 8.12 (\"Groovy space assignment syntax\").",
+        bad: "group 'org.example'\nversion '1.0'\n\ntask docs {\n    description 'Builds the docs'\n}",
+        good: "group = 'org.example'\nversion = '1.0'\n\ntask docs {\n    description = 'Builds the docs'\n}",
+        fixable: true,
+    },
+    Rule {
+        name: "GradleDependencyTuple",
+        default: false,
+        description: "a dependency in map notation, `implementation group: 'a', name: 'b', version: '1'`, with only group, name and version as plain strings (off by default: a style choice before Gradle 9.1)",
+        why: "The string `'a:b:1'` says the same in one place, and Gradle 9.1 deprecated the map (multi-string) notation, to be removed in Gradle 10. Not reported with other keys (`classifier`, `ext`, `configuration`, ...) or a value that isn't a plain string. `--fix` writes the string. Source: the Gradle upgrade guide for 9.0 to 9.1 (\"Deprecation of multi-string dependency notation\").",
+        bad: "dependencies {\n    implementation group: 'org.slf4j', name: 'slf4j-api', version: '2.0.9'\n}",
+        good: "dependencies {\n    implementation 'org.slf4j:slf4j-api:2.0.9'\n}",
+        fixable: true,
+    },
+    Rule {
+        name: "GradleDependencyParentheses",
+        default: false,
+        description: "a dependency in parentheses with no closure after it, `implementation('a:b:1')` (off by default: a style choice)",
+        why: "In the Groovy DSL `implementation 'a:b:1'` is the same call, and most build scripts write it that way. Not reported with a closure after it, over several lines, or when an argument would read differently without the parentheses. `--fix` removes them.",
+        bad: "dependencies {\n    implementation('org.slf4j:slf4j-api:2.0.9')\n}",
+        good: "dependencies {\n    implementation 'org.slf4j:slf4j-api:2.0.9'\n}",
+        fixable: true,
+    },
+];
 
 /// Removed configuration, replacement. Each but `compile` has one replacement, which
 /// `--fix` makes; `compile`'s depends on whether the library's API exposes the dependency,
