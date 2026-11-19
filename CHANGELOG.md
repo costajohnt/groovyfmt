@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Two hard links to one file in the same run are now one file: it is formatted, checked and linted once, under the first name in walk order, where both names went to different workers at once and one of them could fail with "file changed while formatting". This is unix only; on Windows std can't yet tell hard links apart. ([#272](https://github.com/costajohnt/groovyfmt/issues/272))
+
 ## 0.30.1 (2026-11-19)
 
 ### Added

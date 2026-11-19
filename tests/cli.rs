@@ -4802,3 +4802,52 @@ fn files_whose_names_are_not_utf8_share_no_baseline_key() {
         stdout(&o)
     );
 }
+
+// two names for one file are one file: formatted by one worker, reported once (#272)
+#[cfg(unix)]
+const LINKED: &str = "class A {\ndef f() {\nprintln 'x';\n}\n}\n";
+
+#[cfg(unix)]
+fn hard_linked(d: &Dir) {
+    d.write("a.groovy", LINKED);
+    let _ = std::fs::remove_file(d.0.join("b.groovy"));
+    std::fs::hard_link(d.0.join("a.groovy"), d.0.join("b.groovy")).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn hard_links_to_one_file_are_written_once() {
+    let d = Dir::new("hardlinks-write");
+    // the race was nondeterministic: a few runs
+    for _ in 0..5 {
+        hard_linked(&d);
+        let w = run(&d.0, &[], None);
+        assert_eq!(
+            (w.status.code(), stderr(&w).as_str()),
+            (Some(0), "reformatted 1 of 1 files\n")
+        );
+        assert_ne!(d.read("a.groovy"), LINKED);
+        assert_eq!(d.read("a.groovy"), d.read("b.groovy"), "still one file");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn hard_links_to_one_file_are_checked_once() {
+    let d = Dir::new("hardlinks-check");
+    hard_linked(&d);
+    let c = run(&d.0, &["--check"], None);
+    assert_eq!(c.status.code(), Some(1), "{}", stderr(&c));
+    assert_eq!(stdout(&c), "a.groovy\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn hard_links_to_one_file_are_linted_once() {
+    let d = Dir::new("hardlinks-lint");
+    hard_linked(&d);
+    let l = run(&d.0, &["--lint"], None);
+    assert_eq!(l.status.code(), Some(1), "{}", stderr(&l));
+    assert!(stdout(&l).contains("a.groovy:"), "{}", stdout(&l));
+    assert!(!stdout(&l).contains("b.groovy"), "{}", stdout(&l));
+}
