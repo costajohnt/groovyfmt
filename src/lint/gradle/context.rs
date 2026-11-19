@@ -20,31 +20,35 @@ const MAX_SCRIPT_BYTES: u64 = 4 * 1024 * 1024;
 /// The real file is a few hundred bytes.
 pub(super) const MAX_WRAPPER_BYTES: u64 = 64 * 1024;
 
-/// What a file was when it was read: a regular file, its length and its modification time.
+/// What a file was when it was read: a regular file, its length, its modification time
+/// and (on Unix) its status-change time, which a `chmod` moves too.
 /// ponytail: a rewrite to the same length within one tick of the filesystem's clock (ns on
-/// APFS, a few ms on some Linux filesystems) goes unseen until the next change or `clear`.
-type Stamp = (bool, u64, Option<SystemTime>);
+/// APFS, a few ms on some Linux filesystems), or a permission change on a system without a
+/// status-change time, goes unseen until the next change or `clear`.
+type Stamp = (bool, u64, Option<SystemTime>, Option<(i64, i64)>);
 
 /// A wrapper's Gradle version, (major, minor).
 type Version = Option<(u32, u32)>;
 
 fn stamp(p: &Path) -> Option<Stamp> {
     let m = std::fs::metadata(p).ok()?;
-    Some((m.is_file(), m.len(), m.modified().ok()))
+    #[cfg(unix)]
+    let changed = {
+        use std::os::unix::fs::MetadataExt;
+        Some((m.ctime(), m.ctime_nsec()))
+    };
+    #[cfg(not(unix))]
+    let changed = None;
+    Some((m.is_file(), m.len(), m.modified().ok(), changed))
 }
 
-/// Each wrapper file's version and each `.gradle` script's facts, by path, with the file's
-/// `Stamp` when read; an entry whose file changed since is read again.
+/// Each wrapper file's version and each `.gradle` script, by path, with the file's `Stamp`
+/// when read; an entry whose file changed since is read again. A file that can't be read
+/// isn't kept, so it is tried again the next time.
 #[derive(Default)]
 pub(crate) struct Cache {
     wrappers: Mutex<HashMap<PathBuf, (Stamp, Version)>>,
-    scripts: Mutex<HashMap<PathBuf, Arc<Entry>>>,
-}
-
-/// One script as read at `stamp`; `None` when it can't be read.
-struct Entry {
-    stamp: Stamp,
-    script: OnceLock<Option<Arc<Script>>>,
+    scripts: Mutex<HashMap<PathBuf, (Stamp, Arc<Script>)>>,
 }
 
 impl Cache {
@@ -59,32 +63,27 @@ impl Cache {
             .clear();
     }
 
-    /// The facts of the script at `p` in `dir`, read again when it changed.
+    /// The script at `p` in `dir`, read again when it changed.
     fn script(&self, p: &Path, dir: &Path) -> Option<Arc<Script>> {
         let stamp = stamp(p)?;
-        let entry = {
-            let mut map = self.scripts.lock().unwrap_or_else(|e| e.into_inner());
-            match map.get(p) {
-                Some(e) if e.stamp == stamp => e.clone(),
-                _ => {
-                    let e = Arc::new(Entry {
-                        stamp,
-                        script: OnceLock::new(),
-                    });
-                    map.insert(p.to_path_buf(), e.clone());
-                    e
-                }
-            }
+        let known = |map: &HashMap<PathBuf, (Stamp, Arc<Script>)>| {
+            map.get(p).filter(|e| e.0 == stamp).map(|e| e.1.clone())
         };
+        if let Some(s) = known(&self.scripts.lock().unwrap_or_else(|e| e.into_inner())) {
+            return Some(s);
+        }
         // a change between the stat and the read leaves a stamp that the next stat misses
-        entry
-            .script
-            .get_or_init(|| Script::read(p, dir).map(Arc::new))
-            .clone()
+        let read = Arc::new(Script::read(p, dir)?);
+        let mut map = self.scripts.lock().unwrap_or_else(|e| e.into_inner());
+        // another thread read it meanwhile: its copy, which may be parsed already
+        Some(known(&map).unwrap_or_else(|| {
+            map.insert(p.to_path_buf(), (stamp, read.clone()));
+            read
+        }))
     }
 
     /// The version in the wrapper file `props`, read again when it changed.
-    fn wrapper(&self, props: &Path) -> Option<(u32, u32)> {
+    fn wrapper(&self, props: &Path) -> Version {
         let stamp = stamp(props)?;
         let mut map = self.wrappers.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((s, v)) = map.get(props)
@@ -92,62 +91,111 @@ impl Cache {
         {
             return *v;
         }
-        let v = read_version(props);
+        let v = version(&read_small(props, MAX_WRAPPER_BYTES)?);
         map.insert(props.to_path_buf(), (stamp, v));
         v
     }
 }
 
-/// What a nearby `.gradle` script tells the one linted.
+/// A nearby `.gradle` script, parsed and each fact found the first time a rule asks.
 struct Script {
-    /// the names it makes extra properties of
-    ext: HashSet<String>,
+    src: String,
+    dir: PathBuf,
+    tree: OnceLock<tree_sitter::Tree>,
     /// whether it may apply a Java plugin (`may_apply_java`)
-    java: bool,
+    java: OnceLock<bool>,
+    /// the names it makes extra properties of
+    ext: OnceLock<HashSet<String>>,
     /// the configurations it makes anywhere, for a script it applies with `apply from:`
-    declared: HashSet<String>,
+    declared: OnceLock<HashSet<String>>,
     /// the ones it makes in `allprojects { }` or `subprojects { }`, for the others
-    for_projects: HashSet<String>,
+    for_projects: OnceLock<HashSet<String>>,
     /// the scripts it applies with `apply from:`, relative to its directory as written
-    applies: Vec<PathBuf>,
+    applies: OnceLock<Vec<PathBuf>>,
 }
 
 impl Script {
     fn read(path: &Path, dir: &Path) -> Option<Script> {
-        let src = read_small(path, MAX_SCRIPT_BYTES)?;
-        let src = src.as_str();
-        let tree = crate::parse(src);
-        let root = tree.root_node();
-        let (mut java, mut declared, mut for_projects, mut applies) =
-            (false, HashSet::new(), HashSet::new(), Vec::new());
-        let mut names = HashSet::new();
-        crate::preorder(root, |n| {
-            convention(src, n, &mut Vec::new(), &mut names);
-            java |= may_apply_java(src, n);
-            applies.extend(apply_argument(src, n, "from").map(|t| dir.join(t)));
-            declares(src, n, &mut declared);
-            true
-        });
-        crate::preorder(root, |n| match call(n, src) {
-            Some(Call {
-                name: "allprojects" | "subprojects",
-                body: Some(b),
-                ..
-            }) => {
-                crate::preorder(b, |x| {
-                    declares(src, x, &mut for_projects);
-                    true
-                });
-                false
-            }
-            _ => true,
-        });
         Some(Script {
-            ext: names.into_iter().map(str::to_string).collect(),
-            java,
-            declared,
-            for_projects,
-            applies,
+            src: read_small(path, MAX_SCRIPT_BYTES)?,
+            dir: dir.to_path_buf(),
+            tree: OnceLock::new(),
+            java: OnceLock::new(),
+            ext: OnceLock::new(),
+            declared: OnceLock::new(),
+            for_projects: OnceLock::new(),
+            applies: OnceLock::new(),
+        })
+    }
+
+    fn root(&self) -> tree_sitter::Node<'_> {
+        self.tree
+            .get_or_init(|| crate::parse(&self.src))
+            .root_node()
+    }
+
+    fn java(&self) -> bool {
+        *self.java.get_or_init(|| {
+            let (src, mut java) = (self.src.as_str(), false);
+            crate::preorder(self.root(), |n| {
+                java |= may_apply_java(src, n);
+                !java
+            });
+            java
+        })
+    }
+
+    fn ext(&self) -> &HashSet<String> {
+        self.ext.get_or_init(|| {
+            let (src, mut names) = (self.src.as_str(), HashSet::new());
+            crate::preorder(self.root(), |n| {
+                convention(src, n, &mut Vec::new(), &mut names);
+                true
+            });
+            names.into_iter().map(str::to_string).collect()
+        })
+    }
+
+    fn applies(&self) -> &[PathBuf] {
+        self.applies.get_or_init(|| {
+            let (src, mut applies) = (self.src.as_str(), Vec::new());
+            crate::preorder(self.root(), |n| {
+                applies.extend(apply_argument(src, n, "from").map(|t| self.dir.join(t)));
+                true
+            });
+            applies
+        })
+    }
+
+    fn declared(&self) -> &HashSet<String> {
+        self.declared.get_or_init(|| {
+            let (src, mut declared) = (self.src.as_str(), HashSet::new());
+            crate::preorder(self.root(), |n| {
+                declares(src, n, &mut declared);
+                true
+            });
+            declared
+        })
+    }
+
+    fn for_projects(&self) -> &HashSet<String> {
+        self.for_projects.get_or_init(|| {
+            let (src, mut declared) = (self.src.as_str(), HashSet::new());
+            crate::preorder(self.root(), |n| match call(n, src) {
+                Some(Call {
+                    name: "allprojects" | "subprojects",
+                    body: Some(b),
+                    ..
+                }) => {
+                    crate::preorder(b, |x| {
+                        declares(src, x, &mut declared);
+                        true
+                    });
+                    false
+                }
+                _ => true,
+            });
+            declared
         })
     }
 }
@@ -260,13 +308,13 @@ impl<'a> Build<'a> {
                     // the `apply from:` target must be a plain path to this script relative
                     // to the applying one's directory: a URL, an interpolated name or a
                     // missing file applies nothing here
-                    if s.applies
+                    if s.applies()
                         .iter()
                         .any(|t| t.canonicalize().is_ok_and(|t| t == n.me))
                     {
-                        declared.extend(s.declared.iter().cloned());
+                        declared.extend(s.declared().iter().cloned());
                     } else {
-                        declared.extend(s.for_projects.iter().cloned());
+                        declared.extend(s.for_projects().iter().cloned());
                     }
                 }
             }
@@ -283,7 +331,7 @@ impl<'a> Build<'a> {
     /// that does.
     pub(super) fn jvm_plugin_nearby(&self) -> bool {
         self.nearby()
-            .is_none_or(|n| n.scripts.iter().any(|s| s.java))
+            .is_none_or(|n| n.scripts.iter().any(|s| s.java()))
     }
 
     /// The names the nearby scripts (the ones in the directories above, which may configure
@@ -293,7 +341,7 @@ impl<'a> Build<'a> {
             let mut names = HashSet::new();
             if let Some(n) = self.nearby() {
                 for s in &n.scripts {
-                    names.extend(s.ext.iter().cloned());
+                    names.extend(s.ext().iter().cloned());
                 }
             }
             names

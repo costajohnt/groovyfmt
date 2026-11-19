@@ -1053,6 +1053,25 @@ fn gradle_files_changed_on_disk_are_read_again() {
         "subprojects {\n    configurations { testCompile }\n}\n",
     );
     assert_eq!(change(&mut srv), Vec::<String>::new());
+    // a root script that can't be read declares nothing, and counts again once it can be
+    // (not as root, which reads it anyway)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let root = d.0.join("build.gradle");
+        let mode = |m: u32| {
+            // past a coarse filesystem clock's tick, so the status-change time moves
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(m)).unwrap();
+        };
+        mode(0o000);
+        if std::fs::read(&root).is_err() {
+            assert_eq!(change(&mut srv), reported);
+            mode(0o644);
+            assert_eq!(change(&mut srv), Vec::<String>::new());
+        }
+        mode(0o644);
+    }
     d.write("build.gradle", "");
     assert_eq!(change(&mut srv), reported);
     srv.notify("exit", "null");
