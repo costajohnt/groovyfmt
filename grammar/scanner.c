@@ -1672,6 +1672,15 @@ bool tree_sitter_groovy_external_scanner_scan(
     if (newline && !stray && !valid_symbols[LINE_BREAK] && !valid_symbols[ERROR_SENTINEL]) {
         if (lexer->lookahead == '[' && valid_symbols[SUBSCRIPT_OPEN]) {
             advance(lexer);
+            lexer->mark_end(lexer);
+            // Not an empty `[]`, which would make an array type of a dotted name on
+            // the line before: a Spock row `a | X.Y` then `[] | b`.
+            while (lexer->lookahead == ' ' || lexer->lookahead == '\t') {
+                advance(lexer);
+            }
+            if (lexer->lookahead == ']') {
+                return false;
+            }
             lexer->result_symbol = SUBSCRIPT_OPEN;
             return true;
         }
