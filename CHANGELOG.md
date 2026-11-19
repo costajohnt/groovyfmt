@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `in` and `as` in a parenthesized command call's argument now parse the way Groovy 3 and 4 read them: `(a b in l)` is `a(b in l)` and `if (a b as int)` is `a(b as int)`, where groovyfmt read `a(b).in(l)` and `a(b).as(int)`. Formatting output was unaffected, but lint rules saw the wrong tree. ([#261](https://github.com/costajohnt/groovyfmt/issues/261))
+
 ## 0.30.0 (2026-11-19)
 
 ### Added
