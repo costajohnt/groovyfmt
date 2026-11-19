@@ -502,7 +502,7 @@ static bool bracket_then_colon(TSLexer *lexer) {
             depth++;
         } else if (c == ']' || c == ')' || c == '}') {
             if (--depth == 0) {
-                if (c == '}' || (c == ')' && !chain)) {
+                if (c != ']' && !chain) {
                     return false;
                 }
                 chain = true;
@@ -523,11 +523,16 @@ static bool bracket_then_colon(TSLexer *lexer) {
                     while (is_ident_part(lexer->lookahead)) {
                         advance(lexer);
                     }
+                    // a closure argument: `.findAll { it }`
+                    while (lexer->lookahead == ' ' || lexer->lookahead == '\t') {
+                        advance(lexer);
+                    }
                 }
-                if (lexer->lookahead == '(' || lexer->lookahead == '[') {
+                if (lexer->lookahead == '(' || lexer->lookahead == '[' || lexer->lookahead == '{') {
                     continue;
                 }
-                while (lexer->lookahead == ' ' || lexer->lookahead == '\t') {
+                // the `:` may start the next line: `c` then `?[x]` then `:y`
+                while (is_whitespace(lexer->lookahead)) {
                     advance(lexer);
                 }
                 if (lexer->lookahead != ':') {
@@ -1319,6 +1324,20 @@ bool tree_sitter_groovy_external_scanner_scan(
                 lexer->mark_end(lexer);
                 lexer->result_symbol = LINE_BREAK;
                 return true;
+            }
+            // `c` then `?[x]` then `:y`, the ternary of Groovy 2.4 and 3 over lines;
+            // no statement starts with `?`
+            if (lexer->lookahead == '?') {
+                if (!valid_symbols[TERNARY_QUESTION] || valid_symbols[EXPRESSION_COLON]) {
+                    return false;
+                }
+                advance(lexer);
+                lexer->mark_end(lexer);
+                if (lexer->lookahead == '[' && bracket_then_colon(lexer)) {
+                    lexer->result_symbol = TERNARY_QUESTION;
+                    return true;
+                }
+                return false;
             }
             if (is_ident_start(lexer->lookahead)) {
                 lexer->mark_end(lexer);

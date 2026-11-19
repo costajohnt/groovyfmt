@@ -12,6 +12,10 @@ foo a::b, 1
 
 def s = $/a//$
 def f = a?[b].d():c
+def fqs = params.fq?[params.fq].flatten().findAll { it != null }:null
+config.stashContent = config.testRepository
+    ?[GitUtils.handleTestRepository(this, config)]
+    :utils.unstashAll(config.stashContent)
 
 List<String> a, b = null
 Map<String, Integer> m, n = [:]
