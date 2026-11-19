@@ -14,7 +14,7 @@
   - a dollar-slashy string ending in a slash: `$/a//$` (the value `a/`);
   - the Groovy 2.4 and 3 ternary whose first branch is a list with a call or property after it, `a?[b].c():d` (Groovy 4 code reads `?[` as a safe index as before);
   - a generic or array typed declaration with a value on a later name: `List<String> a, b = null`;
-  - a command call as an `if` or `while` condition: `if (a.b c[0])`, `while (a.b c)`;
+  - a command call with one plain or subscripted argument as an `if` or `while` condition: `if (a.b c[0])`, `while (a.b c)`;
   - `in` as a local variable's name: `final InputStream in` then `in = x`;
   - an empty index on `null` or a number: `return null[]`;
   - a quoted annotation member name with a default: `String[] 'default'() default []`;
