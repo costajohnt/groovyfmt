@@ -47,6 +47,7 @@ enum TokenType {
     COMMAND_KEYWORD_ARGUMENT,
     DIMENSION_ANNOTATION_START,
     COMMAND_OPERAND,
+    PAREN_COMMAND_START,
     ERROR_SENTINEL,
 };
 
@@ -150,6 +151,39 @@ static bool finish_command_operand(TSLexer *lexer) {
     }
     lexer->result_symbol = COMMAND_OPERAND;
     return true;
+}
+
+// `_paren_command_start`, with the lexer just past a parenthesized command's
+// first name (and the spaces after it when `spaced`): whether an index or a
+// binary operator continues the name into an expression argument. `?.`, `->`,
+// a comment, `=` alone, `in` and `as` don't; neither do `.`, `?` and `<`
+// right after the name, which the callers' other branches read.
+static bool paren_argument_continues(TSLexer *lexer, bool spaced) {
+    int32_t c = lexer->lookahead;
+    if (c == '[' || c == '+' || c == '*' || c == '%' || c == '&' || c == '|' || c == '^'
+        || c == '>') {
+        return true;
+    }
+    if (spaced && c == '<') {
+        return true;
+    }
+    if (c == '-' || c == '=' || c == '!' || c == '/' || (spaced && c == '?')) {
+        lexer->advance(lexer, false);
+        int32_t n = lexer->lookahead;
+        switch (c) {
+            case '-': return n != '>';
+            case '=': return n == '=' || n == '~';
+            case '!': return n == '=' || n == 'i';
+            case '/': return n != '/' && n != '*';
+            default: return n != '.';
+        }
+    }
+    if (spaced && c == 'i') {
+        char word[12];
+        unsigned len = read_word(lexer, word, sizeof(word));
+        return len == 10 && memcmp(word, "instanceof", 10) == 0;
+    }
+    return false;
 }
 
 // The rest of `scan_command_named_key`, once the identifier is read.
@@ -1116,6 +1150,26 @@ bool tree_sitter_groovy_external_scanner_scan(
                 lexer->mark_end(lexer);
                 lexer->result_symbol = COMMAND_KEYWORD_ARGUMENT;
                 return true;
+            }
+            // `if (a.b c[0] - n)`: in a parenthesized command, a name an index or a
+            // binary operator follows starts an expression argument (Groovy 3 and
+            // 4). Past spaces this decides: a key there, `(f a : 1)`, is left to
+            // the grammar, as is a name argument, `(a b)` or `(String s) ->`.
+            if (valid_symbols[PAREN_COMMAND_START] && is_name_argument(word, len)) {
+                bool spaced = lexer->lookahead == ' ' || lexer->lookahead == '\t';
+                int32_t n = lexer->lookahead;
+                if (spaced || n == '[' || n == '+' || n == '-' || n == '*' || n == '%'
+                    || n == '&' || n == '|' || n == '^' || n == '>' || n == '=' || n == '!'
+                    || n == '/') {
+                    while (lexer->lookahead == ' ' || lexer->lookahead == '\t') {
+                        advance(lexer);
+                    }
+                    if (!paren_argument_continues(lexer, spaced)) {
+                        return false;
+                    }
+                    lexer->result_symbol = PAREN_COMMAND_START;
+                    return true;
+                }
             }
             // `tag List<String>`: a generic type as the argument (Groovy 3
             // and 4), since a declared name takes no type arguments.
