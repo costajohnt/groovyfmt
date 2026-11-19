@@ -1,18 +1,43 @@
+//! groovyfmt, a formatter and linter for Groovy, Gradle build scripts and Jenkinsfiles.
+//!
+//! The `groovyfmt` binary is the only supported interface. The modules here are public only
+//! so the binary can use them; they are hidden from the docs and may change in any release.
+
+#[doc(hidden)]
 pub mod baseline;
+#[doc(hidden)]
 pub mod codenarc;
 mod codenarc_data;
+#[doc(hidden)]
 pub mod config;
+#[doc(hidden)]
 pub mod diff;
 #[doc(hidden)]
 pub mod equiv;
+#[doc(hidden)]
+pub mod fileio;
+#[doc(hidden)]
 pub mod fix;
+#[doc(hidden)]
 pub mod format;
+#[doc(hidden)]
+pub mod git;
+#[doc(hidden)]
 pub mod json;
+#[doc(hidden)]
 pub mod lint;
+#[doc(hidden)]
 pub mod lsp;
+#[doc(hidden)]
+pub mod output;
+#[doc(hidden)]
 pub mod report;
 mod spacing;
+#[doc(hidden)]
 pub mod syntax;
+#[doc(hidden)]
+pub mod walk;
+#[doc(hidden)]
 pub mod wrap;
 
 use std::path::Path;
