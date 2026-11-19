@@ -54,7 +54,8 @@
 //! checks the final text again (tokens and tree shape, on the last pass's parse of it). If
 //! anything fails, the file is formatted without wrapping instead.
 
-use crate::format::{Style, shape};
+use crate::equiv::{has_shape, shape};
+use crate::format::Style;
 use crate::spacing::{is_atom, lopsided};
 use std::cell::RefCell;
 use tree_sitter::{Node, Tree};
@@ -281,14 +282,14 @@ fn passes(
         return Err("nesting too deep to wrap");
     }
     let src_at = atoms(tree);
-    let want = shape(tree);
+    let want = shape(tree, &[]);
     let eols = eols(src);
     let mut breaks = vec![false; src_at.len()];
     // `base` was parsed already, to check the formatting; each pass parses its text again
     let mut cur = base.to_string();
     let mut ct = base_tree.clone();
     for pass in 0..=MAX_PASSES {
-        if !same_shape(&ct, &want) {
+        if !has_shape(&ct, &want) {
             return Err(if pass == 0 {
                 "formatting changed the parse"
             } else {
@@ -326,25 +327,13 @@ fn passes(
         }
         let text = insert(src, &src_at, &breaks, &eols);
         let tt = crate::parse(&text);
-        if !same_shape(&tt, &want) {
+        if !has_shape(&tt, &want) {
             return Err("a line break changed the parse");
         }
         cur = fmt(&text, &tt)?;
         ct = crate::parse(&cur);
     }
     Err("wrapping did not settle")
-}
-
-/// Whether `t` parsed cleanly to `want`, a `shape`, without building its own.
-fn same_shape(t: &Tree, want: &[(u16, usize)]) -> bool {
-    let mut i = 0;
-    let mut same = !t.root_node().has_error();
-    crate::preorder(t.root_node(), |n| {
-        same &= want.get(i) == Some(&(n.kind_id(), n.child_count()));
-        i += 1;
-        same
-    });
-    same && i == want.len()
 }
 
 /// Trees nested deeper than this aren't wrapped. Each pass parses the file again, and

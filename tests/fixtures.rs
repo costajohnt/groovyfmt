@@ -2,7 +2,8 @@
 //! only, never skips these files, and a second pass changes nothing. Checked on each fixture
 //! as written and on a copy with every line's indent scrambled, at three styles.
 
-use groovyfmt::format::{Outcome, Style, format, shape, tokens};
+use groovyfmt::equiv::{shape, tokens};
+use groovyfmt::format::{Outcome, Style, format};
 
 fn no_space(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
@@ -12,7 +13,7 @@ fn no_space(s: &str) -> String {
 /// without trailing whitespace), and parse to the same tree shape.
 fn same_code(a: &str, b: &str) -> bool {
     let (ta, tb) = (groovyfmt::parse(a), groovyfmt::parse(b));
-    tokens(a, &ta) == tokens(b, &tb) && shape(&ta) == shape(&tb)
+    tokens(a, &ta, &[], true) == tokens(b, &tb, &[], true) && shape(&ta, &[]) == shape(&tb, &[])
 }
 
 /// Every line's leading whitespace replaced by a varying run of spaces and tabs. With
@@ -32,7 +33,7 @@ fn scramble(src: &str, code_only: bool) -> String {
             true
         });
         kept.extend(
-            groovyfmt::diff::off_lines(src)
+            groovyfmt::format::off_lines(src)
                 .into_iter()
                 .map(|(a, b)| (a - 1, b.saturating_sub(1))),
         );

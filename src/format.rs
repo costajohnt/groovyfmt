@@ -3,8 +3,12 @@
 //! the output is re-parsed and its token stream compared against the input's before it is
 //! accepted, so a wrong heuristic below yields `Skipped`, never a corrupted file.
 
+use crate::equiv::whitespace_only;
 use crate::text;
 use tree_sitter::{Node, Tree, TreeCursor};
+
+mod range;
+pub use range::{format_lines, off_lines};
 
 #[derive(Debug, PartialEq)]
 pub enum Outcome {
@@ -73,13 +77,13 @@ impl Style {
 }
 
 /// Format `src`. Lines between `// groovyfmt: off` and `// groovyfmt: on` stay as they are
-/// (see `diff::off_lines`), which formats the rest as `--lines` does.
+/// (see `off_lines`), which formats the rest as `--lines` does.
 pub fn format(src: &str, style: &Style) -> Outcome {
     lone_cr(src, |src| {
-        if crate::diff::off_lines(src).is_empty() {
+        if off_lines(src).is_empty() {
             format_with(src, style, None, reindent)
         } else {
-            crate::diff::format_lines(src, style, &[(1, usize::MAX)])
+            format_lines(src, style, &[(1, usize::MAX)])
         }
     })
 }
@@ -87,7 +91,7 @@ pub fn format(src: &str, style: &Style) -> Outcome {
 /// `f(src)`, but a file with classic Mac line endings (a lone `\r`, no `\n`) is formatted
 /// as `\n` and kept as `\r`, so its lines are lines to every entry point (`format`,
 /// `--lines`, LSP range formatting).
-pub(crate) fn lone_cr(src: &str, f: impl FnOnce(&str) -> Outcome) -> Outcome {
+fn lone_cr(src: &str, f: impl FnOnce(&str) -> Outcome) -> Outcome {
     if !(src.contains('\r') && !src.contains('\n')) {
         return f(src);
     }
@@ -99,7 +103,7 @@ pub(crate) fn lone_cr(src: &str, f: impl FnOnce(&str) -> Outcome) -> Outcome {
 
 /// `format`, ignoring `groovyfmt: off` comments, and wrapping (with `max_line_length`) only
 /// the source lines in `rows` (1-based, inclusive), for `--lines`.
-pub(crate) fn format_rows(src: &str, style: &Style, rows: &[(usize, usize)]) -> Outcome {
+fn format_rows(src: &str, style: &Style, rows: &[(usize, usize)]) -> Outcome {
     format_with(src, style, Some(rows), reindent)
 }
 
@@ -155,10 +159,7 @@ fn unwrapped(
         return Ok((out, tree.clone(), *style));
     }
     let out_tree = crate::parse(&out);
-    if out_tree.root_node().has_error()
-        || tokens(src, tree) != tokens(&out, &out_tree)
-        || (style.normalize_spacing && shape(tree) != shape(&out_tree))
-    {
+    if !whitespace_only((src, tree), (&out, &out_tree), style.normalize_spacing) {
         if style.normalize_spacing {
             // spacing changed how the code parses: format the file without it
             let plain = Style {
@@ -192,26 +193,11 @@ fn wrapped(
     if w == out {
         return out;
     }
-    if wt.root_node().has_error()
-        || tokens(src, tree) != tokens(&w, &wt)
-        || shape(tree) != shape(&wt)
-    {
+    if !whitespace_only((src, tree), (&w, &wt), true) {
         crate::wrap::set_fallback("wrapped text failed the token or tree check");
         return out;
     }
     w
-}
-
-/// Every node's kind and number of children, in document order: equal for two trees of
-/// the same shape. Spacing can keep the tokens and still change the parse (`a [1]`).
-#[doc(hidden)]
-pub fn shape(tree: &Tree) -> Vec<(u16, usize)> {
-    let mut v = Vec::new();
-    crate::preorder(tree.root_node(), |n| {
-        v.push((n.kind_id(), n.child_count()));
-        true
-    });
-    v
 }
 
 /// Indents beyond this many columns mean pathological nesting (generated or hostile input).
@@ -591,37 +577,6 @@ fn last_operand(n: Node, parent: Node) -> bool {
             .any(|f| parent.child_by_field_name(f) == Some(n))
 }
 
-/// Leaf tokens as (kind, text). Only comments are compared without trailing whitespace,
-/// since stripping it from a line comment is a legitimate change; any other leaf, string
-/// fragments included, must match exactly.
-#[doc(hidden)]
-pub fn tokens<'a>(src: &'a str, tree: &Tree) -> Vec<(u16, &'a str)> {
-    let mut v = Vec::new();
-    let mut c = tree.walk();
-    'outer: loop {
-        let n = c.node();
-        if n.child_count() == 0 {
-            let t = text(n, src);
-            v.push((
-                n.kind_id(),
-                if n.kind().contains("comment") {
-                    t.trim_end()
-                } else {
-                    t
-                },
-            ));
-        } else if c.goto_first_child() {
-            continue;
-        }
-        while !c.goto_next_sibling() {
-            if !c.goto_parent() {
-                break 'outer;
-            }
-        }
-    }
-    v
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -813,7 +768,7 @@ mod tests {
         // the safety net that turns a formatter bug into Skipped instead of a changed file
         let toks = |s: &str| {
             let t = crate::parse(s);
-            tokens(s, &t)
+            crate::equiv::tokens(s, &t, &[], true)
                 .into_iter()
                 .map(|(k, x)| (k, x.to_string()))
                 .collect::<Vec<_>>()
