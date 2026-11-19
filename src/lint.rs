@@ -844,8 +844,9 @@ pub fn opt_in_fixes(vs: &mut [Violation], src: &str, compile: Option<&str>) {
     }
 }
 
-/// `lint_with`, then `opt_in_fixes`: every violation, enabled or not. What `fix` checks its
-/// edits against; `run` adds the config's and the project's filters.
+/// `lint_with`, then `opt_in_fixes`: every violation, enabled or not, judged without the
+/// project's Spock base classes. What `fix` checks its edits against; `run` adds the
+/// config's and the project's filters.
 pub fn lint_opt_in(
     path: &Path,
     src: &str,
