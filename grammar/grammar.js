@@ -805,6 +805,13 @@ module.exports = grammar({
       $.field_access,
       $.method_invocation,
       $.subscript_expression,
+      // `areEqualSets games*.name, [a]`, `foo q.@b, 1`, `foo a.&b, 1`, `foo a::b, 1`
+      $.spread_dot_expression,
+      $.direct_field_access_expression,
+      $.method_pointer_expression,
+      $.method_reference_expression,
+      $.safe_chain_dot_expression,
+      $.safe_subscript_expression,
       // `shouldFail foo + 'x', msg`, `assertTrue x instanceof Y, msg`,
       // `json.authors authors as Author[], { }`
       $.binary_expression,
@@ -923,7 +930,11 @@ module.exports = grammar({
     while_statement: $ => seq(
       'while',
       '(',
-      field('condition', $._expression),
+      // also a command call (Groovy 3 and 4): `while (a.b c)`
+      field('condition', choice(
+        $._expression,
+        alias($._parenthesized_command, $.command_chain),
+      )),
       ')',
       field('body', choice($.block, $._statement, ';')),
     ),
@@ -1298,7 +1309,8 @@ module.exports = grammar({
       repeat($.annotation),
       repeat($._modifier),
       field('return_type', $._type),
-      field('name', $.identifier),
+      // also a quoted name (Groovy 3 and 4): `String[] 'default'() default []`
+      field('name', choice($.identifier, alias($.string_literal, $.quoted_identifier))),
       field('parameters', alias($._empty_parameters, $.formal_parameters)),
       'default',
       field('default', choice(
@@ -1724,7 +1736,8 @@ module.exports = grammar({
         optional('final'),
         field('type', choice($.generic_type, $.array_type)),
         alias($._bare_declarator, $.variable_declarator),
-        repeat(seq(',', alias($._bare_declarator, $.variable_declarator))),
+        // a later one may take a value: `List<String> a, b = null`
+        repeat(seq(',', $.variable_declarator)),
       )),
       // prec.dynamic: `String t = z` is one declaration, not `String` and
       // `t = z` (statements need no separator in this grammar).
@@ -1827,7 +1840,8 @@ module.exports = grammar({
       field('value', $._value),
     ),
 
-    _bare_declarator: $ => seq(field('name', $.identifier)),
+    // `in` too, after a type: `final InputStream in` (Groovy 3 and 4).
+    _bare_declarator: $ => seq(field('name', choice($.identifier, alias('in', $.identifier)))),
 
     variable_declarator: $ => seq(
       field('name', $.identifier),
@@ -2800,7 +2814,8 @@ module.exports = grammar({
     // `x[]` stays an array type. A string takes one too: `"x"[]` is
     // `"x"[[]]`.
     _empty_list_subscript: $ => seq(
-      field('object', choice($.list_literal, $.string_literal)),
+      // and a null or a number: `null[]`, `1[]` (they throw at run time)
+      field('object', choice($.list_literal, $.string_literal, $.null_literal, $.number_literal)),
       alias($._subscript_open, '['),
       ']',
     ),
@@ -3220,6 +3235,8 @@ module.exports = grammar({
             field('argument', $.identifier),
             // `if (valueOf findProperty(s, 'x'))`
             field('argument', alias($._name_call, $.method_invocation)),
+            // `if (a.b c[0])` is `a.b(c[0])`
+            field('argument', alias($._name_subscript, $.subscript_expression)),
           ),
           repeat($._command_later_argument),
           // `(page.optionList 0 isEmpty())`: a call chained after the argument,
@@ -3241,6 +3258,14 @@ module.exports = grammar({
       ),
       // also a quoted one: `("a" 1 "b")` is `a(1).b`
       optional(choice($.identifier, $.string_literal)),
+    ),
+
+    _name_subscript: $ => seq(
+      field('object', $.identifier),
+      alias($._subscript_open, '['),
+      field('index', $._subscript_index),
+      repeat(seq(',', field('index', $._subscript_index))),
+      ']',
     ),
 
     _parenthesized_command_link: $ => choice(
@@ -3444,12 +3469,14 @@ module.exports = grammar({
     _dollar_slashy_string: $ => seq(
       '$/',
       repeat(gstringPart($, $._dollar_slashy_text)),
-      token.immediate('/$'),
+      // A `/` before the `/$` is text: `$/a//$` is `a/`. The text can't hold
+      // that `/` without lookahead, so the closer takes the run of slashes.
+      alias(token.immediate(/\/+\$/), '/$'),
     ),
 
     _dollar_slashy_text: _ => token.immediate(repeat1(choice(
       /[^/$]/,
-      /\/[^$]/,
+      /\/+[^/$]/,
       /\$\$/,
       /\$\//,
     ))),

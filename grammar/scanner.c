@@ -491,8 +491,10 @@ static bool skip_whitespace_and_continuations(TSLexer *lexer, bool *stray) {
 
 // At a `[`: true when a balanced `[…]` (brackets, braces and parentheses
 // nested; quoted strings skipped) is followed on its line by `:` but not `::`.
+// A call or property chain may come between: `a?[b].c():d`.
 static bool bracket_then_colon(TSLexer *lexer) {
     unsigned depth = 0;
+    bool chain = false;
     for (unsigned steps = 0; steps < 4000 && !lexer->eof(lexer); steps++) {
         int32_t c = lexer->lookahead;
         advance(lexer);
@@ -500,10 +502,37 @@ static bool bracket_then_colon(TSLexer *lexer) {
             depth++;
         } else if (c == ']' || c == ')' || c == '}') {
             if (--depth == 0) {
-                if (c != ']') {
+                if (c != ']' && !chain) {
                     return false;
                 }
-                while (lexer->lookahead == ' ' || lexer->lookahead == '\t') {
+                chain = true;
+                for (;;) {
+                    if (lexer->lookahead == '?' || lexer->lookahead == '*') {
+                        advance(lexer);
+                        if (lexer->lookahead != '.') {
+                            return false;
+                        }
+                    }
+                    if (lexer->lookahead != '.') {
+                        break;
+                    }
+                    advance(lexer);
+                    if (!is_ident_start(lexer->lookahead)) {
+                        return false;
+                    }
+                    while (is_ident_part(lexer->lookahead)) {
+                        advance(lexer);
+                    }
+                    // a closure argument: `.findAll { it }`
+                    while (lexer->lookahead == ' ' || lexer->lookahead == '\t') {
+                        advance(lexer);
+                    }
+                }
+                if (lexer->lookahead == '(' || lexer->lookahead == '[' || lexer->lookahead == '{') {
+                    continue;
+                }
+                // the `:` may start the next line: `c` then `?[x]` then `:y`
+                while (is_whitespace(lexer->lookahead)) {
                     advance(lexer);
                 }
                 if (lexer->lookahead != ':') {
@@ -1196,6 +1225,7 @@ bool tree_sitter_groovy_external_scanner_scan(
             if (lexer->lookahead == ' ' || lexer->lookahead == '\t'
                 || (!valid_symbols[LINE_BREAK]
                     && (lexer->lookahead == '\n' || lexer->lookahead == '\r'))) {
+                newline |= lexer->lookahead == '\n' || lexer->lookahead == '\r';
                 lexer->advance(lexer, true);
             } else if (lexer->lookahead == '\\') {
                 lexer->advance(lexer, true);
@@ -1294,6 +1324,20 @@ bool tree_sitter_groovy_external_scanner_scan(
                 lexer->mark_end(lexer);
                 lexer->result_symbol = LINE_BREAK;
                 return true;
+            }
+            // `c` then `?[x]` then `:y`, the ternary of Groovy 2.4 and 3 over lines;
+            // no statement starts with `?`
+            if (lexer->lookahead == '?') {
+                if (!valid_symbols[TERNARY_QUESTION] || valid_symbols[EXPRESSION_COLON]) {
+                    return false;
+                }
+                advance(lexer);
+                lexer->mark_end(lexer);
+                if (lexer->lookahead == '[' && bracket_then_colon(lexer)) {
+                    lexer->result_symbol = TERNARY_QUESTION;
+                    return true;
+                }
+                return false;
             }
             if (is_ident_start(lexer->lookahead)) {
                 lexer->mark_end(lexer);
@@ -1621,6 +1665,31 @@ bool tree_sitter_groovy_external_scanner_scan(
         lexer->result_symbol = LINE_COMMENT;
         return true;
     }
+    // SPECIFICATION.md §5.10 — where no statement may end, inside `( … )` or
+    // `[ … ]`, a line break is whitespace, so a `[` or `(` on the next line
+    // still indexes or calls, as in Groovy 2.4, 3 and 4: `f(a.x` then `[0])`,
+    // `f(1, Math.max` then `(2, 3))`, `[ []` then `[1] ]` (`[][[1]]`).
+    if (newline && !stray && !valid_symbols[LINE_BREAK] && !valid_symbols[ERROR_SENTINEL]) {
+        if (lexer->lookahead == '[' && valid_symbols[SUBSCRIPT_OPEN]) {
+            advance(lexer);
+            lexer->mark_end(lexer);
+            // Not an empty `[]`, which would make an array type of a dotted name on
+            // the line before: a Spock row `a | X.Y` then `[] | b`.
+            while (lexer->lookahead == ' ' || lexer->lookahead == '\t') {
+                advance(lexer);
+            }
+            if (lexer->lookahead == ']') {
+                return false;
+            }
+            lexer->result_symbol = SUBSCRIPT_OPEN;
+            return true;
+        }
+        if (lexer->lookahead == '(' && valid_symbols[CALL_OPEN]) {
+            advance(lexer);
+            lexer->result_symbol = CALL_OPEN;
+            return true;
+        }
+    }
     if (stray || lexer->lookahead != '/') {
         return false;
     }
@@ -1753,6 +1822,7 @@ bool tree_sitter_groovy_external_scanner_scan(
     // not call `mark_end` again.
     lexer->mark_end(lexer);
     bool found_close = false;
+    bool crossed = false;
     while (!lexer->eof(lexer)) {
         // `\/` is an escaped slash; any other backslash is one character.
         // A backslash at the end of a line continues it: `/abc \` then ` x/`.
@@ -1771,9 +1841,24 @@ bool tree_sitter_groovy_external_scanner_scan(
             break;
         }
         if ((lexer->lookahead == '\n' || lexer->lookahead == '\r') && !lenient) {
-            break;
+            // At the start of a statement it may run over lines too, as Groovy
+            // 3 and 4 read it: `/ *` then ` * text` then `/`. Only when its `/`
+            // then ends the line, so `x = 4` then `/ 2` stays a division
+            // where a later line holds a `/`.
+            if (!line_start) {
+                break;
+            }
+            crossed = true;
         }
         advance(lexer);
+    }
+    if (found_close && crossed) {
+        advance(lexer);
+        while (lexer->lookahead == ' ' || lexer->lookahead == '\t') {
+            advance(lexer);
+        }
+        found_close = lexer->eof(lexer) || lexer->lookahead == '\n' || lexer->lookahead == '\r'
+            || lexer->lookahead == ';';
     }
     if (!found_close) {
         return false;

@@ -13,6 +13,19 @@
 ### Fixed
 
 - The language server's diagnostics now match `--lint`: with `gradle_compile_replacement` set, a `compile` dependency's GradleRemovedConfiguration message names the configured replacement, where the editor showed the generic message. The command line, `--lint --fix`, the editor's diagnostics and its code actions now share one lint pipeline, so they can't drift apart again.
+- Ten forms of valid Groovy that failed to parse, so the whole file was skipped, now parse ([#256](https://github.com/costajohnt/groovyfmt/issues/256)):
+  - a command call whose first argument is a spread, attribute, method pointer or method reference path followed by a comma: `areEqualSets games*.name, [a, b]`, `foo q.@b, 1`, `foo a.&b, 1`, `foo a::b, 1`;
+  - a dollar-slashy string ending in a slash: `$/a//$` (the value `a/`);
+  - the Groovy 2.4 and 3 ternary whose first branch is a list with a call or property after it, `a?[b].c():d` (Groovy 4 code reads `?[` as a safe index as before);
+  - a generic or array typed declaration with a value on a later name: `List<String> a, b = null`;
+  - a command call with one plain or subscripted argument as an `if` or `while` condition: `if (a.b c[0])`, `while (a.b c)`;
+  - `in` as a local variable's name: `final InputStream in` then `in = x`;
+  - an empty index on `null` or a number: `return null[]`;
+  - a quoted annotation member name with a default: `String[] 'default'() default []`;
+  - a line break before `[` or `(` inside parentheses or brackets, which Groovy reads as an index or call: `f(a.x` then `[0])`, `[ []` then `[1], ]` (`[][[1]]`);
+  - a slashy string over several lines at the start of a statement, `/ *` then ` * text` then `/`, when its closing `/` ends the line.
+- UnusedPrivateMethod no longer reports a private operator method whose operator the class uses: `private void leftShift(x)` called as `this << x`, `plus` through `+` (mcolletta/mircomp's `FactorOracle.groovy`). ([#256](https://github.com/costajohnt/groovyfmt/issues/256))
+- SpockBlockOrder and the other Spock rules no longer treat a class with JUnit `@Test` methods as a spec because its file imports from Spock and its base class is declared elsewhere (Gradle's `EclipseClasspathIntegrationTest`). ([#256](https://github.com/costajohnt/groovyfmt/issues/256))
 
 ## 0.29.0 (2026-11-18)
 

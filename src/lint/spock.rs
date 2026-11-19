@@ -190,7 +190,14 @@ pub(super) fn class(
                     classes(root.unwrap_or(class), src, &mut c);
                     c
                 });
-                spec(local, sup, base).unwrap_or_else(|| imports_spock(src))
+                // a JUnit `@Test` method makes it a JUnit class, whatever the file imports
+                spec(local, sup, base).unwrap_or_else(|| {
+                    imports_spock(src)
+                        && !body.named_children(&mut body.walk()).any(|m| {
+                            m.kind() == "method_declaration"
+                                && super::basic::annotations(src, m).contains(&"Test")
+                        })
+                })
             };
     if !spec {
         return;
@@ -738,6 +745,14 @@ mod tests {
             let src = format!("{import}\n{src}");
             assert_eq!(unasserted(&src), vec![5], "{src}");
         }
+        // #256: a JUnit class in a file that imports Spock (Gradle's integration tests)
+        let src = "import spock.lang.Specification\nimport org.junit.Test\nclass FooTest extends SomeJUnitBase {\n  @Test\n  void works() {\n    when:\n    run()\n    when:\n    run()\n    then:\n    true\n  }\n}\n";
+        let spock: Vec<_> = lint(src)
+            .unwrap()
+            .into_iter()
+            .filter(|v| v.rule.starts_with("Spock"))
+            .collect();
+        assert_eq!(spock, vec![]);
         // a base in another file: as the project tells (`Projects::spec_base`)
         let src = format!("class T extends Base {{\n{feature}}}\n");
         for (verdict, want) in [(Some(true), vec![4]), (Some(false), vec![]), (None, vec![])] {
