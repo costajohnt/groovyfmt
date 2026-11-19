@@ -6,6 +6,10 @@
 
 - A Docker image, `ghcr.io/costajohnt/groovyfmt`, for linux/amd64 and linux/arm64, is published with each release, starting with 0.29.0: `docker run --rm -v "$PWD:/src" -w /src ghcr.io/costajohnt/groovyfmt --check`.
 
+### Changed
+
+- `--lint` and the language server read and parse each Gradle wrapper file and each nearby `.gradle` script once per run (until a save, in the editor), not once per build script that needs them. On a build of 400 subprojects under a 1 MB root `build.gradle`, `--lint` went from 67 s to 1.2 s; results are unchanged.
+
 ## 0.29.0 (2026-11-18)
 
 ### Fixed
