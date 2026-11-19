@@ -15,7 +15,7 @@ use crate::fix::{self, Fix};
 use crate::format::{Outcome, format};
 use crate::json::{self, Value};
 use crate::report::string as js;
-use crate::{MAX_FILE_BYTES, diff, lint, syntax};
+use crate::{MAX_FILE_BYTES, lint, syntax};
 use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
 use std::path::PathBuf;
@@ -471,7 +471,7 @@ impl Server {
             // a selection ending at the start of a line doesn't take that line
             let at_line_start = e > s && lines.rows().binary_search(&e).is_ok();
             let last = (lines.line_of(e) - usize::from(at_line_start)).max(first);
-            diff::format_lines(&doc.text, &cfg.style, &[(first, last)])
+            crate::format::format_lines(&doc.text, &cfg.style, &[(first, last)])
         } else {
             format(&doc.text, &cfg.style)
         };

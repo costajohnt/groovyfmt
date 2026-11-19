@@ -3,6 +3,8 @@ pub mod codenarc;
 mod codenarc_data;
 pub mod config;
 pub mod diff;
+#[doc(hidden)]
+pub mod equiv;
 pub mod fix;
 pub mod format;
 pub mod json;

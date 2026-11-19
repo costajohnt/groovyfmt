@@ -156,7 +156,7 @@ static bool finish_command_operand(TSLexer *lexer) {
 // `_paren_command_start`, with the lexer just past a parenthesized command's
 // first name (and the spaces after it when `spaced`): whether an index or a
 // binary operator continues the name into an expression argument. `?.`, `->`,
-// a comment, `=` alone, `in` and `as` don't; neither do `.`, `?` and `<`
+// a comment and `=` alone don't; neither do `.`, `?` and `<`
 // right after the name, which the callers' other branches read.
 static bool paren_argument_continues(TSLexer *lexer, bool spaced) {
     int32_t c = lexer->lookahead;
@@ -178,10 +178,13 @@ static bool paren_argument_continues(TSLexer *lexer, bool spaced) {
             default: return n != '.';
         }
     }
-    if (spaced && c == 'i') {
+    // `(a b in l)` and `(a b as int)` are `a(b in l)` and `a(b as int)` in
+    // Groovy 3 and 4. Only whole words: `(a b inner)` is not an operator.
+    if (spaced && (c == 'i' || c == 'a')) {
         char word[12];
         unsigned len = read_word(lexer, word, sizeof(word));
-        return len == 10 && memcmp(word, "instanceof", 10) == 0;
+        return (len == 10 && memcmp(word, "instanceof", 10) == 0)
+            || (len == 2 && (memcmp(word, "in", 2) == 0 || memcmp(word, "as", 2) == 0));
     }
     return false;
 }

@@ -8,10 +8,10 @@ The action installs the release binary for the runner (Linux or macOS, x64 or ar
 
 ```yaml
 - uses: actions/checkout@v5
-- uses: costajohnt/groovyfmt@v0.30.0
+- uses: costajohnt/groovyfmt@v0.30.1
   # with:
   #   args: --check --output-format github   # the default; "" only installs
-  #   version: 0.30.0                         # default: the release of the action ref used
+  #   version: 0.30.1                         # default: the release of the action ref used
   #   token: ${{ github.token }}             # the default
 - run: groovyfmt --lint --output-format github
 ```
@@ -45,7 +45,7 @@ On a Windows runner the action's steps run in bash (Git Bash, which GitHub's Win
 ```yaml
 repos:
   - repo: https://github.com/costajohnt/groovyfmt
-    rev: v0.30.0
+    rev: v0.30.1
     hooks:
       - id: groovyfmt        # format in place; or groovyfmt-check to only report
       - id: groovyfmt-lint
@@ -84,9 +84,26 @@ The Gradle plugin (`gradle-plugin/`) adds three tasks:
 
 It downloads the release binary for the machine (Linux or macOS, x86_64 or arm64, or Windows x86_64) into `~/.gradle/groovyfmt/<version>/<target>/`, checks it against its `.sha256` before unpacking it, and reuses it after that. It needs Gradle 7.6 or later on Java 11 or later, and works with the configuration cache.
 
-### Applying it from a checkout
+### Applying it
 
-The plugin is not on the Gradle Plugin Portal yet. Until it is, build it from a checkout of this repository with `includeBuild`:
+```groovy
+// build.gradle
+plugins {
+    id 'base'  // or any plugin that adds check, such as java
+    id 'io.github.costajohnt.groovyfmt' version '0.30.1'
+}
+
+groovyfmt {
+    // version = '0.30.1'                          // default: the plugin's own version
+    // binary = file('/usr/local/bin/groovyfmt')  // run this binary and download nothing
+    // args = ['--strict']                        // added to every run
+    // paths = ['src', 'build.gradle']            // default: the project directory
+}
+```
+
+Then `./gradlew check` checks formatting and runs lint, and `./gradlew groovyfmtFormat` formats in place.
+
+To use an unreleased plugin, build it from a checkout of this repository with `includeBuild` and drop `version` from the `plugins` line:
 
 ```groovy
 // settings.gradle
@@ -94,23 +111,6 @@ pluginManagement {
     includeBuild '../groovyfmt/gradle-plugin'  // path to the checkout
 }
 ```
-
-```groovy
-// build.gradle
-plugins {
-    id 'base'  // or any plugin that adds check, such as java
-    id 'io.github.costajohnt.groovyfmt'
-}
-
-groovyfmt {
-    // version = '0.30.0'                          // default: the plugin's own version
-    // binary = file('/usr/local/bin/groovyfmt')  // run this binary and download nothing
-    // args = ['--strict']                        // added to every run
-    // paths = ['src', 'build.gradle']            // default: the project directory
-}
-```
-
-Once it is published, drop `includeBuild` and write `id 'io.github.costajohnt.groovyfmt' version '<version>'`.
 
 ### Behavior
 

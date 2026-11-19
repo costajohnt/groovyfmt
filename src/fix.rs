@@ -12,10 +12,11 @@
 //! so this runs rounds until one finds nothing to fix. A fix failing the checks on its own is
 //! dropped, its report left standing, and the others are made without it.
 
+use crate::equiv::{shape, tokens};
 use crate::lint::{Context, Edit, Violation, lint_opt_in};
 use std::ops::Range;
 use std::path::Path;
-use tree_sitter::{Node, Tree};
+use tree_sitter::Node;
 
 #[derive(Debug, PartialEq)]
 pub enum Fix {
@@ -211,12 +212,6 @@ fn apply(src: &str, edits: &[Edit]) -> (String, Vec<Range<usize>>) {
     (out, inserted)
 }
 
-fn inside(n: Node, removed: &[Range<usize>]) -> bool {
-    removed
-        .iter()
-        .any(|r| r.start <= n.start_byte() && n.end_byte() <= r.end)
-}
-
 #[cfg(test)]
 thread_local! {
     /// Checks run on this thread, so a test can bound the work of a round.
@@ -281,7 +276,8 @@ fn check(
     {
         return Err("a removed import's name is still used");
     }
-    if leaves(src, &before, &removed) != leaves(out, &after, inserted) {
+    // comments too must match exactly: no fix edits whitespace outside its ranges
+    if tokens(src, &before, &removed, false) != tokens(out, &after, inserted, false) {
         return Err("tokens other than the edited ones would change");
     }
     if shape(&before, &removed) != shape(&after, inserted) {
@@ -398,45 +394,6 @@ fn joined(src: &str, root: Node) -> usize {
         .windows(2)
         .filter(|w| crate::lint::joins_declaration(src, w[0], w[1]))
         .count()
-}
-
-/// Leaf tokens outside `removed`, as (kind, text).
-fn leaves<'a>(src: &'a str, tree: &Tree, removed: &[Range<usize>]) -> Vec<(u16, &'a str)> {
-    let mut v = Vec::new();
-    crate::preorder(tree.root_node(), |n| {
-        if inside(n, removed) {
-            return false;
-        }
-        if n.child_count() == 0 {
-            v.push((n.kind_id(), crate::text(n, src)));
-        }
-        true
-    });
-    v
-}
-
-/// Named nodes outside `removed`, as (kind, field, depth) in document order.
-fn shape(tree: &Tree, removed: &[Range<usize>]) -> Vec<(u16, Option<u16>, usize)> {
-    let mut v = Vec::new();
-    let mut c = tree.walk();
-    let mut depth = 0;
-    loop {
-        let n = c.node();
-        let skip = inside(n, removed);
-        if !skip && n.is_named() {
-            v.push((n.kind_id(), c.field_id().map(|f| f.get()), depth));
-        }
-        if !skip && c.goto_first_child() {
-            depth += 1;
-            continue;
-        }
-        while !c.goto_next_sibling() {
-            if !c.goto_parent() {
-                return v;
-            }
-            depth -= 1;
-        }
-    }
 }
 
 #[cfg(test)]

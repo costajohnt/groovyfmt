@@ -2,7 +2,7 @@ use groovyfmt::baseline::{self, Baseline};
 use groovyfmt::config::{self, Config, Resolver};
 use groovyfmt::diff;
 use groovyfmt::fix::{self, Fix};
-use groovyfmt::format::{Outcome, Style, format};
+use groovyfmt::format::{Outcome, Style, format, format_lines};
 use groovyfmt::lint::{self, RULES};
 use groovyfmt::report::{self, Diagnostic, FileReport};
 use groovyfmt::syntax::{self, SyntaxError};
@@ -892,7 +892,7 @@ fn format_some(src: &str, style: &Style, lines: &[(usize, usize)]) -> Outcome {
     if lines.is_empty() {
         format(src, style)
     } else {
-        diff::format_lines(src, style, lines)
+        format_lines(src, style, lines)
     }
 }
 
