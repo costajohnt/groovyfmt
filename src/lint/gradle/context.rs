@@ -1,17 +1,18 @@
 //! What a build script's rules read beyond the script: the Gradle version its wrapper pins,
 //! the `.gradle` scripts around it that may configure it, and its `gradle.properties`.
-//! Through `Projects` (a CLI run, the LSP until a save), each directory's wrapper version
-//! and scripts are read and parsed once, so a multi-module build's root script is parsed
-//! once and not once per subproject file (M15). Without it (`lint_file`), they are read
-//! once per linted file.
+//! Through `Projects` (a CLI run, the LSP), each wrapper file and script is read and
+//! parsed once while it stays the same on disk, so a multi-module build's root script is
+//! parsed once and not once per subproject file (M15). Each use checks the files again (a
+//! directory listing and a `stat` per file), so a change made by any tool is seen.
+//! Without `Projects` (`lint_file`), they are read once per linted file.
 
-use super::super::elsewhere::{Cells, cell};
 use super::super::jenkins::{Call, call};
 use super::{apply_argument, convention, declares, may_apply_java};
 use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::SystemTime;
 
 /// The most bytes read of a script that may configure the one linted (`Build::declared`).
 const MAX_SCRIPT_BYTES: u64 = 4 * 1024 * 1024;
@@ -19,14 +20,31 @@ const MAX_SCRIPT_BYTES: u64 = 4 * 1024 * 1024;
 /// The real file is a few hundred bytes.
 pub(super) const MAX_WRAPPER_BYTES: u64 = 64 * 1024;
 
-/// Each directory's wrapper version and `.gradle` scripts, read the first time a script
-/// in or below it needs them.
+/// What a file was when it was read: a regular file, its length and its modification time.
+/// ponytail: a rewrite to the same length within one tick of the filesystem's clock (ns on
+/// APFS, a few ms on some Linux filesystems) goes unseen until the next change or `clear`.
+type Stamp = (bool, u64, Option<SystemTime>);
+
+/// A wrapper's Gradle version, (major, minor).
+type Version = Option<(u32, u32)>;
+
+fn stamp(p: &Path) -> Option<Stamp> {
+    let m = std::fs::metadata(p).ok()?;
+    Some((m.is_file(), m.len(), m.modified().ok()))
+}
+
+/// Each wrapper file's version and each `.gradle` script's facts, by path, with the file's
+/// `Stamp` when read; an entry whose file changed since is read again.
 #[derive(Default)]
 pub(crate) struct Cache {
-    /// by the directory the search starts from: the version of the nearest wrapper
-    wrappers: Mutex<HashMap<PathBuf, Option<(u32, u32)>>>,
-    /// by directory: what each of its `.gradle` scripts declares and applies
-    scripts: Cells<Arc<Vec<Script>>>,
+    wrappers: Mutex<HashMap<PathBuf, (Stamp, Version)>>,
+    scripts: Mutex<HashMap<PathBuf, Arc<Entry>>>,
+}
+
+/// One script as read at `stamp`; `None` when it can't be read.
+struct Entry {
+    stamp: Stamp,
+    script: OnceLock<Option<Arc<Script>>>,
 }
 
 impl Cache {
@@ -40,11 +58,48 @@ impl Cache {
             .unwrap_or_else(|e| e.into_inner())
             .clear();
     }
+
+    /// The facts of the script at `p` in `dir`, read again when it changed.
+    fn script(&self, p: &Path, dir: &Path) -> Option<Arc<Script>> {
+        let stamp = stamp(p)?;
+        let entry = {
+            let mut map = self.scripts.lock().unwrap_or_else(|e| e.into_inner());
+            match map.get(p) {
+                Some(e) if e.stamp == stamp => e.clone(),
+                _ => {
+                    let e = Arc::new(Entry {
+                        stamp,
+                        script: OnceLock::new(),
+                    });
+                    map.insert(p.to_path_buf(), e.clone());
+                    e
+                }
+            }
+        };
+        // a change between the stat and the read leaves a stamp that the next stat misses
+        entry
+            .script
+            .get_or_init(|| Script::read(p, dir).map(Arc::new))
+            .clone()
+    }
+
+    /// The version in the wrapper file `props`, read again when it changed.
+    fn wrapper(&self, props: &Path) -> Option<(u32, u32)> {
+        let stamp = stamp(props)?;
+        let mut map = self.wrappers.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((s, v)) = map.get(props)
+            && *s == stamp
+        {
+            return *v;
+        }
+        let v = read_version(props);
+        map.insert(props.to_path_buf(), (stamp, v));
+        v
+    }
 }
 
 /// What a nearby `.gradle` script tells the one linted.
 struct Script {
-    path: PathBuf,
     /// the names it makes extra properties of
     ext: HashSet<String>,
     /// whether it may apply a Java plugin (`may_apply_java`)
@@ -53,13 +108,13 @@ struct Script {
     declared: HashSet<String>,
     /// the ones it makes in `allprojects { }` or `subprojects { }`, for the others
     for_projects: HashSet<String>,
-    /// the scripts it applies with `apply from:`, canonical
+    /// the scripts it applies with `apply from:`, relative to its directory as written
     applies: Vec<PathBuf>,
 }
 
 impl Script {
-    fn read(path: PathBuf, dir: &Path) -> Option<Script> {
-        let src = read_small(&path, MAX_SCRIPT_BYTES)?;
+    fn read(path: &Path, dir: &Path) -> Option<Script> {
+        let src = read_small(path, MAX_SCRIPT_BYTES)?;
         let src = src.as_str();
         let tree = crate::parse(src);
         let root = tree.root_node();
@@ -69,11 +124,7 @@ impl Script {
         crate::preorder(root, |n| {
             convention(src, n, &mut Vec::new(), &mut names);
             java |= may_apply_java(src, n);
-            // the `apply from:` target must be a plain path relative to this script's
-            // directory: a URL, an interpolated name or a missing file applies nothing here
-            applies.extend(
-                apply_argument(src, n, "from").and_then(|t| dir.join(t).canonicalize().ok()),
-            );
+            applies.extend(apply_argument(src, n, "from").map(|t| dir.join(t)));
             declares(src, n, &mut declared);
             true
         });
@@ -92,7 +143,6 @@ impl Script {
             _ => true,
         });
         Some(Script {
-            path,
             ext: names.into_iter().map(str::to_string).collect(),
             java,
             declared,
@@ -100,16 +150,6 @@ impl Script {
             applies,
         })
     }
-}
-
-/// The `.gradle` scripts in `dir` that can be read.
-fn scripts_in(dir: &Path) -> Vec<Script> {
-    let entries = std::fs::read_dir(dir).into_iter().flatten().flatten();
-    entries
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "gradle"))
-        .filter_map(|p| Script::read(p, dir))
-        .collect()
 }
 
 /// The build around one script: its path, and what of the build each rule asked for so far.
@@ -127,16 +167,7 @@ pub(super) struct Build<'a> {
 /// `settings.gradle.kts` or `.git`; without one, only the script's own directory).
 struct Nearby {
     me: PathBuf,
-    dirs: Vec<Arc<Vec<Script>>>,
-}
-
-impl Nearby {
-    fn scripts(&self) -> impl Iterator<Item = &Script> {
-        self.dirs
-            .iter()
-            .flat_map(|d| d.iter())
-            .filter(|s| s.path != self.me)
-    }
+    scripts: Vec<Arc<Script>>,
 }
 
 impl<'a> Build<'a> {
@@ -175,24 +206,14 @@ impl<'a> Build<'a> {
                 .filter(|d| !d.as_os_str().is_empty())
                 .unwrap_or(Path::new("."));
             let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-            let Some(cache) = self.cache else {
-                return wrapper_version(&dir);
-            };
-            let known = cache
-                .wrappers
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(&dir)
-                .copied();
-            known.unwrap_or_else(|| {
-                let v = wrapper_version(&dir);
-                cache
-                    .wrappers
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(dir, v);
-                v
-            })
+            let props = dir
+                .ancestors()
+                .map(|d| d.join("gradle/wrapper/gradle-wrapper.properties"))
+                .find(|p| p.is_file())?;
+            match self.cache {
+                Some(c) => c.wrapper(&props),
+                None => read_version(&props),
+            }
         })
     }
 
@@ -205,19 +226,23 @@ impl<'a> Build<'a> {
                         .iter()
                         .any(|f| d.join(f).exists())
                 });
-                let mut dirs = Vec::new();
+                let mut scripts = Vec::new();
                 for dir in me.ancestors().skip(1) {
-                    dirs.push(match self.cache {
-                        Some(c) => cell(&c.scripts, dir)
-                            .get_or_init(|| Arc::new(scripts_in(dir)))
-                            .clone(),
-                        None => Arc::new(scripts_in(dir)),
-                    });
+                    for p in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                        let p = p.path();
+                        if p.extension().is_none_or(|e| e != "gradle") || p == me {
+                            continue;
+                        }
+                        scripts.extend(match self.cache {
+                            Some(c) => c.script(&p, dir),
+                            None => Script::read(&p, dir).map(Arc::new),
+                        });
+                    }
                     if root.is_none_or(|r| r == dir) {
                         break;
                     }
                 }
-                Some(Nearby { me, dirs })
+                Some(Nearby { me, scripts })
             })
             .as_ref()
     }
@@ -231,8 +256,14 @@ impl<'a> Build<'a> {
         self.declared.get_or_init(|| {
             let mut declared = HashSet::new();
             if let Some(n) = self.nearby() {
-                for s in n.scripts() {
-                    if s.applies.contains(&n.me) {
+                for s in &n.scripts {
+                    // the `apply from:` target must be a plain path to this script relative
+                    // to the applying one's directory: a URL, an interpolated name or a
+                    // missing file applies nothing here
+                    if s.applies
+                        .iter()
+                        .any(|t| t.canonicalize().is_ok_and(|t| t == n.me))
+                    {
                         declared.extend(s.declared.iter().cloned());
                     } else {
                         declared.extend(s.for_projects.iter().cloned());
@@ -251,7 +282,8 @@ impl<'a> Build<'a> {
     /// disk (`--stdin` without a real `--stdin-filepath`) can't be told, so it counts as one
     /// that does.
     pub(super) fn jvm_plugin_nearby(&self) -> bool {
-        self.nearby().is_none_or(|n| n.scripts().any(|s| s.java))
+        self.nearby()
+            .is_none_or(|n| n.scripts.iter().any(|s| s.java))
     }
 
     /// The names the nearby scripts (the ones in the directories above, which may configure
@@ -260,7 +292,7 @@ impl<'a> Build<'a> {
         self.ext.get_or_init(|| {
             let mut names = HashSet::new();
             if let Some(n) = self.nearby() {
-                for s in n.scripts() {
+                for s in &n.scripts {
                     names.extend(s.ext.iter().cloned());
                 }
             }
@@ -298,13 +330,9 @@ impl<'a> Build<'a> {
     }
 }
 
-/// The version of the nearest wrapper at or above `dir`.
-fn wrapper_version(dir: &Path) -> Option<(u32, u32)> {
-    let props = dir
-        .ancestors()
-        .map(|d| d.join("gradle/wrapper/gradle-wrapper.properties"))
-        .find(|p| p.is_file())?;
-    version(&read_small(&props, MAX_WRAPPER_BYTES)?)
+/// The version the wrapper file `props` pins.
+fn read_version(props: &Path) -> Option<(u32, u32)> {
+    version(&read_small(props, MAX_WRAPPER_BYTES)?)
 }
 
 /// `p` if it is a regular file of at most `max` bytes, in UTF-8. A FIFO or device

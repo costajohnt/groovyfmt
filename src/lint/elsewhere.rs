@@ -73,14 +73,8 @@ impl<'a> Context<'a> {
 
 use super::spock::Classes;
 
-/// A value per directory, each made the first time it's needed.
-pub(super) type Cells<T> = Mutex<HashMap<PathBuf, Arc<OnceLock<T>>>>;
-
 /// The project's cell for `root` in `cache`, made the first time.
-pub(super) fn cell<T>(
-    cache: &Mutex<HashMap<PathBuf, Arc<OnceLock<T>>>>,
-    root: &Path,
-) -> Arc<OnceLock<T>> {
+fn cell<T>(cache: &Mutex<HashMap<PathBuf, Arc<OnceLock<T>>>>, root: &Path) -> Arc<OnceLock<T>> {
     cache
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -126,7 +120,7 @@ impl Projects {
     /// at a class extending nothing; `None` (unknown) otherwise, as for a base from a
     /// library, two declarations that disagree, or no project.
     /// The Gradle rules read the wrapper and scripts around a build script through this
-    /// `Projects`, so each is read once.
+    /// `Projects`, so each is read once while it stays the same on disk.
     pub fn spec_base<'a>(&'a self, path: &'a Path) -> Context<'a> {
         let classes = OnceLock::new();
         let mut cx = Context::new(move |name: &str| {
@@ -140,6 +134,14 @@ impl Projects {
             });
             super::spock::spec(classes.as_ref()?.get()?, name, &|_| None)
         });
+        cx.gradle = Some(&self.gradle);
+        cx
+    }
+
+    /// For `fix::fix`, which checks its edits against every rule without the project's
+    /// Spock bases: this `Projects`' Gradle cache alone.
+    pub fn gradle_context(&self) -> Context<'_> {
+        let mut cx = Context::new(|_| None);
         cx.gradle = Some(&self.gradle);
         cx
     }

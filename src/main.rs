@@ -1474,7 +1474,7 @@ fn lint_files(
                     && !base.is_some_and(|(b, rel)| b.covers_line(rel, v.rule, text, v.line))
             };
             let compile = cfg.gradle_compile_replacement.as_deref();
-            match fix::fix(p, &src, compile, wanted) {
+            match fix::fix(p, &src, compile, &projects.gradle_context(), wanted) {
                 Fix::Nothing => {}
                 Fix::Refused(why) => r.refused = Some(why),
                 Fix::Fixed(text, fixed) => {

@@ -251,7 +251,13 @@ fn mutation_check_over_a_corpus() {
         for (i, (_, style)) in checks.iter().enumerate() {
             bad[i] = !settles(&src, style) || !unsettled_mutants(&src, style, 2).is_empty();
         }
-        let fixed = match groovyfmt::fix::fix(p, &src, None, |_, _| true) {
+        let fixed = match groovyfmt::fix::fix(
+            p,
+            &src,
+            None,
+            &groovyfmt::lint::Context::new(|_| None),
+            |_, _| true,
+        ) {
             groovyfmt::fix::Fix::Fixed(t, _) => t,
             _ => src,
         };

@@ -40,10 +40,13 @@ const ASSIGNMENT_REWRITE: &str = "GradleSpaceAssignment";
 /// Spock rules), that have a fix and that `wanted` (a rule enabled in the config, and not
 /// in the baseline) accepts; it is also given the text the violation is in. `compile` is
 /// the config's `gradle_compile_replacement`, which makes `compile` dependencies fixable.
+/// `cx` gives the Gradle files around a build script (`Projects::gradle_context`); every
+/// rule is checked, without Spock bases from the project.
 pub fn fix(
     path: &Path,
     src: &str,
     compile: Option<&str>,
+    cx: &Context,
     wanted: impl Fn(&Violation, &str) -> bool,
 ) -> Fix {
     let mut text = src.to_string();
@@ -51,7 +54,7 @@ pub fn fix(
     // why a fix was dropped, reported when no other fix is made
     let mut dropped = None;
     for n in 0..=MAX_ROUNDS {
-        let Ok(vs) = lint_opt_in(path, &text, compile, &Context::new(|_| None)) else {
+        let Ok(vs) = lint_opt_in(path, &text, compile, cx) else {
             return Fix::Refused("parse error");
         };
         let (todo, keep): (Vec<_>, Vec<_>) = vs
@@ -63,7 +66,7 @@ pub fn fix(
         if n == MAX_ROUNDS {
             return Fix::Refused("fixes still exposed more fixes after 64 rounds; nothing written");
         }
-        match round(path, &text, todo, &keep, compile, &wanted, &mut dropped) {
+        match round(path, &text, todo, &keep, compile, cx, &wanted, &mut dropped) {
             Err(why) => return Fix::Refused(why),
             Ok(None) => break,
             Ok(Some((out, done))) => {
@@ -83,19 +86,24 @@ pub fn fix(
 /// fails the checks on its own is dropped (`dropped` gets why, the first time; found by
 /// `bisect`), and the rest are tried again; `None` when all are dropped. An error when the
 /// edits fail together but none alone.
+#[allow(clippy::too_many_arguments)] // `fix`'s state, passed down
 fn round(
     path: &Path,
     text: &str,
     mut todo: Vec<Violation>,
     keep: &[Violation],
     compile: Option<&str>,
+    cx: &Context,
     wanted: &impl Fn(&Violation, &str) -> bool,
     dropped: &mut Option<&'static str>,
 ) -> Result<Option<(String, Vec<Violation>)>, &'static str> {
     let attempt = |es: &[Edit], calls: &[&str]| {
         let (out, inserted) = apply(text, es);
         let auto = |v: &Violation| v.fix.is_some() && wanted(v, &out);
-        check(path, text, &out, es, &inserted, calls, keep, compile, &auto).map(|()| out)
+        check(
+            path, text, &out, es, &inserted, calls, keep, compile, cx, &auto,
+        )
+        .map(|()| out)
     };
     while !todo.is_empty() {
         let (made, done) = edits(&todo);
@@ -227,6 +235,7 @@ fn check(
     calls: &[&str],
     keep: &[Violation],
     compile: Option<&str>,
+    cx: &Context,
     auto: &impl Fn(&Violation) -> bool,
 ) -> Result<(), &'static str> {
     #[cfg(test)]
@@ -312,8 +321,7 @@ fn check(
         .map(|v| key(v, &replaced))
         .collect();
     let new: Vec<Range<usize>> = inserted.iter().filter(|r| !r.is_empty()).cloned().collect();
-    let vs = lint_opt_in(path, out, compile, &Context::new(|_| None))
-        .map_err(|_| "the fixed file would not parse")?;
+    let vs = lint_opt_in(path, out, compile, cx).map_err(|_| "the fixed file would not parse")?;
     let mut got: Vec<_> = vs
         .iter()
         .filter(|v| !auto(v) && !within(&new, &v.span))
@@ -437,7 +445,13 @@ mod tests {
     use crate::lint::{lint, lint_file};
 
     fn fixed(src: &str) -> Fix {
-        fix(Path::new("A.groovy"), src, None, |_, _| true)
+        fix(
+            Path::new("A.groovy"),
+            src,
+            None,
+            &Context::new(|_| None),
+            |_, _| true,
+        )
     }
 
     fn text(src: &str) -> String {
@@ -518,6 +532,7 @@ mod tests {
                 &["UnusedImport"],
                 &[],
                 None,
+                &Context::new(|_| None),
                 &|_| true,
             )
         };
@@ -804,13 +819,25 @@ def d = ''
     fn only_wanted_rules_are_fixed() {
         let src = "import a.B;\nx = 1;\n";
         let semis = |v: &Violation, _: &str| v.rule == "UnnecessarySemicolon";
-        let Fix::Fixed(t, f) = fix(Path::new("A.groovy"), src, None, semis) else {
+        let Fix::Fixed(t, f) = fix(
+            Path::new("A.groovy"),
+            src,
+            None,
+            &Context::new(|_| None),
+            semis,
+        ) else {
             panic!()
         };
         assert_eq!((t.as_str(), f.len()), ("import a.B\nx = 1\n", 2));
         // the import line goes with its `;` even when UnnecessarySemicolon is off
         let imports = |v: &Violation, _: &str| v.rule == "UnusedImport";
-        let Fix::Fixed(t, f) = fix(Path::new("A.groovy"), src, None, imports) else {
+        let Fix::Fixed(t, f) = fix(
+            Path::new("A.groovy"),
+            src,
+            None,
+            &Context::new(|_| None),
+            imports,
+        ) else {
             panic!()
         };
         assert_eq!(t, "x = 1;\n");
@@ -836,6 +863,7 @@ def d = ''
                 &[],
                 &[],
                 None,
+                &Context::new(|_| None),
                 &|_| true
             ),
             Err("the parse tree would change shape")
@@ -851,6 +879,7 @@ def d = ''
                 &[],
                 &[],
                 None,
+                &Context::new(|_| None),
                 &|_| true
             )
             .is_err()
@@ -865,6 +894,7 @@ def d = ''
                 &[],
                 &[],
                 None,
+                &Context::new(|_| None),
                 &|_| true
             )
             .is_ok()
@@ -879,6 +909,7 @@ def d = ''
                 &[],
                 &[],
                 None,
+                &Context::new(|_| None),
                 &|_| true
             ),
             Err("the fixed file would not parse")
@@ -894,6 +925,7 @@ def d = ''
                 &[],
                 &[],
                 None,
+                &Context::new(|_| None),
                 &|_| true
             ),
             Err("two statements would join into a method declaration on Groovy 3+")
@@ -909,6 +941,7 @@ def d = ''
                 &[],
                 &[],
                 None,
+                &Context::new(|_| None),
                 &|_| true
             )
             .is_ok()
@@ -942,6 +975,7 @@ def d = ''
                     calls,
                     &[],
                     None,
+                    &Context::new(|_| None),
                     &|_| true,
                 )
             };
@@ -977,6 +1011,7 @@ def d = ''
                     &["GradleDependencyTuple"],
                     &[],
                     None,
+                    &Context::new(|_| None),
                     &|_| true
                 ),
                 Ok(()),
@@ -1005,6 +1040,7 @@ def d = ''
                 &["GradleSpaceAssignment"],
                 &[],
                 None,
+                &Context::new(|_| None),
                 &|_| true,
             )
         };
@@ -1045,7 +1081,16 @@ def d = ''
         });
         let mut dropped = None;
         let all = |_: &Violation, _: &str| true;
-        let Ok(Some((out, done))) = round(path, src, todo, &[], None, &all, &mut dropped) else {
+        let Ok(Some((out, done))) = round(
+            path,
+            src,
+            todo,
+            &[],
+            None,
+            &Context::new(|_| None),
+            &all,
+            &mut dropped,
+        ) else {
             panic!()
         };
         assert_eq!(out, src.replace("testCompile", "testImplementation"));
@@ -1083,7 +1128,16 @@ def d = ''
         let mut dropped = None;
         let all = |_: &Violation, _: &str| true;
         CHECKS.with(|c| c.set(0));
-        let Ok(Some((out, done))) = round(path, &src, todo, &[], None, &all, &mut dropped) else {
+        let Ok(Some((out, done))) = round(
+            path,
+            &src,
+            todo,
+            &[],
+            None,
+            &Context::new(|_| None),
+            &all,
+            &mut dropped,
+        ) else {
             panic!()
         };
         let checks = CHECKS.with(|c| c.get());
@@ -1098,7 +1152,15 @@ def d = ''
     fn fixes_failing_only_together_refuse_the_file() {
         // a double-quoted mention counts as a use of the import, a single-quoted one doesn't
         let gstrings = |v: &Violation, _: &str| v.rule == "UnnecessaryGString";
-        let run = |src: &str| fix(Path::new("A.groovy"), src, None, gstrings);
+        let run = |src: &str| {
+            fix(
+                Path::new("A.groovy"),
+                src,
+                None,
+                &Context::new(|_| None),
+                gstrings,
+            )
+        };
         // alone, the last mention's fix fails and is dropped, and the other is made
         let Fix::Fixed(t, f) = run("import a.Foo\nx = \"Foo\"\ny = \"z\"\n") else {
             panic!()

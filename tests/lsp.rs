@@ -1003,3 +1003,58 @@ fn diagnostics_and_quick_fixes_go_through_the_cli_pipeline() {
     srv.notify("exit", "null");
     srv.finish();
 }
+
+/// The Gradle rules read the wrapper and the scripts around a build script from disk; a
+/// change there that no editor event reports (another tool, `git pull`) is seen on the next
+/// lint, as the command line would see it.
+#[test]
+fn gradle_files_changed_on_disk_are_read_again() {
+    let d = Dir::new("gradle-disk");
+    let wrapper = |v: &str| {
+        d.write(
+            "gradle/wrapper/gradle-wrapper.properties",
+            &format!(
+                "distributionUrl=https\\://services.gradle.org/distributions/gradle-{v}-bin.zip\n"
+            ),
+        );
+    };
+    wrapper("8.5");
+    d.write("settings.gradle", "include 'sub'\n");
+    d.write("build.gradle", "");
+    let text = "apply plugin: 'java'\ndependencies {\n    testCompile 'a:b:1'\n}\n";
+    let path = d.write("sub/build.gradle", text);
+    let u = uri(&path);
+    let mut srv = Server::start(&d.0);
+    srv.initialize("[]");
+    let codes = |ds: &[Value]| -> Vec<String> { summary(ds).into_iter().map(|d| d.0).collect() };
+    let reported = ["GradleRemovedConfiguration"];
+    assert_eq!(codes(&srv.open(&u, text)), reported);
+    let mut version = 1;
+    let mut change = |srv: &mut Server| {
+        version += 1;
+        srv.notify(
+            "textDocument/didChange",
+            &format!(
+                "{{\"textDocument\":{{\"uri\":{},\"version\":{version}}},\"contentChanges\":[{{\"text\":{}}}]}}",
+                js(&u),
+                js(text)
+            ),
+        );
+        codes(&srv.diagnostics(&u))
+    };
+    // a wrapper pinning Gradle 6 still has testCompile
+    wrapper("6.9.4");
+    assert_eq!(change(&mut srv), Vec::<String>::new());
+    wrapper("8.5");
+    assert_eq!(change(&mut srv), reported);
+    // the root script declares it for every subproject, then no longer does
+    d.write(
+        "build.gradle",
+        "subprojects {\n    configurations { testCompile }\n}\n",
+    );
+    assert_eq!(change(&mut srv), Vec::<String>::new());
+    d.write("build.gradle", "");
+    assert_eq!(change(&mut srv), reported);
+    srv.notify("exit", "null");
+    srv.finish();
+}

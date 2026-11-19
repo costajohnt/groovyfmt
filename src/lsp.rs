@@ -549,7 +549,13 @@ impl Server {
                 let this = |w: &lint::Violation, _: &str| {
                     (w.rule, w.line, w.col, &w.message) == (v.rule, v.line, v.col, &v.message)
                 };
-                if let Fix::Fixed(new, _) = fix::fix(&doc.path, &doc.text, compile, this) {
+                if let Fix::Fixed(new, _) = fix::fix(
+                    &doc.path,
+                    &doc.text,
+                    compile,
+                    &self.projects.gradle_context(),
+                    this,
+                ) {
                     let (s, e) = (
                         lines.offset(v.line, v.col),
                         lines.offset(v.end_line, v.end_col),
@@ -570,9 +576,13 @@ impl Server {
             }
         }
         if want(FIX_ALL)
-            && let Fix::Fixed(new, _) = fix::fix(&doc.path, &doc.text, compile, |v, text| {
-                cfg.rule_enabled(v.rule) && !held(v, text)
-            })
+            && let Fix::Fixed(new, _) = fix::fix(
+                &doc.path,
+                &doc.text,
+                compile,
+                &self.projects.gradle_context(),
+                |v, text| cfg.rule_enabled(v.rule) && !held(v, text),
+            )
         {
             out.push(action("Fix all auto-fixable problems", FIX_ALL, &new, ""));
         }

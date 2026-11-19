@@ -2255,7 +2255,7 @@ mod tests {
         let uses =
             "dependencies {\n    compile files('a.txt')\n}\ndef f = configurations.compile.files\n";
         let p = dir.join("build.gradle");
-        // through `Projects`, the scripts above are read once, until `clear`
+        // through `Projects`, the scripts above are read once while unchanged
         let projects = crate::lint::Projects::new(None);
         let cached = || -> Vec<_> {
             crate::lint::lint_with(&p, uses, &projects.spec_base(&p))
@@ -2290,14 +2290,12 @@ mod tests {
         ] {
             assert_eq!(run(parent), reported, "{parent}");
         }
-        // a cached answer stands until `clear`, as the LSP calls on a save
+        // a script changed on disk is read again, without `clear`
         std::fs::write(
             root.join("build.gradle"),
             "subprojects { configurations { compile } }\n",
         )
         .unwrap();
-        assert_eq!(cached(), reported);
-        projects.clear();
         assert_eq!(cached(), vec![]);
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -3020,10 +3018,22 @@ println new a.util.XmlSlurper()
                 .iter()
                 .any(|r| r.name == v.rule && r.default)
         };
-        match crate::fix::fix(Path::new(path), src, compile, wanted) {
+        match crate::fix::fix(
+            Path::new(path),
+            src,
+            compile,
+            &crate::lint::Context::new(|_| None),
+            wanted,
+        ) {
             crate::fix::Fix::Fixed(t, _) => {
                 assert_eq!(
-                    crate::fix::fix(Path::new(path), &t, compile, wanted),
+                    crate::fix::fix(
+                        Path::new(path),
+                        &t,
+                        compile,
+                        &crate::lint::Context::new(|_| None),
+                        wanted
+                    ),
                     crate::fix::Fix::Nothing,
                     "idempotent: {t}"
                 );
