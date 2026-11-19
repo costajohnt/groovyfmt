@@ -3232,11 +3232,8 @@ module.exports = grammar({
               alias($._command_quoted_named_argument, $.named_argument),
             ))),
             field('argument', alias($._command_named_argument, $.named_argument)),
-            field('argument', $.identifier),
-            // `if (valueOf findProperty(s, 'x'))`
-            field('argument', alias($._name_call, $.method_invocation)),
-            // `if (a.b c[0])` is `a.b(c[0])`
-            field('argument', alias($._name_subscript, $.subscript_expression)),
+            // `if (valueOf findProperty(s, 'x'))`, `if (a.b c[0] - n)` is `a.b(c[0] - n)`
+            prec.dynamic(-1, field('argument', $._expression)),
           ),
           repeat($._command_later_argument),
           // `(page.optionList 0 isEmpty())`: a call chained after the argument,
@@ -3258,14 +3255,6 @@ module.exports = grammar({
       ),
       // also a quoted one: `("a" 1 "b")` is `a(1).b`
       optional(choice($.identifier, $.string_literal)),
-    ),
-
-    _name_subscript: $ => seq(
-      field('object', $.identifier),
-      alias($._subscript_open, '['),
-      field('index', $._subscript_index),
-      repeat(seq(',', field('index', $._subscript_index))),
-      ']',
     ),
 
     _parenthesized_command_link: $ => choice(

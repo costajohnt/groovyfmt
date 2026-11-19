@@ -1,9 +1,9 @@
 // Constructs the thirtieth grammar batch added (#256): a command call whose first argument is a
 // spread, attribute, pointer or reference path; a dollar-slashy string ending in a slash; the
 // Groovy 2.4 and 3 ternary `a?[b].c():d`; a generic multi-declarator with a later value; a
-// command call as an if or while condition; `in` as a local name; an empty index on null or a
-// number; a quoted annotation member; a line break before an index or call inside parentheses
-// or brackets; a multi-line slashy string at the start of a statement.
+// command call as an if or while condition, its argument any expression; `in` as a local name;
+// an empty index on null or a number; a quoted annotation member; a line break before an index
+// or call inside parentheses or brackets; a multi-line slashy string at the start of a statement.
 foo a*.b, [1]
 foo q.@b, 1
 foo a?.@b, 1
@@ -24,6 +24,18 @@ if (a.b c[0]) {
     x()
 }
 while (a.b c) {
+    x()
+}
+if (a.b c[0] - n) {
+    x()
+}
+if (a.b c[0].x) {
+    x()
+}
+if (a.b c - 1) {
+    x()
+}
+while (a.b c[0] - n) {
     x()
 }
 

@@ -24,6 +24,8 @@
   - a quoted annotation member name with a default: `String[] 'default'() default []`;
   - a line break before `[` or `(` inside parentheses or brackets, which Groovy reads as an index or call: `f(a.x` then `[0])`, `[ []` then `[1], ]` (`[][[1]]`);
   - a slashy string over several lines at the start of a statement, `/ *` then ` * text` then `/`, when its closing `/` ends the line.
+- A command call in parentheses, such as an `if` or `while` condition, now parses with any expression as its first argument, not only a name, call or subscript: `if (a.b c[0] - n)`, `if (a.b c[0].x)`, `while (a.b c - 1)` (Groovy 3 and 4). ([#256](https://github.com/costajohnt/groovyfmt/issues/256))
+- GradleLeftShiftTask is quiet when the nearest Gradle wrapper pins a version below 5.0, which still has `task name << { }`, as GradleRemovedConfiguration is below 7.0; with no wrapper it still reports (gradle-liquibase-plugin under a 2.2 wrapper, springfox under 4.6). ([#256](https://github.com/costajohnt/groovyfmt/issues/256))
 - UnusedPrivateMethod no longer reports a private operator method whose operator the class uses: `private void leftShift(x)` called as `this << x`, `plus` through `+` (mcolletta/mircomp's `FactorOracle.groovy`). ([#256](https://github.com/costajohnt/groovyfmt/issues/256))
 - SpockBlockOrder and the other Spock rules no longer treat a class with JUnit `@Test` methods as a spec because its file imports from Spock and its base class is declared elsewhere (Gradle's `EclipseClasspathIntegrationTest`). ([#256](https://github.com/costajohnt/groovyfmt/issues/256))
 
