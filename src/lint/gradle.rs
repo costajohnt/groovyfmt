@@ -103,6 +103,13 @@ pub(super) fn check(
     if cx.methods.contains("jcenter") {
         v.retain(|x| x.rule != "GradleJcenter");
     }
+    // a wrapper pinning a Gradle below 5.0 still has `task name << { }`; with no wrapper the
+    // report stays, as for GradleRemovedConfiguration
+    if v.iter().any(|x| x.rule == "GradleLeftShiftTask")
+        && build.wrapper_major().is_some_and(|m| m < 5)
+    {
+        v.retain(|x| x.rule != "GradleLeftShiftTask");
+    }
     convention_sets(&mut cx, v);
     convention_reads(&mut cx);
     let groovy4 = std::mem::take(&mut cx.groovy4);
@@ -144,7 +151,7 @@ struct GradleCtx<'a> {
 
 impl<'a> GradleCtx<'a> {
     /// One preorder pass: gathers the context and reports the rules that look at one node
-    /// (GradleSpaceAssignment, GradleJcenter, GradleTaskLeftShift).
+    /// (GradleSpaceAssignment, GradleJcenter, GradleLeftShiftTask).
     fn gather(
         src: &'a str,
         root: Node<'a>,
@@ -2362,6 +2369,28 @@ mod tests {
             rules("build.gradle", src),
             vec![("GradleJcenter", 2), ("GradleJcenter", 5)]
         );
+    }
+
+    #[test]
+    fn left_shift_tasks_under_a_wrapper() {
+        // a Gradle below 5.0 still has `task name << { }` (#256)
+        let root = std::env::temp_dir().join(format!("groovyfmt-lshift-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("gradle/wrapper")).unwrap();
+        let run = |v: &str| {
+            std::fs::write(
+                root.join("gradle/wrapper/gradle-wrapper.properties"),
+                format!("distributionUrl=https\\://services.gradle.org/distributions/gradle-{v}-bin.zip\n"),
+            )
+            .unwrap();
+            rules(
+                root.join("build.gradle").to_str().unwrap(),
+                "task hello << { }\n",
+            )
+            .len()
+        };
+        assert_eq!((run("2.2"), run("4.6"), run("4.10.3")), (0, 0, 0));
+        assert_eq!((run("5.0"), run("8.5")), (1, 1));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
