@@ -8,7 +8,7 @@
 
 ### Changed
 
-- `--lint` and the language server read and parse each Gradle wrapper file and each nearby `.gradle` script once per run (until a save, in the editor), not once per build script that needs them. On a build of 400 subprojects under a 1 MB root `build.gradle`, `--lint` went from 67 s to 1.2 s; results are unchanged.
+- `--lint`, `--lint --fix` and the language server's diagnostics and code actions read and parse each Gradle wrapper file and each nearby `.gradle` script once while it stays the same on disk, not again for every build script that needs them. On a build of 400 subprojects under a 1 MB root `build.gradle`, `--lint` went from 37 s to 1.1 s and `--lint --fix --diff` from 124 s to 2.2 s; results are unchanged.
 
 ### Fixed
 
