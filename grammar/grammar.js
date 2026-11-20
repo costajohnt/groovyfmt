@@ -184,6 +184,19 @@ function memberModifiers($) {
  * @param {GrammarSymbols<string>} $ Grammar reference symbols.
  * @returns {RuleOrLiteral[]} The modifiers, to spread into a `seq`.
  */
+// A closure after its `{`.
+function closureBody($) {
+  return [
+    optional(seq(optional($._line_break), $.closure_parameters)),
+    choice(
+      repeat(choice($._statement, ';', $._line_break)),
+      alias($._closure_command, $.command_chain),
+      alias($._closure_declaration, $.local_variable_declaration),
+    ),
+    '}',
+  ];
+}
+
 function defModifiers($) {
   return [
     repeat($._modifier),
@@ -540,6 +553,7 @@ module.exports = grammar({
     // first statement may follow; in an enum, a constant or a member.
     [$.closure],
     [$.block, $.closure],
+    [$._new_closure_on_line],
     [$.enum_body],
     // §4 — in an enum, `E() {` starts a constant with a body or a
     // constructor; a `,` after the body makes it a constant.
@@ -1631,6 +1645,8 @@ module.exports = grammar({
       repeat(choice('public', 'protected', 'private', 'static')),
       alias($._record_keyword, 'record'),
       field('name', $.identifier),
+      // Groovy 4: `record Pair<A, B>(A a, B b)`
+      optional(field('type_parameters', $.type_parameters)),
       field('components', $.record_components),
       optional($.super_interfaces),
       optional(field('body', alias($._record_body, $.class_body))),
@@ -2698,12 +2714,25 @@ module.exports = grammar({
         $._new_closure_start,
         field('closure', $.closure),
       )),
-      prec.left(PREC.POSTFIX, prec.dynamic(-1000, seq(
+      prec.left(PREC.POSTFIX, seq(
         field('function', $.object_creation_expression),
-        $._command_closure_start,
-        field('closure', $.closure),
-      ))),
+        field('closure', alias($._new_closure_on_line, $.closure)),
+      )),
     ),
+
+    // The closure reading of `new X() {` on its line loses to the class body
+    // where both parse. Its weight sits on the `{`, reduced first, not on the
+    // whole call: tree-sitter keeps at most six parse versions and drops the
+    // lowest weighted. With the weight only at the end, each declaration in
+    // the closure's body (+1) outweighed the class body's members, and a body
+    // like `int r = 1`, `String c = (String) 's'`, `def f() { c }` lost its
+    // class body reading to the version cap.
+    _new_closure_on_line: $ => seq(
+      $._new_closure_open,
+      ...closureBody($),
+    ),
+
+    _new_closure_open: $ => prec.dynamic(-1000, seq($._command_closure_start, '{')),
 
     // §3.2 / §5.11 — argument list. Positional args are `_expression`;
     // named args (Groovy's `k: v` in call position) are `map_entry`
@@ -2991,16 +3020,7 @@ module.exports = grammar({
     // it on its line, is read as that call, as Groovy reads it and as for a
     // lambda's body: `{ x -> println x }`, `{ println it }`. Elsewhere
     // `foo bar` stays two statements (see command_chain).
-    closure: $ => seq(
-      '{',
-      optional(seq(optional($._line_break), $.closure_parameters)),
-      choice(
-        repeat(choice($._statement, ';', $._line_break)),
-        alias($._closure_command, $.command_chain),
-        alias($._closure_declaration, $.local_variable_declaration),
-      ),
-      '}',
-    ),
+    closure: $ => seq('{', ...closureBody($)),
 
     _closure_command: $ => seq(
       field('receiver', choice(

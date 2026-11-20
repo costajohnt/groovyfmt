@@ -5,6 +5,8 @@
 ### Fixed
 
 - A file with many unclosed `/*` block comments now fails to parse in linear time. Each unclosed `/*` used to scan to the end of the file, so 4,000 of them took over 20 times as long as 1,000. The first unclosed `/*` now takes the rest of the file as one error, reported as `unexpected /*…` at that comment. ([#278](https://github.com/costajohnt/groovyfmt/issues/278))
+- A generic record, `record MapTransform<T>(Class<T> type, Closure<?> transformer) {}`, now parses, as in Groovy 4. ([#281](https://github.com/costajohnt/groovyfmt/issues/281))
+- An anonymous class body stays a class body when it holds an initialized field, then a field initialized with a cast, then a method, one per line: `new Object() {` then `int r = 1`, `String c = (String) 's'` and `def f() { c }`. It used to be read as a closure, which failed with "a method can't be declared in a closure or block". ([#281](https://github.com/costajohnt/groovyfmt/issues/281))
 
 ## 0.30.2 (2026-11-20)
 
