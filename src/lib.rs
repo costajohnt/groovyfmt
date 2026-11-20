@@ -656,6 +656,12 @@ mod tests {
             "p.accept f(/'/)\n",
             "foo (/'/)\n",
             "def x = new int @A(",
+            // a parenthesized command's lookahead past `=` for a lambda's `->`, and its
+            // gap before an operator (#261). An unclosed `/*` isn't here: `x /*` repeated
+            // is already superlinear in the runtime's comment lexing.
+            "(a b = (",
+            "(a b \\\n",
+            "x = (a b // c\n",
         ] {
             let run = |n: usize| {
                 std::hint::black_box(super::parse(&line.repeat(n)));
