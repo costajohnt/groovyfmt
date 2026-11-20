@@ -66,7 +66,7 @@ tasks.register('hello') {
       </li>
       <li>
         <h3>Linting that knows Gradle and Jenkins</h3>
-        <p>84 rules, with CodeNarc names for the general ones. The Gradle and Jenkinsfile rules catch what usually breaks only when the build runs, like APIs removed in Gradle 9 and classes Groovy 4 moved. <code>--fix</code> repairs the safe cases.</p>
+        <p>89 rules, with CodeNarc names for the general ones. The Gradle and Jenkinsfile rules catch what usually breaks only when the build runs, like APIs removed in Gradle 9 and classes Groovy 4 moved. <code>--fix</code> repairs the safe cases.</p>
 <pre class="wrap"><code>$ groovyfmt --lint
 build.gradle:3:1: GradleRemovedApi: The project property `sourceCompatibility` was removed in Gradle 9.0 with the plugin conventions; use java { sourceCompatibility = ... }</code></pre>
       </li>

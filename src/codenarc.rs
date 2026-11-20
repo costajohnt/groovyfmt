@@ -1020,7 +1020,7 @@ impl Import {
             }
         }
         if self.defines_set {
-            o += "# groovyfmt's Jenkins, Gradle and Spock rules, UnusedSuppression, Groovy24EmptyElement, StringLeftShiftDiscarded and NegatedInCheck keep their defaults.\n";
+            o += "# groovyfmt's Jenkins, Gradle and Spock rules, UnusedSuppression, Groovy24EmptyElement, StringLeftShiftDiscarded, NegatedInCheck and the other rules CodeNarc doesn't have keep their defaults.\n";
         }
 
         let mut list = |title: &str, items: Vec<String>| {
@@ -1569,6 +1569,10 @@ mod tests {
                         | "Groovy24EmptyElement"
                         | "StringLeftShiftDiscarded"
                         | "NegatedInCheck"
+                        | "UnintendedRegexPattern"
+                        | "ContradictoryComparison"
+                        | "ImpossibleSizeCheck"
+                        | "CaseConvertedComparison"
                 );
             assert_eq!(known(r.name), !ours, "{}", r.name);
         }

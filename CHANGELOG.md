@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+Five rules, all on by default, from bug patterns behind the upstream fixes. On the corpus they reported 31 places, 30 of them real bugs. ([#291](https://github.com/costajohnt/groovyfmt/issues/291))
+
+- UnintendedRegexPattern reports a quoted `.` or `|` given to `split`, `replaceAll` or `replaceFirst`, which read a regular expression: `version.split('.')` is an empty array and `name.replaceAll('.', '-')` is all dashes. `replaceAll('.', ' ')` with one character other than a separator (`_ - / : , ; |`), which builds a run as long as the text on purpose, is left alone, and so is a `split` on `Pattern.compile(...)` or Guava's `Splitter.on(...)`.
+- ContradictoryComparison reports `x != 'a' || x != 'b'` (always true) and `x == 1 && x == 2` (never true) anywhere in one chain of `||` or `&&`.
+- ImpossibleSizeCheck reports `x.size() >= 0` and `x.size() < 0` (or `length()`) in the condition of an `if`, `while`, `for`, ternary or elvis. Assertions and Spock conditions are left alone: tests write `result.size() >= 0` on purpose to check only that a call returns.
+- CaseConvertedComparison reports `s.toLowerCase() == 'Text'` with an uppercase letter in the string, or `toUpperCase()` with a lowercase one, by `==`, `!=` or `equals`.
+- JenkinsEnvBooleanComparison reports `env.NAME == true` or `!=` with a boolean: Jenkins keeps environment variables as strings, so the comparison is always false (or true).
+
 ## 0.30.5 (2026-11-20)
 
 ### Fixed

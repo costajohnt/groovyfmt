@@ -254,6 +254,51 @@ pub(super) const RULES: &[Rule] = &[
         fixable: false,
     },
     Rule {
+        name: "UnintendedRegexPattern",
+        default: true,
+        description: "`s.split('.')`, `s.split('|')`, `s.replaceAll('.', r)` or `s.replaceFirst('|', r)`: a quoted `.` or `|` given where a regular expression is read. Not slashy strings, a `split` on `Pattern.compile(...)` or `Splitter.on(...)`, or `replaceAll('.', c)` with one character `c` that isn't a separator (` `, `=`, `X`), which builds a run as long as the text on purpose; `_ - / : , ; |` still count as a dot meant to become a separator",
+        why: "`split`, `replaceAll` and `replaceFirst` read their first argument as a regular expression, where `.` matches any character and `|` matches the empty string. `'a.b'.split('.')` gives an empty array and `'a.b'.replaceAll('.', '-')` gives `---`. Escape it (`'\\\\.'`), or use `tokenize('.')` or `replace('.', '-')`, which take plain text.",
+        bad: "def parts = version.split('.')",
+        good: "def parts = version.tokenize('.')",
+        fixable: false,
+    },
+    Rule {
+        name: "ContradictoryComparison",
+        default: true,
+        description: "`x == a && x == b` (never true) or `x != a || x != b` (always true) for two different constants a and b (strings, integers, booleans or null) and the same name or property chain x",
+        why: "A value can't equal two different constants at once, so `x != 'a' || x != 'b'` is true for every `x` and `x == 1 && x == 2` is never true. The other operator was meant: `x != 'a' && x != 'b'`, or `x == 1 || x == 2`.",
+        bad: "if (mode != 'heat' || mode != 'cool') {\n    turnOff()\n}",
+        good: "if (mode != 'heat' && mode != 'cool') {\n    turnOff()\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "ImpossibleSizeCheck",
+        default: true,
+        description: "`x.size() >= 0` (always true) or `x.size() < 0` (never true), also with `length()` or with 0 on the left, in the condition of an `if`, `while`, `for`, ternary or elvis. Not an always true one inside `&&` or a never true one inside `||`, where it changes nothing, and not in an assertion or a Spock condition, where tests write it on purpose to check only that the call succeeds",
+        why: "A size or a length is never negative, so the comparison has one answer for every `x` and the branch always runs, or never does. Compare with what was meant, often `> 0`.",
+        bad: "if (failed.size() >= 0) {\n    report(failed)\n}",
+        good: "if (failed.size() > 0) {\n    report(failed)\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "CaseConvertedComparison",
+        default: true,
+        description: "`s.toLowerCase() == 'Text'` with an uppercase ASCII letter in the string, or `s.toUpperCase() == 'text'` with a lowercase one (also `!=` and `equals`)",
+        why: "After `toLowerCase()` the value has no uppercase letters, so it never equals a string that has one: `==` is always false and `!=` always true. Write the string in the same case, or use `equalsIgnoreCase`.",
+        bad: "if (mode.toLowerCase() == 'Automatic') {\n    scale()\n}",
+        good: "if (mode.toLowerCase() == 'automatic') {\n    scale()\n}",
+        fixable: false,
+    },
+    Rule {
+        name: "JenkinsEnvBooleanComparison",
+        default: true,
+        description: "`env.NAME == true` or `env.NAME != false` (either boolean, either side), unless the file declares its own `env` (a variable, parameter, loop variable or `env = ...` binding)",
+        why: "Jenkins keeps environment variables as strings, so `env.RELEASE = true` stores `'true'` and `env.RELEASE == true` is always false. Compare with the string (`env.RELEASE == 'true'`), or convert it (`env.RELEASE.toBoolean()`).",
+        bad: "if (env.IS_RELEASE == true) {\n    publish()\n}",
+        good: "if (env.IS_RELEASE == 'true') {\n    publish()\n}",
+        fixable: false,
+    },
+    Rule {
         name: "RandomDoubleCoercedToZero",
         default: false,
         description: "Math.random() cast to int or long, or assigned to an int or long field or returned from a method returning one (off by default: real code gave nothing to measure it on)",
@@ -451,10 +496,23 @@ pub(super) fn check(src: &str, nodes: &[Node], v: &mut Vec<Violation>) {
                 "==" => {
                     two_constants(src, n, v);
                     broken_oddness(src, n, v);
+                    case_converted(src, n, v);
+                    env_boolean(src, n, v);
                 }
-                "!=" | "<" | "<=" | ">" | ">=" => two_constants(src, n, v),
+                "!=" => {
+                    two_constants(src, n, v);
+                    case_converted(src, n, v);
+                    env_boolean(src, n, v);
+                }
+                "<" | "<=" | ">" | ">=" => {
+                    two_constants(src, n, v);
+                    size_check(src, n, v);
+                }
                 "<<" => string_left_shift(src, n, v),
-                "||" | "&&" => broken_null_check(src, n, v),
+                "||" | "&&" => {
+                    broken_null_check(src, n, v);
+                    contradictory(src, n, v);
+                }
                 _ => {}
             },
             "spaceship_expression" => two_constants(src, n, v),
@@ -468,7 +526,12 @@ pub(super) fn check(src: &str, nodes: &[Node], v: &mut Vec<Violation>) {
                 match method {
                     "getInteger" => integer_get_integer(src, n, v),
                     "removeAll" => remove_all_on_self(src, n, v),
-                    "equals" | "compareTo" => constant_equals(src, n, v),
+                    "equals" => {
+                        constant_equals(src, n, v);
+                        case_converted(src, n, v);
+                    }
+                    "compareTo" => constant_equals(src, n, v),
+                    "split" | "replaceAll" | "replaceFirst" => regex_pattern(src, n, v),
                     _ => {}
                 }
             }
@@ -1744,6 +1807,397 @@ fn in_not(src: &str, n: Node, v: &mut Vec<Violation>) {
     ));
 }
 
+/// The text of a quoted string literal (`'...'`, `"..."` or a triple-quoted one) with
+/// nothing interpolated and no escapes. `None` for a slashy string, whose author chose a
+/// regular expression, and for anything else.
+fn plain_quoted(src: &str, n: Node) -> Option<String> {
+    let n = unparen(n);
+    if n.kind() != "string_literal" || has_interpolation(n) {
+        return None;
+    }
+    let t = text(n, src);
+    let q = ["'''", "\"\"\"", "'", "\""]
+        .into_iter()
+        .find(|q| t.len() >= 2 * q.len() && t.starts_with(q) && t.ends_with(q))?;
+    let body = &t[q.len()..t.len() - q.len()];
+    (!body.contains('\\')).then(|| body.to_string())
+}
+
+/// The method a call names: `name` in `x.name(...)`.
+fn called_method<'a>(src: &'a str, n: Node) -> Option<&'a str> {
+    n.child_by_field_name("function")
+        .filter(|f| f.kind() == "field_access")
+        .and_then(|f| f.child_by_field_name("field"))
+        .map(|f| text(f, src))
+}
+
+/// The arguments of a call in parentheses; `None` for a closure or command argument.
+fn call_args(n: Node) -> Option<Node> {
+    n.child_by_field_name("arguments")
+        .filter(|a| a.kind() == "argument_list")
+}
+
+/// The node above `n`, past any parentheses.
+fn parent_past_parens(n: Node) -> Option<Node> {
+    let mut up = n.parent();
+    while let Some(p) = up.filter(|p| p.kind() == "parenthesized_expression") {
+        up = p.parent();
+    }
+    up
+}
+
+fn operator(n: Node) -> &'static str {
+    n.child_by_field_name("operator").map_or("", |o| o.kind())
+}
+
+/// UnintendedRegexPattern: `s.split('.')`, `s.replaceAll('|', r)`: a quoted `.` or `|`
+/// given where Java reads a regular expression (SpotBugs' RE_POSSIBLE_UNINTENDED_PATTERN).
+/// `replaceAll('.', c)` with one character `c` that isn't a separator builds a run as long as
+/// the text, on purpose (an underline of `=` under a header, in GradleUtils, or a mask of `X`);
+/// one of `_ - / : , ; |` is a dot meant to become a separator (bigtop, kordamp). A `split` on
+/// `Pattern.compile(...)` or Guava's `Splitter.on(...)` takes the text, not a pattern.
+fn regex_pattern(src: &str, n: Node, v: &mut Vec<Violation>) {
+    let (Some(method), Some(args)) = (called_method(src, n), call_args(n)) else {
+        return;
+    };
+    let receiver = n
+        .child_by_field_name("function")
+        .and_then(|f| f.child_by_field_name("object"))
+        .map(unparen);
+    if receiver.is_some_and(|r| {
+        r.kind() == "method_invocation"
+            && matches!(
+                called_method(src, r),
+                Some("compile" | "on" | "onPattern" | "fixedLength")
+            )
+    }) {
+        return;
+    }
+    let count = args.named_child_count();
+    if count != 2 && !(method == "split" && count == 1) {
+        return;
+    }
+    let Some(p) = args.named_child(0).and_then(|a| plain_quoted(src, a)) else {
+        return;
+    };
+    let what = match p.as_str() {
+        "." => "`.` matches any character",
+        "|" => "`|` matches the empty string",
+        _ => return,
+    };
+    if method != "split" {
+        match args.named_child(1).and_then(|r| plain_quoted(src, r)) {
+            Some(r)
+                if !(p == "."
+                    && r.chars().count() == 1
+                    && !matches!(r.as_str(), "_" | "-" | "/" | ":" | "," | ";" | "|" | ".")) => {}
+            _ => return,
+        }
+    }
+    let plain = if method == "split" {
+        "tokenize"
+    } else {
+        "replace"
+    };
+    v.push(at(
+        n,
+        "UnintendedRegexPattern",
+        format!("{method} reads '{p}' as a regular expression, where {what}; escape it ('\\\\{p}') or use {plain}, which takes plain text"),
+    ));
+}
+
+/// A constant for ContradictoryComparison: a plain quoted string, an integer, a boolean or
+/// null, tagged by kind. Decimals are left out: Groovy compares `1 == 1.0` by value.
+fn comparison_constant(src: &str, n: Node) -> Option<String> {
+    let n = unparen(n);
+    match n.kind() {
+        "null_literal" => Some("null".into()),
+        "boolean_literal" => Some(format!("b{}", text(n, src))),
+        "string_literal" => plain_quoted(src, n).map(|s| format!("s{s}")),
+        "number_literal" => {
+            let t = text(n, src).replace('_', "");
+            let t = t.trim_end_matches(['l', 'L', 'i', 'I', 'g', 'G']);
+            let (digits, radix) = match t.get(..2) {
+                Some("0x" | "0X") => (&t[2..], 16),
+                Some("0b" | "0B") => (&t[2..], 2),
+                _ if t.len() > 1 && t.starts_with('0') => (&t[1..], 8),
+                _ => (t, 10),
+            };
+            u128::from_str_radix(digits, radix)
+                .ok()
+                .map(|x| format!("n{x}"))
+        }
+        _ => None,
+    }
+}
+
+/// A subject that reads the same value each time: a name or a chain of property reads.
+fn plain_subject(n: Node) -> bool {
+    match n.kind() {
+        "identifier" | "this" => true,
+        "field_access" => n.child_by_field_name("object").is_some_and(plain_subject),
+        _ => false,
+    }
+}
+
+/// ContradictoryComparison: in a chain of `||`, two `x != a` with different constants (always
+/// true); in a chain of `&&`, two `x == a` (never true). Reported once, on the whole chain.
+fn contradictory(src: &str, n: Node, v: &mut Vec<Violation>) {
+    let op = operator(n);
+    let same_op = |b: Node| b.kind() == "binary_expression" && operator(b) == op;
+    if parent_past_parens(n).is_some_and(same_op) {
+        return;
+    }
+    // `x == 1 && (x = 2) && x == 2` can be true
+    let mut writes = false;
+    crate::preorder(n, |d| {
+        writes |= matches!(
+            d.kind(),
+            "assignment_expression" | "update_expression" | "unary_update_expression"
+        );
+        !writes
+    });
+    if writes {
+        return;
+    }
+    let test = if op == "||" { "!=" } else { "==" };
+    let mut stack = vec![n];
+    let mut seen: Vec<(&str, String)> = Vec::new();
+    while let Some(e) = stack.pop() {
+        let e = unparen(e);
+        if same_op(e) {
+            stack.extend(e.child_by_field_name("right"));
+            stack.extend(e.child_by_field_name("left"));
+            continue;
+        }
+        if e.kind() != "binary_expression" || operator(e) != test {
+            continue;
+        }
+        let (Some(l), Some(r)) = (
+            e.child_by_field_name("left"),
+            e.child_by_field_name("right"),
+        ) else {
+            continue;
+        };
+        let (subject, value) = match (comparison_constant(src, l), comparison_constant(src, r)) {
+            (None, Some(c)) => (unparen(l), c),
+            (Some(c), None) => (unparen(r), c),
+            _ => continue,
+        };
+        if !plain_subject(subject) {
+            continue;
+        }
+        let x = text(subject, src);
+        // constants of different kinds may both differ from a value of a third kind, so
+        // only null mixes with the others
+        let kind = |c: &str| c.chars().next();
+        if seen.iter().any(|(s, c)| {
+            *s == x && *c != value && (kind(c) == kind(&value) || c == "null" || value == "null")
+        }) {
+            let (what, fix) = if op == "||" {
+                ("is true for every value", "&&")
+            } else {
+                ("is never true", "||")
+            };
+            v.push(at(
+                n,
+                "ContradictoryComparison",
+                format!("`{x}` can't equal two different constants, so this condition {what}; did you mean {fix}?"),
+            ));
+            return;
+        }
+        seen.push((x, value));
+    }
+}
+
+/// ImpossibleSizeCheck: `x.size() >= 0` or `x.size() < 0` (or `length()`, or 0 on the left)
+/// in a condition. An always true one inside `&&`, or a never true one inside `||`, changes
+/// nothing (`res.size() >= 0 && res.size() <= 2`, in doris) and is left alone. So are
+/// assertions and Spock conditions: of 46 on the corpus, 45 were tests checking on purpose
+/// only that a call returns (`result.size() >= 0 // may be 0`); the one `if` was a bug.
+fn size_check(src: &str, n: Node, v: &mut Vec<Violation>) {
+    let (Some(l), Some(r)) = (
+        n.child_by_field_name("left"),
+        n.child_by_field_name("right"),
+    ) else {
+        return;
+    };
+    let is_size = |m: Node| {
+        let m = unparen(m);
+        m.kind() == "method_invocation"
+            && call_args(m).is_some_and(|a| a.named_child_count() == 0)
+            && matches!(called_method(src, m), Some("size" | "length"))
+    };
+    let zero = |z: Node| comparison_constant(src, z).is_some_and(|c| c == "n0");
+    // the comparison read with the size on the left
+    let op = match (is_size(l) && zero(r), zero(l) && is_size(r), operator(n)) {
+        (true, _, op) => op,
+        (_, true, "<=") => ">=",
+        (_, true, ">") => "<",
+        _ => return,
+    };
+    let always = match op {
+        ">=" => true,
+        "<" => false,
+        _ => return,
+    };
+    // up through `!`, `&&` and `||` to the statement or expression that branches on it. `!`
+    // turns the constant over; an always true part of `&&`, or a never true one of `||`,
+    // changes nothing, and is left alone
+    let mut c = n;
+    let mut value = always;
+    let in_condition = loop {
+        let Some(p) = c.parent() else { break false };
+        match p.kind() {
+            "parenthesized_expression" => {}
+            "unary_expression" if operator(p) == "!" => value = !value,
+            "binary_expression" if matches!(operator(p), "&&" | "||") => {
+                if (operator(p) == "&&") == value {
+                    return;
+                }
+            }
+            "if_statement" | "while_statement" | "do_while_statement" | "for_statement" => {
+                break p.child_by_field_name("condition") == Some(c);
+            }
+            "ternary_expression" => break p.child_by_field_name("condition") == Some(c),
+            "elvis_expression" => break p.child_by_field_name("value") == Some(c),
+            _ => break false,
+        }
+        c = p;
+    };
+    if !in_condition {
+        return;
+    }
+    v.push(at(
+        n,
+        "ImpossibleSizeCheck",
+        format!(
+            "A size is never negative, so `{}` is {}; compare with what was meant (> 0?)",
+            text(n, src),
+            if always { "always true" } else { "never true" }
+        ),
+    ));
+}
+
+/// CaseConvertedComparison: `s.toLowerCase() == 'Text'` with an uppercase ASCII letter in the
+/// string (or `toUpperCase` and a lowercase one), with `==`, `!=` or `equals`. Only ASCII
+/// letters: no Unicode case mapping turns a letter into an ASCII one of the other case.
+fn case_converted(src: &str, n: Node, v: &mut Vec<Violation>) {
+    let (a, b) = if n.kind() == "method_invocation" {
+        let arg = call_args(n)
+            .filter(|a| a.named_child_count() == 1)
+            .and_then(|a| a.named_child(0));
+        let object = n
+            .child_by_field_name("function")
+            .and_then(|f| f.child_by_field_name("object"));
+        let (Some(o), Some(arg)) = (object, arg) else {
+            return;
+        };
+        (o, arg)
+    } else {
+        let (Some(l), Some(r)) = (
+            n.child_by_field_name("left"),
+            n.child_by_field_name("right"),
+        ) else {
+            return;
+        };
+        (l, r)
+    };
+    let convert = |m: Node| {
+        let m = unparen(m);
+        if m.kind() != "method_invocation"
+            || !call_args(m).is_some_and(|a| a.named_child_count() <= 1)
+        {
+            return None;
+        }
+        called_method(src, m).filter(|f| matches!(*f, "toLowerCase" | "toUpperCase"))
+    };
+    let (method, s) = match (
+        convert(a),
+        plain_quoted(src, b),
+        convert(b),
+        plain_quoted(src, a),
+    ) {
+        (Some(m), Some(s), _, _) | (_, _, Some(m), Some(s)) => (m, s),
+        _ => return,
+    };
+    let (clash, case) = if method == "toLowerCase" {
+        (s.chars().any(|c| c.is_ascii_uppercase()), "uppercase")
+    } else {
+        (s.chars().any(|c| c.is_ascii_lowercase()), "lowercase")
+    };
+    if clash {
+        v.push(at(
+            n,
+            "CaseConvertedComparison",
+            format!("After {method}() the value has no {case} letters, so it never equals '{s}'; write the string in the same case or use equalsIgnoreCase"),
+        ));
+    }
+}
+
+/// JenkinsEnvBooleanComparison: `env.NAME == true`, or `!=`, with either boolean on either
+/// side: Jenkins keeps environment variables as strings. A file declaring its own `env`
+/// (a variable, field, method, closure or catch parameter, loop variable, or a script
+/// binding assigned `env = ...`) is left alone.
+fn env_boolean(src: &str, n: Node, v: &mut Vec<Violation>) {
+    let (Some(l), Some(r)) = (
+        n.child_by_field_name("left"),
+        n.child_by_field_name("right"),
+    ) else {
+        return;
+    };
+    let env_read = |e: Node| {
+        let e = unparen(e);
+        e.kind() == "field_access"
+            && e.child_by_field_name("object")
+                .is_some_and(|o| o.kind() == "identifier" && text(o, src) == "env")
+    };
+    let boolean = |b: Node| unparen(b).kind() == "boolean_literal";
+    let (read, b) = if env_read(l) && boolean(r) {
+        (l, r)
+    } else if env_read(r) && boolean(l) {
+        (r, l)
+    } else {
+        return;
+    };
+    let mut root = n;
+    while let Some(p) = root.parent() {
+        root = p;
+    }
+    let mut own = false;
+    crate::preorder(root, |d| {
+        let named = |field: &str| {
+            d.child_by_field_name(field)
+                .is_some_and(|x| text(x, src) == "env")
+        };
+        own |= match d.kind() {
+            "variable_declarator"
+            | "formal_parameter"
+            | "closure_parameter"
+            | "catch_formal_parameter" => named("name"),
+            "for_in_statement" => named("variable"),
+            // a script binding, `env = [ok: true]`
+            "assignment_expression" => named("left"),
+            _ => false,
+        };
+        !own
+    });
+    if own {
+        return;
+    }
+    v.push(at(
+        n,
+        "JenkinsEnvBooleanComparison",
+        format!(
+            "Jenkins keeps `{}` as a string, so comparing it with {} is always {}; compare with '{}' or use .toBoolean()",
+            text(unparen(read), src),
+            text(unparen(b), src),
+            if operator(n) == "==" { "false" } else { "true" },
+            text(unparen(b), src),
+        ),
+    ));
+}
+
 /// UnnecessaryModOne: `x % 1`, which is always 0.
 fn mod_one(src: &str, n: Node, v: &mut Vec<Violation>) {
     let one = n
@@ -2032,6 +2486,61 @@ mod tests {
             rules(src, "ComparisonOfTwoConstants"),
             vec![1, 2, 3, 6, 8, 9, 10]
         );
+    }
+
+    #[test]
+    fn unintended_regex_patterns() {
+        let src = "a = s.split('.')\nb = s.split(\"|\", 2)\nc = s.replaceAll('.', '-')\nd = s.replaceFirst('|', '')\ne = s.split('\\\\.')\nf = s.split(/./)\ng = s.replaceAll('.', ' ')\nh = s.replaceAll('.', '=')\ni = s.replaceFirst('.') { it.toUpperCase() }\nj = s.tokenize('.')\nk = s.replace('.', '-')\nl = s.split(',')\nm = s.replaceAll('|', ' ')\nn = s.replaceAll('.', sep)\no = Pattern.compile(',').split('.')\np = Splitter.on(',').split('|')\nq = s.replaceAll('.', 'X')\nr = s.replaceAll('.', '_')\nt = s.replaceAll('.', '')\n";
+        assert_eq!(
+            rules(src, "UnintendedRegexPattern"),
+            vec![1, 2, 3, 4, 13, 18, 19]
+        );
+    }
+
+    #[test]
+    fn contradictory_comparisons() {
+        let src = "if (m != 'heat' || m != 'cool') { f() }\nif (a.t == 1 && a.t == 0xFF) { f() }\nif (x != null || x != '') { f() }\nif (ok && (x == 1 && x == 2)) { f() }\nif (m != 'heat' && m != 'cool') { f() }\nif (x == 1 || x == 2) { f() }\nif (x != 1 || x != '1') { f() }\nif (x == 1 && x == 1L) { f() }\nif (x == 1 && x == 1.0) { f() }\nif (n() != 1 || n() != 2) { f() }\nif (x != 1 || y != 2) { f() }\nif (x != 1 || b || 3 != x) { f() }\n";
+        assert_eq!(rules(src, "ContradictoryComparison"), vec![1, 2, 3, 4, 12]);
+        let src =
+            "if (x == 1 && (x = 2) && x == 2) { f() }\nif (x == 1 && x++ && x == 2) { f() }\n";
+        assert!(rules(src, "ContradictoryComparison").is_empty());
+    }
+
+    #[test]
+    fn impossible_size_checks() {
+        let src = "if (xs.size() >= 0) { f() }\nif (s.length() < 0) { f() }\nwhile (0 <= xs.size()) { f() }\nif (0 > xs.size()) { f() }\nif (xs.size() >= 0 && xs.size() <= 2) { f() }\nif (xs.size() < 0 || ok) { f() }\nif (xs.size() > 0) { f() }\nif (xs.size >= 0) { f() }\nif (xs.size(1) >= 0) { f() }\nif (ok && (xs.size() >= 0 || ok)) { f() }\nr = !(xs.size() < 0) ? 1 : 2\nassert xs.size() >= 0\ndef b = xs.size() >= 0\nassertTrue(xs.size() >= 0)\nif (f(xs.size() >= 0)) { f() }\ndo { f() } while (xs.size() >= 0)\nif (!(xs.size() < 0) && ok) { f() }\nif (!(xs.size() >= 0) || ok) { f() }\nif ((xs.size() >= 0) == flag) { f() }\nif (xs.size() >= 0L) { f() }\nif (!(xs.size() < 0) || ok) { f() }\n";
+        assert_eq!(
+            rules(src, "ImpossibleSizeCheck"),
+            vec![1, 2, 3, 4, 11, 16, 20, 21]
+        );
+    }
+
+    #[test]
+    fn case_converted_comparisons() {
+        let src = "a = m.toLowerCase() == 'Automatic'\nb = 'abc' != s.toUpperCase()\nc = s.toLowerCase(Locale.ROOT).equals('X')\nd = m.toLowerCase() == 'automatic'\ne = s.toLowerCase() == 'Run'.toLowerCase()\nf = s.toUpperCase() == 'ABC_1'\ng = s.toLowerCase() == \"${X}\"\nh = s.toLowerCase() == 'caf\\u00C9'\n";
+        assert_eq!(rules(src, "CaseConvertedComparison"), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn env_boolean_comparisons() {
+        let src = "if (env.IS_RELEASE == true) { f() }\nif (false != env.DRY) { f() }\nif (env.IS_RELEASE == 'true') { f() }\nif (params.X == true) { f() }\n";
+        assert_eq!(rules(src, "JenkinsEnvBooleanComparison"), vec![1, 2]);
+        let own = "def check(env) { env.ok == true }\n";
+        assert!(rules(own, "JenkinsEnvBooleanComparison").is_empty());
+        for own in [
+            "def env = [ok: true]\nassert env.ok == true\n",
+            "for (env in envs) { if (env.ok == true) f() }\n",
+            "for (Map env : envs) { if (env.ok == true) f() }\n",
+            "try { } catch (Exception env) { if (env.ok == true) f() }\n",
+            "xs.each { env -> if (env.ok == true) f() }\n",
+            "xs.each { Map env -> if (env.ok == true) f() }\n",
+            "env = [ok: true]\nassert env.ok == true\n",
+        ] {
+            assert!(
+                rules(own, "JenkinsEnvBooleanComparison").is_empty(),
+                "{own}"
+            );
+        }
     }
 
     #[test]
