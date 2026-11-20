@@ -436,6 +436,9 @@ static enum ParenGap skip_paren_gap(TSLexer *lexer, unsigned *budget) {
             lexer->advance(lexer, false);
             if (lexer->lookahead == '/') {
                 while (lexer->lookahead != '\n') {
+                    if (lexer->eof(lexer)) {
+                        return GAP_END; // a comment that ends the input
+                    }
                     if (!skip_step(lexer, budget)) {
                         return GAP_FAIL;
                     }

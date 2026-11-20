@@ -671,6 +671,23 @@ mod tests {
     }
 
     #[test]
+    fn paren_command_assignment_before_a_comment_ending_the_input_parses() {
+        // no final line break after the comment (#261): Groovy 3 and 4 call `a(b = c)`
+        for src in [
+            "x = (a b = c) // c",
+            "x = (a b = c)\n// tail",
+            "x = (a b /* c */ - d) // c",
+        ] {
+            let tree = super::parse(src);
+            assert!(
+                !tree.root_node().has_error(),
+                "{src:?}: {}",
+                tree.root_node().to_sexp()
+            );
+        }
+    }
+
+    #[test]
     fn nul_byte_in_a_string_parses() {
         // in every string kind, and in a comment, which already parsed
         let src =
