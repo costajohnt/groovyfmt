@@ -691,6 +691,54 @@ mod tests {
     }
 
     #[test]
+    fn closure_parameters_after_a_generic_first_parameter() {
+        // not a declaration `Map<..> m, int` and a lambda `n -> ...` (#283), as Groovy
+        // 2.4, 3 and 4 read them
+        for (src, count) in [
+            (
+                "def a = { Map<String, List<Integer>> m, int n -> (String) m }",
+                2,
+            ),
+            ("def a = { Map<String, Integer> m, int n -> m }", 2),
+            ("def a = { String[] m, int n -> m }", 2),
+            ("def a = { String m = 'x', int n -> m }", 2),
+            ("def a = { final Map<K, V> m, a, def n -> m }", 3),
+            ("def a = { Map<K, V> m,\n    int n ->\n    m\n}", 2),
+        ] {
+            let tree = super::parse(src);
+            let mut params = Vec::new();
+            let mut lambdas = 0;
+            super::preorder(tree.root_node(), |n| {
+                match n.kind() {
+                    "closure_parameter" => params.push(super::text(n, src).to_string()),
+                    "lambda_expression" => lambdas += 1,
+                    _ => {}
+                }
+                true
+            });
+            assert!(
+                params.len() == count && lambdas == 0 && !tree.root_node().has_error(),
+                "{src:?}: {}",
+                tree.root_node().to_sexp()
+            );
+        }
+    }
+
+    #[test]
+    fn anonymous_class_body_of_many_fields_stays_a_class_body() {
+        // each field weighed +1 for the closure reading, against -1000 (#283)
+        let fields = "    int f = 1\n".repeat(2_000);
+        let src = format!("def x = new Object() {{\n{fields}    void m() {{ f }}\n}}\n");
+        let tree = super::parse(&src);
+        let mut bodies = 0;
+        super::preorder(tree.root_node(), |n| {
+            bodies += usize::from(n.kind() == "class_body");
+            true
+        });
+        assert!(bodies == 1 && !tree.root_node().has_error());
+    }
+
+    #[test]
     fn nul_byte_in_a_string_parses() {
         // in every string kind, and in a comment, which already parsed
         let src =

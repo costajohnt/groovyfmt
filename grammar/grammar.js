@@ -2732,7 +2732,9 @@ module.exports = grammar({
       ...closureBody($),
     ),
 
-    _new_closure_open: $ => prec.dynamic(-1000, seq($._command_closure_start, '{')),
+    // -32000, near the 16-bit limit of a dynamic precedence: at -1000 a class body of
+    // about 1,000 declarations flipped to the closure reading.
+    _new_closure_open: $ => prec.dynamic(-32000, seq($._command_closure_start, '{')),
 
     // §3.2 / §5.11 — argument list. Positional args are `_expression`;
     // named args (Groovy's `k: v` in call position) are `map_entry`
@@ -3041,9 +3043,15 @@ module.exports = grammar({
       alias($._bare_declarator, $.variable_declarator),
     ),
 
+    // prec.dynamic: each parameter before a `,` outweighs a declaration and a
+    // lambda, `{ Map<K, V> m, int n -> }` not `Map<K, V> m, int` and `n -> `,
+    // as Groovy 2.4, 3 and 4 read it. 2, not 1: a default value costs its
+    // parameter 1, and the declaration's reading has defaults only before a `,`.
+    // A last parameter whose name is on the line after its type gives it back
+    // (see closure_parameter).
     closure_parameters: $ => seq(
       optional(seq(
-        repeat(seq($.closure_parameter, ',')),
+        repeat(prec.dynamic(2, seq($.closure_parameter, ','))),
         choice(
           $.closure_parameter,
           alias($._closure_parameter_name_default, $.closure_parameter),
@@ -3086,6 +3094,18 @@ module.exports = grammar({
         // `as` is a name too (Groovy 3 and 4): `{ String as -> as }`
         field('name', choice($.identifier, alias('as', $.identifier))),
       )),
+      // A name on the line after its type, which Groovy never reads as a
+      // parameter: the type ends a declaration and the name starts a statement,
+      // `Map<K, V> m, n` and then `n -> m`. prec.dynamic: it outweighs the
+      // `,` before it (see closure_parameters).
+      prec(2, prec.dynamic(-3, seq(
+        repeat($.annotation),
+        optional(choice('final', seq('def', 'final'))),
+        optional('def'),
+        field('type', choice($._type, $.varargs_type)),
+        $._line_break,
+        field('name', choice($.identifier, alias('as', $.identifier))),
+      ))),
       // `in` too, after a type (Groovy 3 and 4): `{ InputStream in -> }`. Only
       // after a type, where `in` is already a keyword token, so `{ in.x }`
       // still lexes `in` as a name.

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A closure whose first parameter has a generic or array type or a default, followed by more parameters, now parses as a closure with those parameters, as Groovy 2.4, 3 and 4 read it: `{ Map<String, Integer> m, int n -> m }` and `{ String m = 'x', int n -> m }`. They were read as a declaration `Map<String, Integer> m, int` and a lambda `n -> m`, so lint rules saw the wrong tree, and a parameter list over several lines indented its closure's body as a lambda's. ([#283](https://github.com/costajohnt/groovyfmt/issues/283))
+- An anonymous class body with more than about 1,000 field declarations stays a class body. It used to be read as a closure, which failed with "a method can't be declared in a closure or block". The limit is now about 32,000. ([#283](https://github.com/costajohnt/groovyfmt/issues/283))
+
 ## 0.30.3 (2026-11-20)
 
 ### Fixed
