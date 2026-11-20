@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+Three more rules, on by default, mined the same way as 0.31.0's. On the corpus they reported 66 places, about 58 of them real bugs. ([#294](https://github.com/costajohnt/groovyfmt/issues/294))
+
+- DuplicateCondition reports an `else if` whose condition is the same code as an earlier one in the chain, so its branch never runs.
+- ModifiedWhileIterating reports `for (x in xs)` or `xs.each { }` whose body adds to, removes from or clears `xs`, which throws ConcurrentModificationException on the next step. Not when `break`, `return` or `throw` follows the change, or the file declares `xs` as a concurrent or copy-on-write collection.
+- StringFormatArguments reports `String.format` with a literal pattern whose conversions and arguments don't match in number: too few throw MissingFormatArgumentException, too many are never printed.
+
 ## 0.31.0 (2026-11-20)
 
 ### Added

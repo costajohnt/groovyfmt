@@ -1573,6 +1573,9 @@ mod tests {
                         | "ContradictoryComparison"
                         | "ImpossibleSizeCheck"
                         | "CaseConvertedComparison"
+                        | "StringFormatArguments"
+                        | "ModifiedWhileIterating"
+                        | "DuplicateCondition"
                 );
             assert_eq!(known(r.name), !ours, "{}", r.name);
         }

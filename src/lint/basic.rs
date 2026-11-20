@@ -299,6 +299,33 @@ pub(super) const RULES: &[Rule] = &[
         fixable: false,
     },
     Rule {
+        name: "StringFormatArguments",
+        default: true,
+        description: "`String.format` with a literal pattern whose conversions (not `%%` or `%n`) and arguments don't match in number; not a pattern that numbers its arguments (`%1$s`, `%<s`), a spread argument, or one argument for several conversions (it may be an array)",
+        why: "Too few arguments throw MissingFormatArgumentException when the line runs; too many are never printed. Either way the message isn't what was meant.",
+        bad: "def msg = String.format('%s failed after %d of %d tries', name, tries)",
+        good: "def msg = String.format('%s failed after %d of %d tries', name, tries, max)",
+        fixable: false,
+    },
+    Rule {
+        name: "ModifiedWhileIterating",
+        default: true,
+        description: "`for (x in xs)`, `xs.each { }`, `eachWithIndex` or `forEach` whose body adds to, removes from or clears `xs` (or `xs << y`), including closures of methods that run them at once (`collect`, `find`, `with`...). Not a closure that may run later, a nested walk over `xs` (it reports itself), a body declaring its own `xs`, a collection a line of the file names with `Concurrent`, `CopyOnWrite` or `synchronized`, or a change after which the block ends the walk: `throw`, or in a for-in `return` or a `break` of this loop",
+        why: "Changing a collection while an iterator walks it makes the next step throw ConcurrentModificationException.",
+        bad: "for (job in jobs) {\n    if (job.done) {\n        jobs.remove(job)\n    }\n}",
+        good: "jobs.removeIf { it.done }",
+        fixable: false,
+    },
+    Rule {
+        name: "DuplicateCondition",
+        default: true,
+        description: "an `else if` whose condition is the same code as an earlier one in the same chain (comments and layout aside)",
+        why: "The earlier branch takes every case the repeated condition matches, so the later branch never runs: usually a copy and paste that should test something else.",
+        bad: "if (code == 404) {\n    missing()\n} else if (code == 404) {\n    denied()\n}",
+        good: "if (code == 404) {\n    missing()\n} else if (code == 403) {\n    denied()\n}",
+        fixable: false,
+    },
+    Rule {
         name: "RandomDoubleCoercedToZero",
         default: false,
         description: "Math.random() cast to int or long, or assigned to an int or long field or returned from a method returning one (off by default: real code gave nothing to measure it on)",
@@ -388,6 +415,7 @@ pub(super) const KINDS: &[&str] = &[
     "instanceof_expression",
     "membership_expression",
     "parenthesized_type_cast",
+    "for_in_statement",
     "field_declaration",
     "argument_list",
     "list_literal",
@@ -419,6 +447,9 @@ fn fields(n: Node) -> &'static Fields {
 pub(super) fn check(src: &str, nodes: &[Node], v: &mut Vec<Violation>) {
     let Some(&first) = nodes.first() else { return };
     let f = fields(first);
+    // the ifs of else-if chains already walked from their head (nodes come in preorder)
+    let mut chained = HashSet::new();
+    let mut concurrent = None;
     for &n in nodes {
         match n.kind() {
             "return_statement" | "break_statement" | "continue_statement" => dead_code(n, v),
@@ -455,9 +486,12 @@ pub(super) fn check(src: &str, nodes: &[Node], v: &mut Vec<Violation>) {
                 constant_ternary(src, n, v);
                 bitwise_condition(n.child_by_field_name("value"), v);
             }
-            "if_statement" | "while_statement" => {
+            "if_statement" => {
                 bitwise_condition(n.child_by_field_name("condition"), v);
+                if_chain(src, n, &mut chained, v);
             }
+            "while_statement" => bitwise_condition(n.child_by_field_name("condition"), v),
+            "for_in_statement" => modified_while_iterating(src, n, &mut concurrent, v),
             "object_creation_expression" => big_decimal(src, n, v),
             "unary_expression" => double_negative(src, n, v),
             "argument_list" | "list_literal" | "map_literal" => empty_element(src, n, v),
@@ -532,6 +566,10 @@ pub(super) fn check(src: &str, nodes: &[Node], v: &mut Vec<Violation>) {
                     }
                     "compareTo" => constant_equals(src, n, v),
                     "split" | "replaceAll" | "replaceFirst" => regex_pattern(src, n, v),
+                    "format" => string_format(src, n, v),
+                    "each" | "eachWithIndex" | "forEach" => {
+                        modified_while_iterating(src, n, &mut concurrent, v)
+                    }
                     _ => {}
                 }
             }
@@ -2198,6 +2236,404 @@ fn env_boolean(src: &str, n: Node, v: &mut Vec<Violation>) {
     ));
 }
 
+/// The tokens of `n` with its tree shape, comments and layout aside: equal for the same code.
+/// `None` when the code may give a different answer each time it runs (`it.next()`,
+/// `queue.poll()`, `i++`), so a repeat of it isn't dead.
+fn code_tokens<'a>(src: &'a str, n: Node) -> Option<Vec<&'a str>> {
+    let mut out = Vec::new();
+    let mut pure = true;
+    crate::preorder(n, |d| {
+        let kind = d.kind();
+        if kind.contains("comment") {
+            return false;
+        }
+        if matches!(
+            kind,
+            "update_expression" | "unary_update_expression" | "assignment_expression"
+        ) || (kind == "method_invocation"
+            && d.child_by_field_name("function")
+                .map(|f| f.child_by_field_name("field").unwrap_or(f))
+                .is_some_and(|m| {
+                    let m = text(m, src);
+                    [
+                        "next", "poll", "read", "pop", "take", "remove", "random", "nano",
+                        "current",
+                    ]
+                    .iter()
+                    .any(|p| m.starts_with(p))
+                }))
+        {
+            pure = false;
+        }
+        if d.child_count() == 0 || kind == "string_literal" {
+            out.push(text(d, src));
+            return false;
+        }
+        out.push(kind);
+        true
+    });
+    pure.then_some(out)
+}
+
+/// The conversions in a `String.format` pattern, not counting `%%` and `%n`; `None` when one
+/// names its argument (`%1$s`, `%<s`), which this count can't follow.
+fn format_conversions(p: &str) -> Option<usize> {
+    let b = p.as_bytes();
+    let (mut i, mut count) = (0, 0);
+    while i < b.len() {
+        if b[i] != b'%' {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        let start = i;
+        while i < b.len() && (b[i].is_ascii_digit() || b"-#+ 0,(.<$".contains(&b[i])) {
+            i += 1;
+        }
+        let spec = &p[start..i];
+        if spec.contains('$') || spec.contains('<') {
+            return None;
+        }
+        let &c = b.get(i)?;
+        i += 1;
+        if c == b't' || c == b'T' {
+            i += 1; // date conversions take a second letter
+        }
+        if c != b'%' && c != b'n' {
+            count += 1;
+        }
+    }
+    Some(count)
+}
+
+/// StringFormatArguments: `String.format('%s and %s', a)`, a pattern whose conversions and
+/// arguments don't match. Too few throws MissingFormatArgumentException; too many are
+/// ignored. Left alone: one argument for several conversions (it may be an array), a spread
+/// argument, and patterns that number their arguments.
+fn string_format(src: &str, n: Node, v: &mut Vec<Violation>) {
+    let on_string = n
+        .child_by_field_name("function")
+        .and_then(|f| f.child_by_field_name("object"))
+        .is_some_and(|o| matches!(text(o, src), "String" | "java.lang.String"));
+    let Some(args) = call_args(n).filter(|_| on_string) else {
+        return;
+    };
+    let mut c = args.walk();
+    let mut list: Vec<Node> = args.named_children(&mut c).collect();
+    // `String.format(Locale.ROOT, pattern, ...)`
+    if list.first().is_some_and(|a| {
+        let t = text(*a, src);
+        a.kind() != "string_literal" && (t.contains("Locale") || t.eq_ignore_ascii_case("locale"))
+    }) {
+        list.remove(0);
+    }
+    let Some((&pattern, rest)) = list.split_first() else {
+        return;
+    };
+    if pattern.kind() != "string_literal" || has_interpolation(pattern) {
+        return;
+    }
+    let t = text(pattern, src);
+    let q = if t.starts_with("'''") || t.starts_with("\"\"\"") {
+        3
+    } else {
+        1
+    };
+    if t.len() < 2 * q || t.starts_with('/') || t.starts_with('$') {
+        return;
+    }
+    let Some(want) = format_conversions(&t[q..t.len() - q]) else {
+        return;
+    };
+    if rest.iter().any(|a| a.kind().contains("spread")) {
+        return;
+    }
+    let got = rest.len();
+    if got == want || (got == 1 && want > 1 && !is_literal(rest[0])) {
+        return;
+    }
+    v.push(at(
+        n,
+        "StringFormatArguments",
+        format!(
+            "The pattern has {want} conversion{} but {got} argument{} follow{}; {}",
+            if want == 1 { "" } else { "s" },
+            if got == 1 { "" } else { "s" },
+            if got == 1 { "s" } else { "" },
+            if got < want {
+                "String.format throws MissingFormatArgumentException"
+            } else {
+                "the extra arguments are never printed"
+            }
+        ),
+    ));
+}
+
+/// Methods that run their closure argument before they return, so a change made in it
+/// happens during an enclosing walk; any other closure may run later, or never.
+const RUNS_CLOSURE_NOW: &[&str] = &[
+    "each",
+    "eachWithIndex",
+    "forEach",
+    "collect",
+    "collectMany",
+    "collectEntries",
+    "find",
+    "findAll",
+    "findResult",
+    "findResults",
+    "findIndexOf",
+    "any",
+    "every",
+    "with",
+    "tap",
+    "times",
+    "upto",
+    "downto",
+    "step",
+    "inject",
+    "sum",
+    "count",
+    "groupBy",
+    "countBy",
+    "sort",
+    "toSorted",
+    "eachLine",
+    "split",
+    "withCloseable",
+];
+
+/// The names a line of the file declares with `Concurrent`, `CopyOnWrite` or `synchronized`:
+/// collections that may change while iterated. Built once per file, on the first change found.
+fn concurrent_names(src: &str) -> HashSet<&str> {
+    src.lines()
+        .filter(|l| {
+            l.contains("Concurrent") || l.contains("CopyOnWrite") || l.contains("synchronized")
+        })
+        .flat_map(|l| l.split(|c: char| !c.is_alphanumeric() && c != '_'))
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// ModifiedWhileIterating: `for (x in xs) { xs.remove(x) }` or `xs.each { xs.add(it) }`,
+/// which changes a collection while an iterator walks it: the next step throws
+/// ConcurrentModificationException. The walk goes into closures only of methods that run
+/// them at once (`RUNS_CLOSURE_NOW`), and leaves a nested walk over the same collection to
+/// report itself. Not when a later statement of the block holding the change ends the walk
+/// first: `throw`, or in a for-in `return`, or a `break` of this loop.
+// ponytail: each loop walks its own body, so loops nested d deep cost d times the body;
+// real code nests a handful deep. Walk once with a stack of open loops if that ever matters.
+fn modified_while_iterating<'a>(
+    src: &'a str,
+    n: Node,
+    concurrent: &mut Option<HashSet<&'a str>>,
+    v: &mut Vec<Violation>,
+) {
+    let for_in = n.kind() == "for_in_statement";
+    let (target, body) = if for_in {
+        (
+            n.child_by_field_name("value"),
+            n.child_by_field_name("body"),
+        )
+    } else {
+        if !matches!(
+            called_method(src, n),
+            Some("each" | "eachWithIndex" | "forEach")
+        ) {
+            return;
+        }
+        (
+            n.child_by_field_name("function")
+                .and_then(|f| f.child_by_field_name("object")),
+            n.child_by_field_name("closure").or_else(|| {
+                call_args(n)
+                    .filter(|a| a.named_child_count() == 1)
+                    .and_then(|a| a.named_child(0))
+                    .filter(|c| c.kind() == "closure")
+            }),
+        )
+    };
+    let (Some(target), Some(body)) = (target.map(unparen), body) else {
+        return;
+    };
+    if !plain_subject(target) {
+        return;
+    }
+    let name = text(target, src);
+    let receiver = |d: Node| {
+        d.child_by_field_name("function")
+            .and_then(|f| f.child_by_field_name("object"))
+            .map(|o| text(unparen(o), src))
+    };
+    struct Seen<'t> {
+        node: Node<'t>,
+        // the statement of a block or closure body holding the node
+        stmt: Option<Node<'t>>,
+        closure_ok: bool,
+        in_loop: bool,
+        in_closure: bool,
+    }
+    let mut stack = vec![Seen {
+        node: body,
+        stmt: None,
+        closure_ok: true,
+        in_loop: false,
+        in_closure: false,
+    }];
+    let mut hit = None;
+    while let Some(s) = stack.pop() {
+        let d = s.node;
+        let kind = d.kind();
+        if (matches!(kind, "variable_declarator" | "closure_parameter")
+            && d.child_by_field_name("name")
+                .is_some_and(|x| text(x, src) == name))
+            || (d != body && kind == "closure" && !s.closure_ok)
+        {
+            // a variable of the same name shadows the collection; a closure that may run
+            // later changes nothing during this walk
+            if kind != "closure" {
+                return;
+            }
+            continue;
+        }
+        let nested_walk = d != body
+            && ((kind == "for_in_statement"
+                && d.child_by_field_name("value")
+                    .is_some_and(|x| text(unparen(x), src) == name))
+                || (kind == "method_invocation"
+                    && matches!(
+                        called_method(src, d),
+                        Some("each" | "eachWithIndex" | "forEach")
+                    )
+                    && receiver(d) == Some(name)));
+        if nested_walk {
+            continue;
+        }
+        let change = match kind {
+            "method_invocation" => called_method(src, d)
+                .filter(|m| {
+                    matches!(
+                        *m,
+                        "remove"
+                            | "add"
+                            | "addAll"
+                            | "removeAll"
+                            | "clear"
+                            | "retainAll"
+                            | "removeIf"
+                    )
+                })
+                .filter(|_| receiver(d) == Some(name)),
+            "binary_expression"
+                if operator(d) == "<<"
+                    && d.child_by_field_name("left")
+                        .is_some_and(|l| text(unparen(l), src) == name) =>
+            {
+                Some("<<")
+            }
+            _ => None,
+        };
+        if let Some(m) = change {
+            hit.get_or_insert((d, m, s.stmt, s.in_loop, s.in_closure));
+            continue;
+        }
+        let runs_now = kind == "method_invocation"
+            && called_method(src, d).is_some_and(|m| RUNS_CLOSURE_NOW.contains(&m));
+        let in_loop = s.in_loop
+            || (d != body
+                && matches!(
+                    kind,
+                    "for_statement" | "for_in_statement" | "while_statement" | "do_while_statement"
+                ));
+        let in_closure = s.in_closure || (d != body && kind == "closure");
+        let mut c = d.walk();
+        let kids: Vec<Node> = d.named_children(&mut c).collect();
+        for k in kids.into_iter().rev() {
+            stack.push(Seen {
+                node: k,
+                stmt: if matches!(kind, "block" | "closure") {
+                    Some(k)
+                } else {
+                    s.stmt
+                },
+                closure_ok: (runs_now || (kind == "argument_list" && s.closure_ok))
+                    && k.kind() != "block",
+                in_loop,
+                in_closure,
+            });
+        }
+    }
+    let Some((h, method, stmt, in_loop, in_closure)) = hit else {
+        return;
+    };
+    if concurrent
+        .get_or_insert_with(|| concurrent_names(src))
+        .contains(name.rsplit('.').next().unwrap_or(name))
+    {
+        return;
+    }
+    // does the block holding the change end the walk before its next step?
+    let ends = |k: &str| match k {
+        "throw_statement" => true,
+        "return_statement" => for_in && !in_closure,
+        "break_statement" => for_in && !in_closure && !in_loop,
+        _ => false,
+    };
+    let mut next = stmt;
+    while let Some(st) = next {
+        if ends(st.kind()) {
+            return;
+        }
+        next = st.next_named_sibling();
+    }
+    let removal = matches!(
+        method,
+        "remove" | "removeAll" | "removeIf" | "retainAll" | "clear"
+    );
+    v.push(at(
+        h,
+        "ModifiedWhileIterating",
+        format!(
+            "`{name}` is changed while it is being iterated, so the next step throws ConcurrentModificationException; {}",
+            if removal {
+                "use removeIf, or collect what to remove and remove it after the loop"
+            } else {
+                "collect the changes and apply them after the loop"
+            }
+        ),
+    ));
+}
+
+/// DuplicateCondition: an `else if` testing the same condition as an earlier branch of the
+/// chain, which can never run. (`if (c) { X } else { X }` was measured too: of 85 on the
+/// corpus nearly all were placeholders or deliberate defaults, so it isn't a rule.)
+/// `chained` holds the ifs already walked as part of a chain, so each chain is walked once,
+/// from its head, without climbing to parents (tree-sitter walks down from the root for each).
+fn if_chain(src: &str, n: Node, chained: &mut HashSet<usize>, v: &mut Vec<Violation>) {
+    if chained.contains(&n.id()) {
+        return;
+    }
+    let mut seen = HashSet::new();
+    let mut cur = Some(n);
+    while let Some(i) = cur.filter(|i| i.kind() == "if_statement") {
+        if let Some(c) = i.child_by_field_name("condition").map(unparen)
+            && let Some(tokens) = code_tokens(src, c)
+            && !seen.insert(tokens)
+        {
+            v.push(at(
+                    c,
+                    "DuplicateCondition",
+                    format!("An earlier branch of this if/else chain already tests `{}`, so this branch never runs", text(unparen(c), src)),
+                ));
+        }
+        let alt = i.child_by_field_name("alternative");
+        if let Some(a) = alt.filter(|a| a.kind() == "if_statement") {
+            chained.insert(a.id());
+        }
+        cur = alt;
+    }
+}
+
 /// UnnecessaryModOne: `x % 1`, which is always 0.
 fn mod_one(src: &str, n: Node, v: &mut Vec<Violation>) {
     let one = n
@@ -2541,6 +2977,44 @@ mod tests {
                 "{own}"
             );
         }
+    }
+
+    #[test]
+    fn string_format_arguments() {
+        let src = "a = String.format('%s and %s', x, y, z)\nb = String.format(\"done\", n)\nc = String.format('%s %d', x)\nd = String.format('%s %d', x, 1)\ne = String.format('%1$s %1$s', x)\nf = String.format('%d%% at %n%s', x, y)\ng = String.format(Locale.ROOT, '%s', x, y)\nh = String.format(pattern, x)\ni = String.format('%s %s', *xs)\nj = String.format('%tY-%tm', d, d)\nk = String.format('%s %s', 1)\n";
+        assert_eq!(rules(src, "StringFormatArguments"), vec![1, 2, 7, 11]);
+        assert_eq!(
+            rules(
+                "a = String.format('Locale %s %s', 1)\n",
+                "StringFormatArguments"
+            ),
+            vec![1]
+        );
+    }
+
+    #[test]
+    fn modified_while_iterating() {
+        let src = "for (x in xs) { xs.remove(x) }\nxs.each { xs.add(it) }\nm.each { k, v -> if (v) { m.remove(k) } }\nfor (x in xs) { if (x) { xs.remove(x); break } }\nfor (x in xs) { ys.remove(x) }\nfor (x in xs.clone()) { xs.remove(x) }\nxs.each { if (it) { xs << it } }\nfor (x in xs) { def xs = [x]; xs.add(1) }\nfor (x in a.b) { a.b.clear() }\n";
+        assert_eq!(rules(src, "ModifiedWhileIterating"), vec![1, 2, 3, 7, 9]);
+        let src = "def xs = new CopyOnWriteArrayList()\nfor (x in xs) { xs.remove(x) }\n";
+        assert!(rules(src, "ModifiedWhileIterating").is_empty());
+        // ended walks, closures run later, and nested walks reporting themselves
+        let src = "for (x in xs) { if (x) { xs.remove(x); changed = true; break } }\nfor (x in xs) { xs.remove(x); log.info(x); return x }\nxs.each { x -> def later = { xs.clear() } }\nfor (x in xs) { def r = { xs.remove(x) } }\nxs.each { x -> button.onClick { xs.remove(x) } }\nxs.each { if (it) { xs.remove(it); return } }\nfor (x in xs) { for (y in ys) { if (y) { xs.remove(x); break } } }\nfor (x in xs) { xs.each { y -> xs.remove(y) } }\nfor (x in xs) { ys.collect { xs.add(it) } }\nxs.each { if (it) { xs.remove(it); throw new E() } }\n";
+        assert_eq!(rules(src, "ModifiedWhileIterating"), vec![6, 7, 8, 9]);
+    }
+
+    #[test]
+    fn duplicate_conditions() {
+        let src = "if (a == 1) { f() } else if (a == 2) { g() } else if (a == 1) { h() }\nif (ok) { f() } else if (ok) { g() }\nif (s == 'a b') { f() } else if (s == 'ab') { g() }\nif (a) { f() } else { if (a) { g() } }\nif (x  ==  1) { f() } else if (x == 1 /* again */) { g() }\n";
+        assert_eq!(rules(src, "DuplicateCondition"), vec![1, 2, 5]);
+        let src = "if (it.next() == 'a') { f() } else if (it.next() == 'a') { g() }\nif (q.poll() != null) { f() } else if (q.poll() != null) { g() }\nif (i++ < 3) { f() } else if (i++ < 3) { g() }\nif (m.find()) { f() } else if (m.find()) { g() }\n";
+        assert_eq!(rules(src, "DuplicateCondition"), vec![4]);
+        let deep = format!(
+            "if (a == {}x{}) {{ f() }}\n",
+            "(".repeat(50_000),
+            ")".repeat(50_000)
+        );
+        let _ = lint(&deep);
     }
 
     #[test]

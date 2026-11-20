@@ -92,7 +92,7 @@ UnnecessaryGString = true
 
 ## Linting
 
-89 rules, 65 on by default (`groovyfmt --rules`).
+92 rules, 68 on by default (`groovyfmt --rules`).
 - General rules follow [CodeNarc](https://codenarc.org/) names. `groovyfmt --import-codenarc <config>` converts a CodeNarc or npm-groovy-lint config.
 - Jenkinsfile, Gradle and Spock rules catch mistakes that otherwise surface only when a build runs, such as Gradle 9 and Groovy 4 removals.
 - `// groovyfmt-ignore` or `@SuppressWarnings` suppress a report; `--write-baseline` lets you adopt lint gradually.
