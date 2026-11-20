@@ -405,20 +405,21 @@ static bool skip_parens(TSLexer *lexer) {
     return false;
 }
 
-// `_paren_command_start`, with the lexer just past a parenthesized command's
-// first name: whether an index or a binary operator continues the name into an
-// expression argument. When `spaced`, the gap before the operator is skipped
-// first: inside parentheses a line break, a `\` continuation or a comment is
-// a gap like a space (Groovy 3 and 4), `(a b /* c */ - d)` and `(a b` then
-// `- c`. `?.` and `->` don't continue; neither does `=` in a parameter list
-// (see below). Neither do `.`, `?` and `<` right after the name, which the
-// callers' other branches read. The gap is scanned under the step budget (see
-// skip_step); a longer one is the default reading, false.
-static bool paren_argument_continues(TSLexer *lexer, bool spaced) {
-    unsigned budget = SKIP_BUDGET;
-    while (spaced) {
-        if (!skip_step(lexer, &budget)) {
-            return false;
+// What ends a gap that skip_paren_gap skips.
+enum ParenGap { GAP_END, GAP_SLASH, GAP_FAIL };
+
+// Skips a gap inside parentheses: whitespace, line breaks, `\` continuations and
+// comments, all of which Groovy 3 and 4 read like a space there. GAP_END at the
+// first other character or the end of input; GAP_SLASH past a `/` that starts
+// no comment, a division; GAP_FAIL at a stray `\`, an unclosed comment or the
+// end of the step budget.
+static enum ParenGap skip_paren_gap(TSLexer *lexer, unsigned *budget) {
+    for (;;) {
+        if (lexer->eof(lexer)) {
+            return GAP_END;
+        }
+        if (!skip_step(lexer, budget)) {
+            return GAP_FAIL;
         }
         int32_t g = lexer->lookahead;
         if (is_whitespace(g)) {
@@ -429,14 +430,14 @@ static bool paren_argument_continues(TSLexer *lexer, bool spaced) {
                 lexer->advance(lexer, false);
             }
             if (lexer->lookahead != '\n') {
-                return false;
+                return GAP_FAIL;
             }
         } else if (g == '/') {
             lexer->advance(lexer, false);
             if (lexer->lookahead == '/') {
                 while (lexer->lookahead != '\n') {
-                    if (!skip_step(lexer, &budget)) {
-                        return false;
+                    if (!skip_step(lexer, budget)) {
+                        return GAP_FAIL;
                     }
                     lexer->advance(lexer, false);
                 }
@@ -444,18 +445,35 @@ static bool paren_argument_continues(TSLexer *lexer, bool spaced) {
                 lexer->advance(lexer, false);
                 int32_t prev = 0;
                 while (!(prev == '*' && lexer->lookahead == '/')) {
-                    if (!skip_step(lexer, &budget)) {
-                        return false;
+                    if (!skip_step(lexer, budget)) {
+                        return GAP_FAIL;
                     }
                     prev = lexer->lookahead;
                     lexer->advance(lexer, false);
                 }
                 lexer->advance(lexer, false);
             } else {
-                return true; // a division
+                return GAP_SLASH;
             }
         } else {
-            break;
+            return GAP_END;
+        }
+    }
+}
+
+// `_paren_command_start`, with the lexer just past a parenthesized command's
+// first name: whether an index or a binary operator continues the name into an
+// expression argument. When `spaced`, the gap before the operator is skipped
+// first (skip_paren_gap): `(a b /* c */ - d)` and `(a b` then `- c`. `?.` and
+// `->` don't continue; neither does `=` in a parameter list (see below).
+// Neither do `.`, `?` and `<` right after the name, which the callers' other
+// branches read. A gap past the step budget is the default reading, false.
+static bool paren_argument_continues(TSLexer *lexer, bool spaced) {
+    unsigned budget = SKIP_BUDGET;
+    if (spaced) {
+        enum ParenGap gap = skip_paren_gap(lexer, &budget);
+        if (gap != GAP_END) {
+            return gap == GAP_SLASH;
         }
     }
     int32_t c = lexer->lookahead;
@@ -478,11 +496,13 @@ static bool paren_argument_continues(TSLexer *lexer, bool spaced) {
                 // `(a b = c)` is `a(b = c)`, unless the parentheses hold
                 // parameters with a default: a lambda's, `(String s = 'x') -> s`,
                 // or, in a script, the method's of `List<T> m(Map p = [:]) {`.
+                // A comment or a `\` continuation may come before the `{`.
                 if (!skip_parens(lexer)) {
                     return false;
                 }
-                while (is_whitespace(lexer->lookahead)) {
-                    lexer->advance(lexer, false);
+                enum ParenGap gap = skip_paren_gap(lexer, &budget);
+                if (gap != GAP_END) {
+                    return gap == GAP_SLASH;
                 }
                 if (lexer->lookahead == '{') {
                     return false;
