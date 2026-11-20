@@ -14,7 +14,7 @@
 //! (`vars/*.groovy`): directly in its body, after any other statements, or in an `if` branch.
 //! Scripted pipelines (`node { }`) are never checked.
 
-use super::{Rule, Violation, at, constant_value, has_interpolation};
+use super::{Rule, Violation, at, constant_value, has_interpolation, unparen};
 use crate::text;
 use std::collections::HashSet;
 use std::path::Path;
@@ -285,7 +285,8 @@ pub(super) fn call<'a>(n: Node<'a>, src: &'a str) -> Option<Call<'a>> {
         "command_chain" => {
             let mut c = n.walk();
             args.extend(n.children_by_field_name("argument", &mut c));
-            n.child_by_field_name("receiver")?
+            let r = n.child_by_field_name("receiver")?;
+            this_qualified(r, src).unwrap_or(r)
         }
         "expression_statement" => {
             let e = n.named_child(0)?;
@@ -302,9 +303,11 @@ pub(super) fn call<'a>(n: Node<'a>, src: &'a str) -> Option<Call<'a>> {
                 }
                 "method_invocation" => {
                     let f = e.child_by_field_name("function")?;
-                    if f.kind() != "identifier" {
-                        return None;
-                    }
+                    let f = if f.kind() == "identifier" {
+                        f
+                    } else {
+                        this_qualified(f, src)?
+                    };
                     if let Some(a) = e.child_by_field_name("arguments") {
                         let mut c = a.walk();
                         args.extend(
@@ -331,6 +334,16 @@ pub(super) fn call<'a>(n: Node<'a>, src: &'a str) -> Option<Call<'a>> {
         args,
         body,
     })
+}
+
+/// `name` in `this.name`, which is the same call as `name` (`this.agent any`, `this.steps { }`).
+fn this_qualified<'a>(n: Node<'a>, src: &str) -> Option<Node<'a>> {
+    (n.kind() == "field_access"
+        && n.child_by_field_name("object")
+            .is_some_and(|o| text(o, src) == "this"))
+    .then(|| n.child_by_field_name("field"))
+    .flatten()
+    .filter(|f| f.kind() == "identifier")
 }
 
 /// The grammar reads a command whose argument is an identifier or a method call, `agent any`
@@ -678,7 +691,7 @@ fn stage(
     depth: usize,
     v: &mut Vec<Violation>,
 ) -> Option<String> {
-    let name = match c.args.first() {
+    let name = match c.args.first().map(|&a| unparen(a)) {
         None => {
             v.push(at(
                 c.node,
@@ -687,13 +700,13 @@ fn stage(
             ));
             None
         }
-        Some(&a)
+        Some(a)
             if (a.kind() == "string_literal" && !has_interpolation(a))
                 || a.kind() == "identifier" =>
         {
             constant_value(a, src)
         }
-        Some(&a) => {
+        Some(a) => {
             v.push(at(
                 a,
                 "JenkinsStageName",
@@ -1020,7 +1033,8 @@ fn env_identifier(s: &str) -> bool {
 /// is a literal, a string, a method call, or literals and strings joined with `+`
 /// (ModelParser.parseEnvironment). A declaration of one variable with a value, `def KEY =
 /// value` or `String KEY = value`, is one too: it is a DeclarationExpression, which is a
-/// BinaryExpression with `=`, and ModelParser reads its variable as the key (#222).
+/// BinaryExpression with `=`, and ModelParser reads its variable as the key (#222). One of
+/// several variables, `def A = 'a', B = 'b'`, is a declaration each (#287).
 fn environment(src: &str, body: Node, v: &mut Vec<Violation>) {
     let mut seen = HashSet::new();
     for s in statements(body) {
@@ -1031,73 +1045,80 @@ fn environment(src: &str, body: Node, v: &mut Vec<Violation>) {
                 a.child_by_field_name("operator")
                     .is_some_and(|o| o.kind() == "=")
             });
-        // `def x = 1` holds its name and value, or one `variable_declarator` that does
-        let d = (s.kind() == "local_variable_declaration")
-            .then(|| {
-                let mut c = s.walk();
-                let ds: Vec<_> = s
-                    .named_children(&mut c)
-                    .filter(|d| d.kind() == "variable_declarator")
-                    .collect();
-                match ds[..] {
-                    [] => Some(s),
-                    [d] => Some(d),
-                    _ => None,
-                }
-            })
-            .flatten();
-        let (Some(key), Some(value)) = (
-            a.and_then(|a| a.child_by_field_name("left"))
-                .or_else(|| d.and_then(|d| d.child_by_field_name("name"))),
-            a.and_then(|a| a.child_by_field_name("right"))
-                .or_else(|| d.and_then(|d| d.child_by_field_name("value"))),
-        ) else {
-            v.push(at(
-                s,
-                "JenkinsEnvironmentEntry",
-                format!(
-                    "`{}` is not an environment entry; environment {{ }} takes only KEY = value lines",
-                    head(s, src)
-                ),
-            ));
-            continue;
-        };
-        let k = text(key, src);
-        let msg = if key.kind() != "identifier" || !env_identifier(k) {
-            format!(
-                "`{k}` is not a valid environment variable name; use letters, digits and _, not starting with a digit"
-            )
-        } else if !seen.insert(k) {
-            format!("`{k}` is set twice in this environment {{ }}; Jenkins rejects a repeat")
-        } else if !env_value(value) {
-            format!(
-                "The value of `{k}` must be a quoted string, a literal or a method call (`{}` is none of these); write \"${{...}}\" to use an expression",
-                head(value, src)
-            )
+        // `def x = 1` holds its name and value, or `variable_declarator`s that do; Groovy reads
+        // `def A = 'a', B = 'b'` as two declarations
+        let ds: Vec<Node> = if s.kind() == "local_variable_declaration" {
+            let mut c = s.walk();
+            let ds: Vec<_> = s
+                .named_children(&mut c)
+                .filter(|d| d.kind() == "variable_declarator")
+                .collect();
+            if ds.is_empty() { vec![s] } else { ds }
         } else {
-            continue;
+            vec![]
         };
-        v.push(at(s, "JenkinsEnvironmentEntry", msg));
+        let entries: Vec<(Option<Node>, Option<Node>)> = match a {
+            Some(a) => vec![(
+                a.child_by_field_name("left"),
+                a.child_by_field_name("right"),
+            )],
+            None if ds.is_empty() => vec![(None, None)],
+            None => ds
+                .iter()
+                .map(|d| {
+                    (
+                        d.child_by_field_name("name"),
+                        d.child_by_field_name("value"),
+                    )
+                })
+                .collect(),
+        };
+        for entry in entries {
+            let (Some(key), Some(value)) = entry else {
+                v.push(at(
+                    s,
+                    "JenkinsEnvironmentEntry",
+                    format!(
+                        "`{}` is not an environment entry; environment {{ }} takes only KEY = value lines",
+                        head(s, src)
+                    ),
+                ));
+                continue;
+            };
+            let k = text(key, src);
+            let msg = if key.kind() != "identifier" || !env_identifier(k) {
+                format!(
+                    "`{k}` is not a valid environment variable name; use letters, digits and _, not starting with a digit"
+                )
+            } else if !seen.insert(k) {
+                format!("`{k}` is set twice in this environment {{ }}; Jenkins rejects a repeat")
+            } else if !env_value(value, src) {
+                format!(
+                    "The value of `{k}` must be a quoted string, a literal or a method call (`{}` is none of these); write \"${{...}}\" to use an expression",
+                    head(value, src)
+                )
+            } else {
+                continue;
+            };
+            v.push(at(s, "JenkinsEnvironmentEntry", msg));
+        }
     }
 }
 
-fn env_value(n: Node) -> bool {
+fn env_value(n: Node, src: &str) -> bool {
     match n.kind() {
         "string_literal" | "number_literal" | "boolean_literal" | "null_literal"
         | "method_invocation" | "command_chain" => true,
         // `-1`: whether Groovy reads it as a constant isn't certain, so it is let through
         "unary_expression" => true,
-        "parenthesized_expression" => n.named_child(0).is_some_and(env_value),
+        "parenthesized_expression" => n.named_child(0).is_some_and(|c| env_value(c, src)),
         "binary_expression" => {
             n.child_by_field_name("operator")
                 .is_some_and(|o| o.kind() == "+")
-                && n.child_by_field_name("left").is_some_and(concat_part)
-                && n.child_by_field_name("right").is_some_and(|r| {
-                    matches!(
-                        r.kind(),
-                        "string_literal" | "number_literal" | "boolean_literal" | "null_literal"
-                    )
-                })
+                && n.child_by_field_name("left")
+                    .is_some_and(|l| concat_part(l, src))
+                && n.child_by_field_name("right")
+                    .is_some_and(|r| env_literal(r, src))
         }
         _ => false,
     }
@@ -1105,10 +1126,22 @@ fn env_value(n: Node) -> bool {
 
 /// The left side of a `+` in an environment value: a literal, or another `+` of them
 /// (ModelParser.envValueForStringConcat).
-fn concat_part(n: Node) -> bool {
+fn concat_part(n: Node, src: &str) -> bool {
+    let n = unparen(n);
+    env_literal(n, src) || (n.kind() == "binary_expression" && env_value(n, src))
+}
+
+/// A literal in a `+` of an environment value. Parentheses don't count (Groovy's AST has
+/// none), and `-3` is the constant -3, as Groovy reads a negative number.
+fn env_literal(n: Node, src: &str) -> bool {
+    let n = unparen(n);
     match n.kind() {
         "string_literal" | "number_literal" | "boolean_literal" | "null_literal" => true,
-        "binary_expression" => env_value(n),
+        "unary_expression" => {
+            text(n, src).starts_with('-')
+                && n.child_by_field_name("operand")
+                    .is_some_and(|o| o.kind() == "number_literal")
+        }
         _ => false,
     }
 }
@@ -1219,7 +1252,10 @@ fn axis<'a>(
             let lit = c
                 .args
                 .first()
-                .filter(|a| c.args.len() == 1 && a.kind() == "string_literal")
+                // a bare word is the name as a string (`name compiler`)
+                .filter(|a| {
+                    c.args.len() == 1 && matches!(a.kind(), "string_literal" | "identifier")
+                })
                 .and_then(|a| constant_value(*a, src));
             match lit {
                 None => push(
@@ -1342,6 +1378,55 @@ mod tests {
         let src = format!("// header\nimport a.B\n{VALID}");
         let v = lint_file(Path::new("ci.groovy"), &src).unwrap();
         assert!(v.iter().all(|v| !v.rule.starts_with("Jenkins")), "{v:?}");
+    }
+
+    #[test]
+    fn forms_jenkins_accepts() {
+        // #287: each of these passes the Declarative Pipeline validator
+        let src = "pipeline {
+    this.agent any
+    this.options { this.timeout(time: 1, unit: 'HOURS') }
+    environment {
+        P = ('p') + \"${Q}\"
+        N = 'n' + -3
+        def A = 'a', B = 'b'
+    }
+    stages {
+        this.stage(('Build')) {
+            this.steps { echo 'x' }
+        }
+        stage('M') {
+            matrix {
+                axes { axis { name os; values 'linux', 'mac' } }
+                stages { stage('m') { steps { echo 'm' } } }
+            }
+        }
+    }
+}
+";
+        assert_eq!(rules(src), vec![]);
+        // and these don't
+        let bad = "pipeline {
+    agent any
+    environment {
+        P = ('p') + Q
+        N = 'n' + -Q
+        def A = 'a', B = b
+    }
+    stages {
+        stage(('a' + 'b')) { steps { echo 'x' } }
+    }
+}
+";
+        assert_eq!(
+            rules(bad),
+            vec![
+                ("JenkinsEnvironmentEntry", 4),
+                ("JenkinsEnvironmentEntry", 5),
+                ("JenkinsEnvironmentEntry", 6),
+                ("JenkinsStageName", 9),
+            ]
+        );
     }
 
     #[test]
@@ -1733,15 +1818,16 @@ mod tests {
         );
         assert_eq!(rules(&src), vec![]);
         // #222: a declaration of one variable with a value is an entry (horizon-sdv's
-        // `def kubernetesBasicPodTemplate = \"\"\"...`); its key and value are checked the same
+        // `def kubernetesBasicPodTemplate = \"\"\"...`); its key and value are checked the same.
+        // `def H = 1, I = 2` is two such declarations (#287).
         let src = env(
             "def A = \"x\"\nString B = 'y'\nfinal C = credentials('c')\ndef D\ndef E = env.X\ndef (F, G) = ['f', 'g']\ndef H = 1, I = 2\ndef A = 'again'",
         );
         assert_eq!(
             rules(&src),
-            (7..=11)
+            [7, 8, 9, 11]
                 .map(|l| ("JenkinsEnvironmentEntry", l))
-                .collect::<Vec<_>>()
+                .to_vec()
         );
     }
 

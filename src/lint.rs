@@ -71,6 +71,7 @@ mod spock;
 mod suppress;
 mod unused;
 
+use basic::unparen;
 pub use elsewhere::{Context, Projects};
 use general::{
     constant_value, has_interpolation, import_has, is_empty_block, is_literal, rebound, words,

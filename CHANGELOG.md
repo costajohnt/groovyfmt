@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A closure parameter whose default is a call with arguments now parses, as Groovy 2.4, 3 and 4 read it: `{ y = f(1, 2) -> y }`, `{ x, y = helper(1, 2) -> x }`. Only empty parentheses parsed before, and `{ y = f(a) -> y }` was read as a closure body passing a lambda `(a) -> y` to `f`. ([#287](https://github.com/costajohnt/groovyfmt/issues/287))
+- Jenkins lint rules no longer report these forms, which the Declarative Pipeline validator accepts: a bare-word axis name, `name compiler` (JenkinsMatrixAxes); a parenthesized literal or a negative number in an environment concatenation, `C = ('a') + "${A}"`, `Y = 'y' + -3`, and a declaration of several variables, `def A = 'a', B = 'b'` (JenkinsEnvironmentEntry); a parenthesized stage name, `stage(('S'))` (JenkinsStageName); and `this.`-qualified sections and steps, `this.agent any`, `this.stage('Build') { }` (JenkinsMissingSection, JenkinsUnknownSection, JenkinsStatementOutsideSection). ([#287](https://github.com/costajohnt/groovyfmt/issues/287))
+- A directory walk leaves out a `Jenkinsfile.*`-style name that holds a Dockerfile, one whose first line past blank lines and `#` comments starts with `FROM ` or `ARG ` (`Dockerfile.jenkins`), and a FreeMarker template, by its `.ftl` suffix or a `<#` tag on a line that doesn't parse. `--syntax .` reported them as unparseable. ([#287](https://github.com/costajohnt/groovyfmt/issues/287))
+
 ## 0.30.4 (2026-11-20)
 
 ### Fixed

@@ -2531,6 +2531,7 @@ fn a_walk_takes_a_jenkinsfile_with_a_suffix_only_when_it_parses() {
             "{% set x = 1 %}\npipeline { agent any }\n",
         ),
         ("Jenkinsfile.groovy~", "pipeline {\nagent  any\n}\n"),
+        ("Jenkinsfile.ftl", "pipeline {\nagent  any\n}\n"),
         ("Jenkinsfile.prod", "pipeline {\nagent any\n}\n"),
     ];
     for (f, text) in files {
@@ -2728,6 +2729,15 @@ fn a_walk_reports_a_pipeline_name_with_a_syntax_error() {
     d.write(
         "docker/Dockerfile.jenkins",
         "FROM jenkins/jenkins:lts\n# plugins\nRUN jenkins-plugin-cli --plugins git\n",
+    );
+    // #287: a Dockerfile whose first error is in Groovy terms on its FROM line
+    d.write(
+        "ci/Dockerfile.jenkins",
+        "FROM golang:alpine@sha256:91ed6d2f27aa\nRUN go build ./...\n",
+    );
+    d.write(
+        "Jenkinsfile_freemarker",
+        "<#if prod>\npipeline { agent any }\n</#if>\n",
     );
     d.write(
         "Jenkinsfile_run",

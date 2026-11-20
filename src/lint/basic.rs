@@ -656,7 +656,7 @@ fn string_local<'a>(src: &str, at: Node<'a>, name: &str) -> Option<Node<'a>> {
 }
 
 /// Without wrapping parentheses.
-fn unparen(mut n: Node) -> Node {
+pub(super) fn unparen(mut n: Node) -> Node {
     while n.kind() == "parenthesized_expression"
         && let Some(c) = n.named_child(0)
     {

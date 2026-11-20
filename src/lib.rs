@@ -234,10 +234,19 @@ pub fn is_walked_file(path: &Path) -> bool {
 /// Whether `src`, which doesn't parse, reads as something other than Groovy: a first line
 /// that is a `#!` for another program (a shell script), or a syntax error (of the first
 /// `syntax::MAX_REPORTED`) on a line starting with `#` (a Dockerfile, shell or YAML comment)
-/// or a template tag (Jinja `{%`, `{#`, ERB/JSP `<%`, Mustache `{{#`, `{{/`). A pipeline
-/// with a typo fails on Groovy code, so it is still reported.
+/// or a template tag (Jinja `{%`, `{#`, ERB/JSP `<%`, Mustache `{{#`, `{{/`, FreeMarker `<#`),
+/// or a first line, past blank lines and `#` comments, that starts a Dockerfile (`FROM `,
+/// `ARG `). A pipeline with a typo fails on Groovy code, so it is still reported.
 fn not_groovy(src: &str, tree: &Tree) -> bool {
     if src.starts_with("#!") && !is_groovy_shebang(src.as_bytes()) {
+        return true;
+    }
+    if src
+        .lines()
+        .map(str::trim_start)
+        .find(|l| !l.is_empty() && !l.starts_with('#'))
+        .is_some_and(|l| l.starts_with("FROM ") || l.starts_with("ARG "))
+    {
         return true;
     }
     let (errors, _) = syntax::errors(src, tree);
@@ -246,7 +255,7 @@ fn not_groovy(src: &str, tree: &Tree) -> bool {
         .filter_map(|e| src.lines().nth(e.line - 1))
         .any(|l| {
             let l = l.trim_start();
-            ["#", "{%", "{#", "{{#", "{{/", "<%"]
+            ["#", "{%", "{#", "{{#", "{{/", "<%", "<#"]
                 .iter()
                 .any(|m| l.starts_with(m))
         })
@@ -352,6 +361,7 @@ const NOT_GROOVY: &[&str] = &[
     "erb",
     "mustache",
     "hbs",
+    "ftl",
     "patch",
     "diff",
     "cfg",
@@ -684,6 +694,37 @@ mod tests {
             let tree = super::parse(src);
             assert!(
                 !tree.root_node().has_error(),
+                "{src:?}: {}",
+                tree.root_node().to_sexp()
+            );
+        }
+    }
+
+    #[test]
+    fn closure_parameter_default_call_with_arguments() {
+        // the default is a call, not a lambda passed to `f` (#287), as Groovy 2.4, 3 and 4
+        // read it
+        for src in [
+            "def c = { y = f(1, 2) -> y }",
+            "def c = { x, y = helper(1, 2) -> x }",
+            "def c = { y = f(a) -> y }",
+            "def c = { Integer y = o.f(1, 'b') -> y }",
+        ] {
+            let tree = super::parse(src);
+            let mut defaults = 0;
+            let mut lambdas = 0;
+            super::preorder(tree.root_node(), |n| {
+                match n.kind() {
+                    "closure_parameter" if n.child_by_field_name("default").is_some() => {
+                        defaults += 1
+                    }
+                    "lambda_expression" => lambdas += 1,
+                    _ => {}
+                }
+                true
+            });
+            assert!(
+                defaults == 1 && lambdas == 0 && !tree.root_node().has_error(),
                 "{src:?}: {}",
                 tree.root_node().to_sexp()
             );

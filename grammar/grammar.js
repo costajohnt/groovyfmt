@@ -548,6 +548,8 @@ module.exports = grammar({
     // `{ File f = d() -> }`: a closure parameter's default call, or a declaration's
     // lambda command, `{ File f = d () -> 1 }`; prec.dynamic picks the parameter.
     [$._command_lambda_parameters, $._closure_default_arguments],
+    // `{ y = f(A b) -> }`: a lambda parameter's type, or a default call's command argument.
+    [$._type, $._argument_command],
 
     // §5.10 — after `{` and a `_line_break`, a closure's parameters or its
     // first statement may follow; in an enum, a constant or a member.
@@ -3123,10 +3125,11 @@ module.exports = grammar({
       field('arguments', alias($._closure_default_arguments, $.argument_list)),
     )),
 
-    // ponytail: empty parentheses only, the form seen in real files; `d(x) ->` would need
-    // the arguments to share a conflict with a lambda's parameters.
+    // The arguments may be any an argument list takes, `{ y = f(1, 2) -> y }`; where they
+    // could also be a lambda's parameters, `{ y = f(a) -> y }`, prec.dynamic picks the call.
     _closure_default_arguments: $ => seq(
       alias($._command_lambda_open, '('),
+      optional($._argument_list_body),
       ')',
     ),
 
