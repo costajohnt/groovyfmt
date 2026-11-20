@@ -144,10 +144,21 @@ pub fn collect(
             }
         }
     }
-    // overlapping arguments (`. src`, a file named twice or spelled differently): each file
-    // once, first-seen order
+    // overlapping arguments (`. src`, a file named twice or spelled differently) and hard
+    // links to one file (#272): each file once, first-seen order. A file is its (device,
+    // inode) on unix; elsewhere (std's Windows file index is unstable) and when metadata
+    // fails, its canonical path, which can't see hard links.
     let mut seen = std::collections::HashSet::new();
-    files.retain(|(f, _)| seen.insert(std::fs::canonicalize(f).unwrap_or_else(|_| f.clone())));
+    #[cfg(unix)]
+    let mut nodes = std::collections::HashSet::new();
+    files.retain(|(f, _)| {
+        #[cfg(unix)]
+        if let Ok(m) = std::fs::metadata(f) {
+            use std::os::unix::fs::MetadataExt;
+            return nodes.insert((m.dev(), m.ino()));
+        }
+        seen.insert(std::fs::canonicalize(f).unwrap_or_else(|_| f.clone()))
+    });
     let cfgs = files.iter().cloned().collect();
     (files.into_iter().map(|(f, _)| f).collect(), links, cfgs)
 }

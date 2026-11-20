@@ -5,6 +5,7 @@
 ### Fixed
 
 - Five more parenthesized command call forms that Groovy 3 and 4 accept now parse: `(a b = c)` (`a(b = c)`), an unspaced ternary or elvis `(a b?c:d)`, a safe index with an operator `(a l?[0] - c)`, and a comment, a line break or a backslash continuation before the operator, `(a b /* c */ - d)` and `(a b` then `- c)`. A lambda whose parameter has a default, `(String s = 'x') -> s`, stays a lambda. ([#261](https://github.com/costajohnt/groovyfmt/issues/261))
+- Two hard links to one file in the same run are now one file: it is formatted, checked and linted once, under the first name in walk order, where both names went to different workers at once and one of them could fail with "file changed while formatting". This is unix only; on Windows std can't yet tell hard links apart. ([#272](https://github.com/costajohnt/groovyfmt/issues/272))
 
 ## 0.30.1 (2026-11-19)
 
