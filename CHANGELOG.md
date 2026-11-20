@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A file with many unclosed `/*` block comments now fails to parse in linear time. Each unclosed `/*` used to scan to the end of the file, so 4,000 of them took over 20 times as long as 1,000. The first unclosed `/*` now takes the rest of the file as one error, reported as `unexpected /*…` at that comment. ([#278](https://github.com/costajohnt/groovyfmt/issues/278))
+
 ## 0.30.2 (2026-11-20)
 
 ### Changed

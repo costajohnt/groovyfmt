@@ -1928,7 +1928,12 @@ bool tree_sitter_groovy_external_scanner_scan(
                 advance(lexer);
             }
         }
-        return false;
+        // No closer before end of input: Groovy rejects the file. Take the
+        // rest as one token no rule accepts, so it ends up in an ERROR. Returning
+        // false instead left each later `/*` to scan to the end again, which is
+        // quadratic in a file of unclosed comments (#278).
+        lexer->result_symbol = ERROR_SENTINEL;
+        return true;
     }
     if (!wants_slashy) {
         return false;
